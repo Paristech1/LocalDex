@@ -12,6 +12,7 @@
   "dependencies": {
     "@hono/node-server": "^1.13.7",
     "@localdex/shared": "*",
+    "@modelcontextprotocol/client": "^2.3.1",
     "@vscode/ripgrep": "^1.15.9",
     "fast-glob": "^3.3.2",
     "hono": "^4.6.14",

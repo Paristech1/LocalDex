@@ -3,6 +3,7 @@ import type {
   AgentId,
   AgentStatus,
   ClientEvent,
+  McpServerStatus,
   ModelInfo,
   ServerEvent,
   Session,
@@ -49,6 +50,7 @@ export interface State {
   status: Record<string, { status: AgentStatus; detail?: string }>;
   prompts: Prompt[];
   logs: LogEntry[];
+  mcp: McpServerStatus[];
   error: string | null;
 }
 
@@ -63,6 +65,7 @@ let state: State = {
   status: {},
   prompts: [],
   logs: [],
+  mcp: [],
   error: null,
 };
 
@@ -178,6 +181,9 @@ function handle(ev: ServerEvent): void {
       return;
     case 'models':
       set({ models: ev.models, modelsError: ev.error ?? null });
+      return;
+    case 'mcp_status':
+      set({ mcp: ev.servers });
       return;
     case 'agent_status':
       if (ev.sessionId !== state.session?.id) return;

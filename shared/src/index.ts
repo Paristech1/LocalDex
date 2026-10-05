@@ -58,7 +58,8 @@ export const ALL_TOOL_NAMES: ToolName[] = [
 export interface ToolSchema {
   type: 'function';
   function: {
-    name: ToolName;
+    /** Built-in tools use a ToolName; MCP tools are named at runtime (mcp_<server>_<tool>). */
+    name: string;
     description: string;
     parameters: Record<string, unknown>;
   };
@@ -128,6 +129,54 @@ export interface SessionSummary {
   messageCount: number;
 }
 
+// ---------- MCP (Model Context Protocol) servers ----------
+
+/** 'always' asks before every call, 'once' asks on the first call to a server, 'never' never asks. */
+export type McpApprovalMode = 'always' | 'once' | 'never';
+
+export interface McpServerConfig {
+  /** Executable that starts the server over stdio, e.g. "npx". */
+  command: string;
+  args?: string[];
+  /** Extra environment variables (merged over a minimal safe default environment). */
+  env?: Record<string, string>;
+  /**
+   * Names of environment variables to copy from LocalDex's own environment into the server process.
+   * Servers start with a minimal environment (PATH, HOME, ...) so your secrets are not leaked to them;
+   * list things like HTTPS_PROXY or NODE_EXTRA_CA_CERTS here if you need them.
+   */
+  inheritEnv?: string[];
+  /** Working directory for the server process. Default: ~/.localdex/mcp/<name>. */
+  cwd?: string;
+  enabled: boolean;
+  /** Expose only these tools (the server's own tool names). Omit or leave empty to expose all. Keep it short for small models. */
+  allowTools?: string[];
+  /** Never expose these tools. Applied after allowTools. */
+  denyTools?: string[];
+  /** Default 'once'. */
+  approval?: McpApprovalMode;
+  /** Per-call timeout. Default 60. */
+  timeoutSeconds?: number;
+  /** Cap on characters of tool output sent back to the model. Default 12000. */
+  maxOutputChars?: number;
+  /** Let worker agents use this server's tools. Default false (main agent only). */
+  allowWorkers?: boolean;
+  /** One or two sentences added to the system prompt telling the model how to use this server. */
+  hint?: string;
+}
+
+export type McpServerState = 'disabled' | 'connecting' | 'ready' | 'error';
+
+export interface McpServerStatus {
+  name: string;
+  state: McpServerState;
+  /** Tools the model can see (after allow/deny filtering), as the server names them. */
+  exposedTools: string[];
+  /** Every tool the server reported. */
+  availableTools: string[];
+  error?: string;
+}
+
 // ---------- Settings ----------
 
 export type ShellApprovalMode = 'always' | 'dangerous' | 'never';
@@ -154,6 +203,8 @@ export interface Settings {
   shellApproval: ShellApprovalMode;
   workerConcurrency: number;
   systemPrompt: string;
+  /** MCP servers keyed by a short name. Edit ~/.localdex/config.json to add servers; the UI can only toggle them. */
+  mcpServers: Record<string, McpServerConfig>;
 }
 
 export const DEFAULT_CAPABILITIES: Record<ToolName, boolean> = {
@@ -187,6 +238,28 @@ export const DEFAULT_SETTINGS: Settings = {
   shellApproval: 'dangerous',
   workerConcurrency: 2,
   systemPrompt: '',
+  mcpServers: {
+    playwright: {
+      command: 'npx',
+      args: ['-y', '@playwright/mcp@latest', '--headless', '--isolated'],
+      enabled: false,
+      allowTools: [
+        'browser_navigate',
+        'browser_navigate_back',
+        'browser_snapshot',
+        'browser_click',
+        'browser_type',
+        'browser_fill_form',
+        'browser_select_option',
+        'browser_hover',
+        'browser_tabs',
+      ],
+      approval: 'once',
+      timeoutSeconds: 60,
+      maxOutputChars: 12000,
+      hint: 'Browser: open pages with browser_navigate, then read them with browser_snapshot (a text outline of the page; no screenshots). Click or type using the element refs from the latest snapshot, then snapshot again to confirm.',
+    },
+  },
 };
 
 export interface ModelInfo {
@@ -205,6 +278,7 @@ export type ServerEvent =
   | { type: 'sessions'; sessions: SessionSummary[] }
   | { type: 'settings'; settings: Settings }
   | { type: 'models'; models: ModelInfo[]; error?: string }
+  | { type: 'mcp_status'; servers: McpServerStatus[] }
   | { type: 'agent_status'; sessionId: string; agent: AgentId; status: AgentStatus; detail?: string }
   | { type: 'assistant_delta'; sessionId: string; agent: AgentId; delta: string }
   | { type: 'reasoning_delta'; sessionId: string; agent: AgentId; delta: string }

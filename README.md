@@ -85,6 +85,44 @@ Keyboard: `Enter` send, `Shift+Enter` newline, `Cmd/Ctrl+,` settings, `Esc` clos
 
 Settings and sessions live in `~/.localdex/` (override with `LOCALDEX_HOME`). Server port: `PORT`.
 
+## MCP servers (extra tools)
+
+LocalDex is an [MCP](https://modelcontextprotocol.io) client. Any stdio MCP server can add tools; the first one
+configured is [Playwright MCP](https://github.com/microsoft/playwright-mcp) for browsing (off by default).
+
+1. Open **Settings → MCP Servers** and switch **playwright** on (needs Node 20+; the first start downloads the server via `npx`).
+2. Ask the agent to open a page. The first call to a server asks for approval once; approving allows that
+   server's exposed tools until LocalDex restarts.
+
+Server definitions live in `~/.localdex/config.json` under `mcpServers`. They can only be edited in that file
+(restart LocalDex after editing); the UI and WebSocket can only toggle `enabled`, because a server command runs a
+program on your machine.
+
+```json
+"mcpServers": {
+  "playwright": {
+    "command": "npx",
+    "args": ["-y", "@playwright/mcp@latest", "--headless", "--isolated"],
+    "enabled": true,
+    "allowTools": ["browser_navigate", "browser_snapshot", "browser_click", "browser_type"],
+    "approval": "once",
+    "hint": "Browser: navigate, then read the page with browser_snapshot."
+  }
+}
+```
+
+| Field | Meaning |
+| --- | --- |
+| `allowTools` / `denyTools` | Which of the server's tools the model sees. **Keep this short**: small local models get less reliable as the tool list grows. |
+| `approval` | `once` (default), `always`, or `never`. |
+| `allowWorkers` | Let worker agents use the server (default `false`: main agent only). |
+| `env` / `inheritEnv` | Servers start with a minimal environment so your secrets are not leaked to them. Add variables with `env`, or copy named ones from LocalDex's own environment with `inheritEnv` (e.g. `["HTTPS_PROXY", "NODE_EXTRA_CA_CERTS"]` behind a proxy). |
+| `cwd` | Working directory. Default `~/.localdex/mcp/<name>`, so servers' scratch files stay out of your projects. |
+| `timeoutSeconds`, `maxOutputChars` | Per-call timeout (60) and cap on output returned to the model (12000). |
+
+MCP tools appear to the model as `mcp_<server>_<tool>`. Their output is wrapped in `<mcp_result>` tags and the system
+prompt tells the model to treat it as untrusted data (web pages can contain prompt injection).
+
 ## Choosing a model
 
 Agentic work depends almost entirely on how reliably the model calls tools and tells the truth
@@ -113,6 +151,7 @@ server/   Node + Hono + ws
   src/agent/goal.ts      finish-checkpoint assessment
   src/agent/compact.ts   summarize → archive → reseed
   src/agent/runner.ts    per-session orchestration (corrections, goal controller, auto-compact)
+  src/mcp/client.ts      MCP client: spawns stdio servers, exposes their tools, routes calls
 web/      Vite + React + Tailwind UI
 ```
 
@@ -121,6 +160,7 @@ web/      Vite + React + Tailwind UI
 - The agent runs shell commands with your user privileges inside approved folders. Review what you
   approve; keep *Dangerous only* or *Always ask* for shell approval.
 - Paths such as `~/.ssh`, `~/.aws`, `.env*` and key files are blocked even inside approved folders.
-- Nothing is sent anywhere except your LM Studio server.
+- Nothing is sent anywhere except your LM Studio server, plus whatever MCP servers you enable (a browser server
+  makes web requests). Playwright MCP is not a security boundary; do not pass `--allow-unrestricted-file-access`.
 
 MIT. Not affiliated with LM Studio or the Chat On Steroids project.

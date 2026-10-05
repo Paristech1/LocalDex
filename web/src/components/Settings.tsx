@@ -3,7 +3,7 @@ import { ALL_TOOL_NAMES, type Settings, type ShellApprovalMode, type ToolMode } 
 import { send, useStore } from '../store';
 import { Button, Field, Toggle, cx, inputCls } from './ui';
 
-type Tab = 'workspace' | 'model' | 'capabilities' | 'prompt';
+type Tab = 'workspace' | 'model' | 'capabilities' | 'mcp' | 'prompt';
 
 export function SettingsModal({ onClose }: { onClose: () => void }) {
   const settings = useStore((s) => s.settings);
@@ -23,6 +23,7 @@ export function SettingsModal({ onClose }: { onClose: () => void }) {
               ['workspace', 'Workspace'],
               ['model', 'Model & Agent'],
               ['capabilities', 'Capabilities'],
+              ['mcp', 'MCP Servers'],
               ['prompt', 'Instructions'],
             ] as Array<[Tab, string]>
           ).map(([id, label]) => (
@@ -41,6 +42,7 @@ export function SettingsModal({ onClose }: { onClose: () => void }) {
             {tab === 'workspace' && <WorkspaceTab settings={settings} patch={patch} />}
             {tab === 'model' && <ModelTab settings={settings} patch={patch} models={models.map((m) => m.id)} />}
             {tab === 'capabilities' && <CapabilitiesTab settings={settings} patch={patch} />}
+            {tab === 'mcp' && <McpTab settings={settings} patch={patch} />}
             {tab === 'prompt' && <PromptTab settings={settings} patch={patch} />}
           </div>
           <div className="border-t border-ink-700 px-5 py-3 flex justify-end">
@@ -213,6 +215,57 @@ function CapabilitiesTab({ settings, patch }: TabProps) {
           <Toggle key={name} label={name} checked={settings.capabilities[name] !== false} onChange={(v) => patch({ capabilities: { ...settings.capabilities, [name]: v } })} />
         ))}
       </div>
+    </>
+  );
+}
+
+const MCP_STATE_STYLE: Record<string, string> = {
+  ready: 'text-accent',
+  connecting: 'text-warn',
+  error: 'text-danger',
+  disabled: 'text-ink-400',
+};
+
+function McpTab({ settings, patch }: TabProps) {
+  const status = useStore((s) => s.mcp);
+  const names = Object.keys(settings.mcpServers ?? {});
+  return (
+    <>
+      <div>
+        <h3 className="font-medium">MCP servers</h3>
+        <p className="text-xs text-ink-400 mt-1">
+          MCP servers add extra tools (for example a browser). Turn one on here. To add a server or change its command, edit <span className="font-mono">~/.localdex/config.json</span> and restart LocalDex; commands cannot be changed from this screen. Only the tools listed under "exposed" are shown to the model.
+        </p>
+      </div>
+      {names.length === 0 && <div className="text-xs text-ink-400">No MCP servers configured.</div>}
+      <ul className="space-y-3">
+        {names.map((name) => {
+          const cfg = settings.mcpServers[name];
+          const st = status.find((x) => x.name === name);
+          const state = st?.state ?? 'disabled';
+          return (
+            <li key={name} className="bg-ink-800 rounded-md px-3 py-2 space-y-1.5">
+              <div className="flex items-center gap-3">
+                <span className="font-mono text-sm flex-1">{name}</span>
+                <span className={cx('text-xs', MCP_STATE_STYLE[state])}>{state}</span>
+                <div className="w-16 shrink-0">
+                  <Toggle label="" checked={cfg.enabled} onChange={(v) => patch({ mcpServers: { ...settings.mcpServers, [name]: { ...cfg, enabled: v } } })} />
+                </div>
+              </div>
+              <div className="font-mono text-[11px] text-ink-400 truncate">
+                {cfg.command} {(cfg.args ?? []).join(' ')}
+              </div>
+              {st && st.state === 'ready' && (
+                <div className="text-xs text-ink-300">
+                  exposed ({st.exposedTools.length} of {st.availableTools.length}): <span className="font-mono">{st.exposedTools.join(', ') || 'none'}</span>
+                </div>
+              )}
+              {st?.error && <pre className="text-xs text-danger whitespace-pre-wrap break-words">{st.error}</pre>}
+              <div className="text-[11px] text-ink-400">approval: {cfg.approval ?? 'once'} · workers: {cfg.allowWorkers ? 'allowed' : 'main agent only'}</div>
+            </li>
+          );
+        })}
+      </ul>
     </>
   );
 }

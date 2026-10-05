@@ -43,6 +43,21 @@ export function updateSettings(patch: Partial<Settings>): Settings {
   return settings;
 }
 
+/**
+ * Apply enable/disable toggles for MCP servers that already exist in config.json.
+ * Commands, args and env are deliberately NOT changeable from the UI/WebSocket: they run programs on this machine,
+ * so they can only be edited in ~/.localdex/config.json.
+ */
+export function applyMcpToggles(toggles: Record<string, { enabled?: boolean }>): Settings {
+  const next = { ...settings.mcpServers };
+  for (const [name, t] of Object.entries(toggles ?? {})) {
+    if (next[name] && typeof t?.enabled === 'boolean') next[name] = { ...next[name], enabled: t.enabled };
+  }
+  settings = { ...settings, mcpServers: next };
+  fs.writeFileSync(CONFIG_FILE, JSON.stringify(settings, null, 2));
+  return settings;
+}
+
 export function expandHome(p: string): string {
   if (p === '~') return os.homedir();
   if (p.startsWith('~/')) return path.join(os.homedir(), p.slice(2));

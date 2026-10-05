@@ -7,12 +7,13 @@ import { serve } from '@hono/node-server';
 import { serveStatic } from '@hono/node-server/serve-static';
 import { WebSocketServer, WebSocket } from 'ws';
 import type { ClientEvent, ServerEvent } from '@localdex/shared';
-import { DATA_DIR, expandHome, getSettings, updateSettings } from './config.js';
+import { DATA_DIR, applyMcpToggles, expandHome, getSettings, updateSettings } from './config.js';
 import { listModels } from './lmstudio.js';
 import { createSession, deleteSession, flushAll, getSession, listSessions, saveSession } from './store.js';
 import { bus } from './agent/bus.js';
 import { dropRunner, runnerFor } from './agent/runner.js';
 import { closeAllTerminals } from './tools/terminal.js';
+import { closeAllMcp, mcpStatuses, reloadMcp } from './mcp/client.js';
 
 const PORT = Number(process.env.PORT ?? 7331);
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -52,6 +53,7 @@ const server = serve({ fetch: app.fetch, port: PORT }, () => {
   console.log(`LocalDex server  →  http://localhost:${PORT}${webDist ? '' : '  (API only; UI dev server on :5173)'}`);
   console.log(`Data dir         →  ${DATA_DIR}`);
   console.log(`LM Studio        →  ${getSettings().baseUrl}`);
+  void reloadMcp();
 });
 
 // ---------- WebSocket ----------
@@ -86,6 +88,7 @@ wss.on('connection', (ws) => {
   const sessions = listSessions();
   const current = sessions[0] ? getSession(sessions[0].id) : null;
   send(ws, { type: 'hello', settings: getSettings(), sessions, session: current, models: modelsCache });
+  send(ws, { type: 'mcp_status', servers: mcpStatuses() });
   void refreshModels();
 
   ws.on('message', async (raw) => {
@@ -143,9 +146,15 @@ async function handle(ws: WebSocket, ev: ClientEvent): Promise<void> {
       return;
     }
     case 'set_settings': {
-      const settings = updateSettings(ev.patch);
+      // MCP server definitions run local programs, so only enable/disable toggles are accepted over the socket.
+      const { mcpServers, ...rest } = ev.patch;
+      let settings = updateSettings(rest);
+      if (mcpServers) {
+        settings = applyMcpToggles(mcpServers);
+        void reloadMcp();
+      }
       bus.emit({ type: 'settings', settings });
-      if (ev.patch.baseUrl) void refreshModels();
+      if (rest.baseUrl) void refreshModels();
       return;
     }
     case 'list_models':
@@ -216,7 +225,8 @@ function shutdown(): void {
   console.log('\nShutting down…');
   closeAllTerminals();
   flushAll();
-  process.exit(0);
+  // Stop MCP server processes (e.g. the browser) before exiting, but never hang on them.
+  void Promise.race([closeAllMcp(), new Promise((r) => setTimeout(r, 3000))]).finally(() => process.exit(0));
 }
 process.on('SIGINT', shutdown);
 process.on('SIGTERM', shutdown);
