@@ -5,6 +5,8 @@ import { grep } from './search.js';
 import { shell_run } from './shell.js';
 import { terminal_close, terminal_open, terminal_read, terminal_send } from './terminal.js';
 import { ask_user, delegate_to_worker, update_plan } from './agentTools.js';
+import { load_skill } from './skillTool.js';
+import { enabledSkills } from '../skills/store.js';
 import { PermissionError } from './permissions.js';
 import { isMcpTool, mcpToolSchemas, runMcpTool } from '../mcp/client.js';
 import type { ToolContext, ToolDef, ToolRegistry, ToolResult } from './types.js';
@@ -24,6 +26,7 @@ export const registry: ToolRegistry = {
   ask_user,
   delegate_to_worker,
   update_plan,
+  load_skill,
 };
 
 /** Tool schemas enabled for a given agent kind, honouring the user's capability toggles. */
@@ -32,6 +35,8 @@ export function enabledTools(kind: 'main' | 'worker'): ToolSchema[] {
   const builtin = (Object.keys(registry) as ToolName[])
     .filter((name) => caps[name] !== false)
     .filter((name) => kind === 'main' || !registry[name].mainOnly)
+    // No point showing a small model a tool it can't use.
+    .filter((name) => name !== 'load_skill' || enabledSkills().length > 0)
     .map((name) => registry[name].schema);
   return [...builtin, ...mcpToolSchemas(kind)];
 }

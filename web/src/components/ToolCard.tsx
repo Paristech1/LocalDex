@@ -25,6 +25,7 @@ const ICONS: Record<string, string> = {
   ask_user: '❓',
   delegate_to_worker: '🧑‍🔧',
   update_plan: '📋',
+  load_skill: '📚',
 };
 
 function summarizeArgs(name: string, args: unknown): string {
@@ -52,6 +53,8 @@ function summarizeArgs(name: string, args: unknown): string {
       return String(a.question ?? '').slice(0, 120);
     case 'delegate_to_worker':
       return `→ ${a.name}: ${String(a.task ?? '').slice(0, 100)}`;
+    case 'load_skill':
+      return a.file ? `${a.name} / ${a.file}` : String(a.name ?? '');
     case 'update_plan':
       return Array.isArray(a.steps) ? `${a.steps.length} steps` : '';
     default:

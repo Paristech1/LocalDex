@@ -14,6 +14,8 @@ import { bus } from './agent/bus.js';
 import { dropRunner, runnerFor } from './agent/runner.js';
 import { closeAllTerminals } from './tools/terminal.js';
 import { closeAllMcp, mcpStatuses, reloadMcp } from './mcp/client.js';
+import { LIMITS, listSkills, removeSkill, setSkillEnabled } from './skills/store.js';
+import { importFromGithub, importFromUpload } from './skills/import.js';
 
 const PORT = Number(process.env.PORT ?? 7331);
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -40,6 +42,73 @@ app.get('/api/fs/dirs', (c) => {
   } catch (e) {
     return c.json({ error: (e as Error).message, path: dir, parent: path.dirname(dir), dirs: [] }, 400);
   }
+});
+
+// ---------- Skills ----------
+
+/** Skill routes change files on disk, so refuse requests that a web page on another site could fire at localhost. */
+function sameOriginOnly(c: import('hono').Context): Response | null {
+  const origin = c.req.header('origin');
+  if (c.req.header('sec-fetch-site') === 'cross-site') return c.json({ ok: false, error: 'Cross-site request blocked.' }, 403);
+  if (origin) {
+    try {
+      const host = new URL(origin).hostname;
+      if (!['localhost', '127.0.0.1', '[::1]', '::1'].includes(host)) return c.json({ ok: false, error: 'Origin not allowed.' }, 403);
+    } catch {
+      return c.json({ ok: false, error: 'Bad origin.' }, 403);
+    }
+  }
+  return null;
+}
+
+app.get('/api/skills', (c) => c.json({ skills: listSkills() }));
+
+app.post('/api/skills/upload', async (c) => {
+  const blocked = sameOriginOnly(c);
+  if (blocked) return blocked;
+  if (Number(c.req.header('content-length') ?? 0) > LIMITS.maxUploadBytes + 1024 * 1024) {
+    return c.json({ ok: false, added: [], updated: [], skipped: [], error: `Upload is bigger than ${LIMITS.maxUploadBytes / 1024 / 1024}MB.` }, 413);
+  }
+  try {
+    const form = await c.req.formData();
+    const files = form.getAll('files').filter((f): f is File => typeof f !== 'string');
+    let paths: string[] = [];
+    try {
+      paths = JSON.parse(String(form.get('paths') ?? '[]'));
+    } catch {
+      /* fall back to file names */
+    }
+    const entries = await Promise.all(
+      files.map(async (f, i) => ({ path: typeof paths[i] === 'string' && paths[i] ? paths[i] : f.name, data: Buffer.from(await f.arrayBuffer()) })),
+    );
+    return c.json(importFromUpload(entries));
+  } catch (e) {
+    return c.json({ ok: false, added: [], updated: [], skipped: [], error: (e as Error).message }, 400);
+  }
+});
+
+app.post('/api/skills/github', async (c) => {
+  const blocked = sameOriginOnly(c);
+  if (blocked) return blocked;
+  const body = (await c.req.json().catch(() => ({}))) as { url?: string };
+  if (typeof body.url !== 'string' || !body.url.trim()) return c.json({ ok: false, added: [], updated: [], skipped: [], error: 'Paste a GitHub link.' }, 400);
+  return c.json(await importFromGithub(body.url));
+});
+
+app.post('/api/skills/:name/enabled', async (c) => {
+  const blocked = sameOriginOnly(c);
+  if (blocked) return blocked;
+  const body = (await c.req.json().catch(() => ({}))) as { enabled?: boolean };
+  if (typeof body.enabled !== 'boolean') return c.json({ ok: false }, 400);
+  if (!listSkills().some((s) => s.name === c.req.param('name'))) return c.json({ ok: false, error: 'No such skill.' }, 404);
+  setSkillEnabled(c.req.param('name'), body.enabled);
+  return c.json({ ok: true });
+});
+
+app.delete('/api/skills/:name', (c) => {
+  const blocked = sameOriginOnly(c);
+  if (blocked) return blocked;
+  return removeSkill(c.req.param('name')) ? c.json({ ok: true }) : c.json({ ok: false, error: 'No such skill.' }, 404);
 });
 
 if (webDist) {
@@ -89,6 +158,7 @@ wss.on('connection', (ws) => {
   const current = sessions[0] ? getSession(sessions[0].id) : null;
   send(ws, { type: 'hello', settings: getSettings(), sessions, session: current, models: modelsCache });
   send(ws, { type: 'mcp_status', servers: mcpStatuses() });
+  send(ws, { type: 'skills', skills: listSkills() });
   void refreshModels();
 
   ws.on('message', async (raw) => {

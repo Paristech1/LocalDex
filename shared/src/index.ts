@@ -20,6 +20,31 @@ export type ChatMessage =
     }
   | { role: 'tool'; tool_call_id: string; name?: string; content: string; ok?: boolean; ts?: number };
 
+// ---------- Skills ----------
+
+export interface SkillInfo {
+  /** Folder name under ~/.localdex/skills; also the name the model passes to load_skill. */
+  name: string;
+  description: string;
+  enabled: boolean;
+  /** Where it came from: 'upload', or the GitHub URL it was imported from. */
+  source: string;
+  /** Extra files shipped with the skill (relative paths, capped). */
+  files: string[];
+  /** True when the skill bundles executable scripts (.py/.sh/.js/...). Shown as a badge in the UI. */
+  hasScripts: boolean;
+  bytes: number;
+  installedAt: number;
+}
+
+export interface SkillImportResult {
+  ok: boolean;
+  added: string[];
+  updated: string[];
+  skipped: { name: string; reason: string }[];
+  error?: string;
+}
+
 // ---------- Tools ----------
 
 export type ToolName =
@@ -36,7 +61,8 @@ export type ToolName =
   | 'terminal_close'
   | 'ask_user'
   | 'delegate_to_worker'
-  | 'update_plan';
+  | 'update_plan'
+  | 'load_skill';
 
 export const ALL_TOOL_NAMES: ToolName[] = [
   'read_file',
@@ -53,6 +79,7 @@ export const ALL_TOOL_NAMES: ToolName[] = [
   'ask_user',
   'delegate_to_worker',
   'update_plan',
+  'load_skill',
 ];
 
 export interface ToolSchema {
@@ -205,6 +232,8 @@ export interface Settings {
   systemPrompt: string;
   /** MCP servers keyed by a short name. Edit ~/.localdex/config.json to add servers; the UI can only toggle them. */
   mcpServers: Record<string, McpServerConfig>;
+  /** Names of installed skills the user has switched off (they stay on disk but are hidden from the model). */
+  disabledSkills: string[];
 }
 
 export const DEFAULT_CAPABILITIES: Record<ToolName, boolean> = {
@@ -222,6 +251,7 @@ export const DEFAULT_CAPABILITIES: Record<ToolName, boolean> = {
   ask_user: true,
   delegate_to_worker: true,
   update_plan: true,
+  load_skill: true,
 };
 
 export const DEFAULT_SETTINGS: Settings = {
@@ -238,6 +268,7 @@ export const DEFAULT_SETTINGS: Settings = {
   shellApproval: 'dangerous',
   workerConcurrency: 2,
   systemPrompt: '',
+  disabledSkills: [],
   mcpServers: {
     playwright: {
       command: 'npx',
@@ -279,6 +310,7 @@ export type ServerEvent =
   | { type: 'settings'; settings: Settings }
   | { type: 'models'; models: ModelInfo[]; error?: string }
   | { type: 'mcp_status'; servers: McpServerStatus[] }
+  | { type: 'skills'; skills: SkillInfo[] }
   | { type: 'agent_status'; sessionId: string; agent: AgentId; status: AgentStatus; detail?: string }
   | { type: 'assistant_delta'; sessionId: string; agent: AgentId; delta: string }
   | { type: 'reasoning_delta'; sessionId: string; agent: AgentId; delta: string }

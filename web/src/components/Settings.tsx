@@ -1,9 +1,10 @@
 import { useEffect, useState } from 'react';
 import { ALL_TOOL_NAMES, type Settings, type ShellApprovalMode, type ToolMode } from '@localdex/shared';
 import { send, useStore } from '../store';
+import { collectDropped, fromInput, importGithub, removeSkill, setSkillEnabled, summarize, uploadSkills, type UploadEntry } from '../skills';
 import { Button, Field, Toggle, cx, inputCls } from './ui';
 
-type Tab = 'workspace' | 'model' | 'capabilities' | 'mcp' | 'prompt';
+type Tab = 'workspace' | 'model' | 'capabilities' | 'skills' | 'mcp' | 'prompt';
 
 export function SettingsModal({ onClose }: { onClose: () => void }) {
   const settings = useStore((s) => s.settings);
@@ -23,6 +24,7 @@ export function SettingsModal({ onClose }: { onClose: () => void }) {
               ['workspace', 'Workspace'],
               ['model', 'Model & Agent'],
               ['capabilities', 'Capabilities'],
+              ['skills', 'Skills'],
               ['mcp', 'MCP Servers'],
               ['prompt', 'Instructions'],
             ] as Array<[Tab, string]>
@@ -42,6 +44,7 @@ export function SettingsModal({ onClose }: { onClose: () => void }) {
             {tab === 'workspace' && <WorkspaceTab settings={settings} patch={patch} />}
             {tab === 'model' && <ModelTab settings={settings} patch={patch} models={models.map((m) => m.id)} />}
             {tab === 'capabilities' && <CapabilitiesTab settings={settings} patch={patch} />}
+            {tab === 'skills' && <SkillsTab />}
             {tab === 'mcp' && <McpTab settings={settings} patch={patch} />}
             {tab === 'prompt' && <PromptTab settings={settings} patch={patch} />}
           </div>
@@ -225,6 +228,109 @@ const MCP_STATE_STYLE: Record<string, string> = {
   error: 'text-danger',
   disabled: 'text-ink-400',
 };
+
+function SkillsTab() {
+  const skills = useStore((s) => s.skills);
+  const [over, setOver] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
+  const [url, setUrl] = useState('');
+  const [open, setOpen] = useState<string | null>(null);
+
+  const run = async (job: () => Promise<import('@localdex/shared').SkillImportResult>): Promise<void> => {
+    setBusy(true);
+    setMsg(null);
+    const r = await job();
+    setMsg({ ok: r.ok, text: summarize(r) });
+    setBusy(false);
+    if (r.ok) setUrl('');
+  };
+  const upload = (entries: UploadEntry[]): Promise<void> => run(() => uploadSkills(entries));
+  const enabledCount = skills.filter((s) => s.enabled).length;
+
+  return (
+    <>
+      <div>
+        <h3 className="font-medium">Skills</h3>
+        <p className="text-xs text-ink-400 mt-1">
+          A skill is a folder with a <span className="font-mono">SKILL.md</span> that teaches LocalDex how to do something. Only each skill's one-line description is sent to the model; it loads the full text when a task matches.
+        </p>
+      </div>
+
+      <div
+        onDragOver={(e) => {
+          e.preventDefault();
+          setOver(true);
+        }}
+        onDragLeave={() => setOver(false)}
+        onDrop={async (e) => {
+          e.preventDefault();
+          setOver(false);
+          const entries = await collectDropped(e.dataTransfer);
+          void upload(entries);
+        }}
+        className={cx('rounded-lg border-2 border-dashed px-4 py-6 text-center text-sm transition-colors', over ? 'border-accent bg-accent/10 text-ink-100' : 'border-ink-600 text-ink-300')}
+      >
+        <div className="font-medium">{busy ? 'Adding…' : 'Drop a skill here'}</div>
+        <div className="text-xs text-ink-400 mt-1">a folder, a SKILL.md, a .md file or a .zip. You can drop several at once.</div>
+        <div className="flex justify-center gap-2 mt-3">
+          <label className="cursor-pointer">
+            <input type="file" multiple accept=".md,.markdown,.zip" className="hidden" onChange={(e) => { void upload(fromInput(e.target.files)); e.target.value = ''; }} />
+            <span className="inline-flex px-2 py-1 text-xs rounded-md bg-ink-700 hover:bg-ink-600 border border-ink-600 text-ink-100">Choose files</span>
+          </label>
+          <label className="cursor-pointer">
+            <input type="file" className="hidden" {...({ webkitdirectory: '', directory: '' } as Record<string, string>)} onChange={(e) => { void upload(fromInput(e.target.files)); e.target.value = ''; }} />
+            <span className="inline-flex px-2 py-1 text-xs rounded-md bg-ink-700 hover:bg-ink-600 border border-ink-600 text-ink-100">Choose folder</span>
+          </label>
+        </div>
+      </div>
+
+      <form
+        className="flex gap-2"
+        onSubmit={(e) => {
+          e.preventDefault();
+          if (url.trim()) void run(() => importGithub(url.trim()));
+        }}
+      >
+        <input className={cx(inputCls, 'flex-1 font-mono text-xs')} value={url} onChange={(e) => setUrl(e.target.value)} placeholder="https://github.com/owner/repo  (or a /tree/main/folder link)" />
+        <Button type="submit" variant="primary" disabled={busy || !url.trim()}>
+          Add from GitHub
+        </Button>
+      </form>
+
+      {msg && <div className={cx('text-xs rounded-md px-3 py-2 whitespace-pre-wrap break-words', msg.ok ? 'bg-accent/10 text-accent' : 'bg-danger/10 text-danger')}>{msg.text}</div>}
+
+      <div className="text-xs text-ink-400">
+        {skills.length === 0 ? 'No skills yet.' : `${enabledCount} of ${skills.length} on.`} Each enabled skill adds a line to every prompt, so with a small local model keep only the ones you use.
+      </div>
+      <ul className="space-y-2">
+        {skills.map((sk) => (
+          <li key={sk.name} className="bg-ink-800 rounded-md px-3 py-2">
+            <div className="flex items-center gap-3">
+              <button type="button" className="flex-1 min-w-0 text-left" onClick={() => setOpen(open === sk.name ? null : sk.name)}>
+                <div className="font-mono text-sm truncate">{sk.name}</div>
+                <div className={cx('text-xs text-ink-300', open === sk.name ? '' : 'truncate')}>{sk.description}</div>
+              </button>
+              {sk.hasScripts && <span className="text-[10px] px-1.5 py-0.5 rounded bg-warn/15 text-warn shrink-0" title="Ships scripts. LocalDex only runs them if the model calls the shell, which follows your shell approval setting.">scripts</span>}
+              <div className="w-16 shrink-0">
+                <Toggle label="" checked={sk.enabled} onChange={(v) => void setSkillEnabled(sk.name, v)} />
+              </div>
+              <Button size="sm" variant="ghost" title="Remove this skill" onClick={() => { if (window.confirm(`Remove skill "${sk.name}"?`)) void removeSkill(sk.name); }}>
+                ✕
+              </Button>
+            </div>
+            {open === sk.name && (
+              <div className="mt-2 text-[11px] text-ink-400 space-y-1 break-words">
+                <div>source: {sk.source} · {(sk.bytes / 1024).toFixed(0)} KB · {sk.files.length} extra file{sk.files.length === 1 ? '' : 's'}</div>
+                {sk.files.length > 0 && <div className="font-mono">{sk.files.slice(0, 12).join(', ')}{sk.files.length > 12 ? ', …' : ''}</div>}
+              </div>
+            )}
+          </li>
+        ))}
+      </ul>
+    </>
+  );
+}
 
 function McpTab({ settings, patch }: TabProps) {
   const status = useStore((s) => s.mcp);

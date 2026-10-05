@@ -3,6 +3,7 @@ import { getSettings } from '../config.js';
 import { enabledTools } from '../tools/index.js';
 import { approvedFolders } from '../tools/permissions.js';
 import { mcpPromptNotes } from '../mcp/client.js';
+import { skillsPromptNotes } from '../skills/store.js';
 
 function environment(): string {
   const folders = approvedFolders();
@@ -38,6 +39,7 @@ export function mainSystemPrompt(): string {
     toolList('main'),
     SHARED_RULES,
     mcpPromptNotes('main'),
+    skillsPromptNotes(),
     `Planning: for multi-step work, call update_plan first with the steps, then keep it current as you progress.`,
     `Delegation: for independent sub-tasks (e.g. "write tests" while you implement), call delegate_to_worker, giving each worker complete, self-contained instructions. Several delegate calls in one turn run in parallel. Reuse a worker's name to continue its context. Review workers' reports and integrate them.`,
     custom ? `User instructions:\n${custom}` : '',
@@ -54,6 +56,7 @@ export function workerSystemPrompt(name: string): string {
     toolList('worker'),
     SHARED_RULES,
     mcpPromptNotes('worker'),
+    skillsPromptNotes(),
     custom ? `User instructions:\n${custom}` : '',
   ]
     .filter(Boolean)

@@ -85,6 +85,17 @@ Keyboard: `Enter` send, `Shift+Enter` newline, `Cmd/Ctrl+,` settings, `Esc` clos
 
 Settings and sessions live in `~/.localdex/` (override with `LOCALDEX_HOME`). Server port: `PORT`.
 
+## Skills
+
+A skill is a folder with a `SKILL.md` (frontmatter `name` + `description`, then instructions) plus any files it needs. Skills live in `~/.localdex/skills/<name>/`.
+
+Add one in **Settings → Skills**:
+
+- **Drag and drop** a skill folder, a `SKILL.md`, any `.md` file, or a `.zip` (several at once is fine).
+- **Paste a GitHub link**: `https://github.com/owner/repo` imports every skill in the repo; a `/tree/<branch>/<folder>` or `/blob/.../SKILL.md` link imports just that one. Public repos only.
+
+Only each skill's name and one-line description go into the system prompt. The model calls `load_skill` to read the full text (and `load_skill` with `file` for bundled files). Toggle or remove skills in the same tab. Skills that bundle scripts get a badge; scripts only run if the model calls `shell_run`, so your shell-approval setting still applies.
+
 ## MCP servers (extra tools)
 
 LocalDex is an [MCP](https://modelcontextprotocol.io) client. Any stdio MCP server can add tools; the first one

@@ -6,6 +6,7 @@ import type {
   McpServerStatus,
   ModelInfo,
   ServerEvent,
+  SkillInfo,
   Session,
   SessionSummary,
   Settings,
@@ -51,6 +52,7 @@ export interface State {
   prompts: Prompt[];
   logs: LogEntry[];
   mcp: McpServerStatus[];
+  skills: SkillInfo[];
   error: string | null;
 }
 
@@ -66,6 +68,7 @@ let state: State = {
   prompts: [],
   logs: [],
   mcp: [],
+  skills: [],
   error: null,
 };
 
@@ -184,6 +187,9 @@ function handle(ev: ServerEvent): void {
       return;
     case 'mcp_status':
       set({ mcp: ev.servers });
+      return;
+    case 'skills':
+      set({ skills: ev.skills });
       return;
     case 'agent_status':
       if (ev.sessionId !== state.session?.id) return;
