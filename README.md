@@ -85,6 +85,14 @@ Keyboard: `Enter` send, `Shift+Enter` newline, `Cmd/Ctrl+,` settings, `Esc` clos
 
 Settings and sessions live in `~/.localdex/` (override with `LOCALDEX_HOME`). Server port: `PORT`.
 
+## Security
+
+LocalDex can read your files and run commands, so it only accepts your own browser:
+
+- The server listens on `127.0.0.1` only, so other machines on your network cannot reach it. (`LOCALDEX_HOST=0.0.0.0` overrides this; don't, unless you know why.)
+- The WebSocket and every `/api` route reject requests from other websites (foreign `Origin`) and from rebinding tricks (foreign `Host`). Other websites you visit can no longer drive the agent through your localhost.
+- If you serve the UI from another local hostname, add it with `LOCALDEX_ALLOWED_HOSTS=name1,name2`.
+
 ## Skills
 
 A skill is a folder with a `SKILL.md` (frontmatter `name` + `description`, then instructions) plus any files it needs. Skills live in `~/.localdex/skills/<name>/`.

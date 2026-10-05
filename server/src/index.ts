@@ -15,6 +15,7 @@ import { dropRunner, runnerFor } from './agent/runner.js';
 import { closeAllTerminals } from './tools/terminal.js';
 import { closeAllMcp, mcpStatuses, reloadMcp } from './mcp/client.js';
 import { LIMITS, listSkills, removeSkill, setSkillEnabled } from './skills/store.js';
+import { BIND_HOST, checkRequest, checkUpgrade } from './security.js';
 import { importFromGithub, importFromUpload } from './skills/import.js';
 
 const PORT = Number(process.env.PORT ?? 7331);
@@ -25,6 +26,13 @@ const webDist = process.env.LOCALDEX_NO_STATIC
   : [path.resolve(here, '../../web/dist')].find((p) => fs.existsSync(path.join(p, 'index.html')));
 
 const app = new Hono();
+
+// Reject foreign Host (DNS rebinding) and foreign Origin / cross-site requests on every API route.
+app.use('/api/*', async (c, next) => {
+  const why = checkRequest(c.req.header('host'), c.req.header('origin'), c.req.header('sec-fetch-site'));
+  if (why) return c.json({ ok: false, error: why }, 403);
+  await next();
+});
 
 app.get('/api/health', (c) => c.json({ ok: true, dataDir: DATA_DIR, settings: getSettings() }));
 
@@ -46,26 +54,9 @@ app.get('/api/fs/dirs', (c) => {
 
 // ---------- Skills ----------
 
-/** Skill routes change files on disk, so refuse requests that a web page on another site could fire at localhost. */
-function sameOriginOnly(c: import('hono').Context): Response | null {
-  const origin = c.req.header('origin');
-  if (c.req.header('sec-fetch-site') === 'cross-site') return c.json({ ok: false, error: 'Cross-site request blocked.' }, 403);
-  if (origin) {
-    try {
-      const host = new URL(origin).hostname;
-      if (!['localhost', '127.0.0.1', '[::1]', '::1'].includes(host)) return c.json({ ok: false, error: 'Origin not allowed.' }, 403);
-    } catch {
-      return c.json({ ok: false, error: 'Bad origin.' }, 403);
-    }
-  }
-  return null;
-}
-
 app.get('/api/skills', (c) => c.json({ skills: listSkills() }));
 
 app.post('/api/skills/upload', async (c) => {
-  const blocked = sameOriginOnly(c);
-  if (blocked) return blocked;
   if (Number(c.req.header('content-length') ?? 0) > LIMITS.maxUploadBytes + 1024 * 1024) {
     return c.json({ ok: false, added: [], updated: [], skipped: [], error: `Upload is bigger than ${LIMITS.maxUploadBytes / 1024 / 1024}MB.` }, 413);
   }
@@ -88,16 +79,12 @@ app.post('/api/skills/upload', async (c) => {
 });
 
 app.post('/api/skills/github', async (c) => {
-  const blocked = sameOriginOnly(c);
-  if (blocked) return blocked;
   const body = (await c.req.json().catch(() => ({}))) as { url?: string };
   if (typeof body.url !== 'string' || !body.url.trim()) return c.json({ ok: false, added: [], updated: [], skipped: [], error: 'Paste a GitHub link.' }, 400);
   return c.json(await importFromGithub(body.url));
 });
 
 app.post('/api/skills/:name/enabled', async (c) => {
-  const blocked = sameOriginOnly(c);
-  if (blocked) return blocked;
   const body = (await c.req.json().catch(() => ({}))) as { enabled?: boolean };
   if (typeof body.enabled !== 'boolean') return c.json({ ok: false }, 400);
   if (!listSkills().some((s) => s.name === c.req.param('name'))) return c.json({ ok: false, error: 'No such skill.' }, 404);
@@ -106,8 +93,6 @@ app.post('/api/skills/:name/enabled', async (c) => {
 });
 
 app.delete('/api/skills/:name', (c) => {
-  const blocked = sameOriginOnly(c);
-  if (blocked) return blocked;
   return removeSkill(c.req.param('name')) ? c.json({ ok: true }) : c.json({ ok: false, error: 'No such skill.' }, 404);
 });
 
@@ -118,8 +103,8 @@ if (webDist) {
   app.get('/', (c) => c.text('LocalDex server running. Start the web UI with `npm run dev -w web` (http://localhost:5173).'));
 }
 
-const server = serve({ fetch: app.fetch, port: PORT }, () => {
-  console.log(`LocalDex server  →  http://localhost:${PORT}${webDist ? '' : '  (API only; UI dev server on :5173)'}`);
+const server = serve({ fetch: app.fetch, port: PORT, hostname: BIND_HOST }, () => {
+  console.log(`LocalDex server  →  http://localhost:${PORT}${BIND_HOST === '127.0.0.1' ? '' : `  (listening on ${BIND_HOST})`}${webDist ? '' : '  (API only; UI dev server on :5173)'}`);
   console.log(`Data dir         →  ${DATA_DIR}`);
   console.log(`LM Studio        →  ${getSettings().baseUrl}`);
   void reloadMcp();
@@ -127,7 +112,19 @@ const server = serve({ fetch: app.fetch, port: PORT }, () => {
 
 // ---------- WebSocket ----------
 
-const wss = new WebSocketServer({ server: server as import('node:http').Server, path: '/ws' });
+const wss = new WebSocketServer({
+  server: server as import('node:http').Server,
+  path: '/ws',
+  // Browsers cannot forge Origin/Host, so this stops other websites from driving the agent.
+  verifyClient: (info, done) => {
+    const why = checkUpgrade(info.req);
+    if (why) {
+      console.warn(`Rejected WebSocket connection: ${why} (origin=${info.req.headers.origin ?? '-'}, host=${info.req.headers.host ?? '-'})`);
+      return done(false, 403, why);
+    }
+    done(true);
+  },
+});
 let modelsCache: Awaited<ReturnType<typeof listModels>> = [];
 
 function send(ws: WebSocket, ev: ServerEvent): void {
