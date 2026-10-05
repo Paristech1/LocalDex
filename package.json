@@ -1,0 +1,25 @@
+{
+  "name": "localdex",
+  "private": true,
+  "version": "0.1.0",
+  "description": "LocalDex: a local coding agent UI for LM Studio (Chat On Steroids, but for your own local LLM)",
+  "workspaces": [
+    "shared",
+    "server",
+    "web"
+  ],
+  "scripts": {
+    "postinstall": "node -e \"try{require('fs').chmodSync(require.resolve('node-pty/package.json').replace('package.json','prebuilds/'+process.platform+'-'+process.arch+'/spawn-helper'),0o755)}catch{}\"",
+    "dev": "concurrently -n server,web -c blue,magenta \"npm run dev -w server\" \"npm run dev -w web\"",
+    "build": "npm run build -w shared && npm run build -w server && npm run build -w web",
+    "start": "npm run start -w server",
+    "typecheck": "npm run typecheck -w shared && npm run typecheck -w server && npm run typecheck -w web"
+  },
+  "devDependencies": {
+    "concurrently": "^9.1.0",
+    "typescript": "^5.6.3"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

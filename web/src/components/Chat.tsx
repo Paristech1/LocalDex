@@ -1,0 +1,181 @@
+import { useEffect, useRef, useState } from 'react';
+import { send, useStore, type Prompt } from '../store';
+import { AssistantBubble, MessageList } from './Message';
+import { ToolCard } from './ToolCard';
+import { Button, StatusDot, cx, inputCls, statusLabel } from './ui';
+
+export function Chat() {
+  const session = useStore((s) => s.session);
+  const live = useStore((s) => s.live['main']);
+  const status = useStore((s) => s.status['main']);
+  const prompts = useStore((s) => s.prompts);
+  const settings = useStore((s) => s.settings);
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const [stick, setStick] = useState(true);
+
+  const running = !!status && status.status !== 'idle' && status.status !== 'error';
+
+  useEffect(() => {
+    if (stick && scrollRef.current) scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
+  });
+
+  if (!session) return <div className="flex-1 grid place-items-center text-ink-400">No session</div>;
+
+  const knownCallIds = new Set(session.messages.filter((m) => m.role === 'tool').map((m) => (m as { tool_call_id: string }).tool_call_id));
+  const liveTools = (live?.tools ?? []).filter((t) => !knownCallIds.has(t.callId));
+  const showLive = live && (live.content || live.reasoning || liveTools.length > 0);
+  const noFolders = settings && settings.approvedFolders.length === 0;
+
+  return (
+    <div className="flex flex-col flex-1 min-w-0 min-h-0">
+      <div
+        ref={scrollRef}
+        onScroll={(e) => {
+          const el = e.currentTarget;
+          setStick(el.scrollHeight - el.scrollTop - el.clientHeight < 40);
+        }}
+        className="flex-1 overflow-y-auto px-6 py-4"
+      >
+        <div className="max-w-3xl mx-auto">
+          {session.messages.length <= 1 && !showLive && <Welcome noFolders={!!noFolders} />}
+          <MessageList messages={session.messages} />
+          {showLive && (
+            <AssistantBubble content={live.content || null} reasoning={live.reasoning} streaming={!live.done}>
+              {liveTools.map((t) => (
+                <ToolCard key={t.callId} name={t.name} args={t.args} result={t.result} ok={t.ok} startedAt={t.startedAt} />
+              ))}
+            </AssistantBubble>
+          )}
+          {running && !showLive && (
+            <div className="flex items-center gap-2 text-xs text-ink-400 my-3">
+              <StatusDot status={status?.status} /> {statusLabel(status?.status, status?.detail)}
+            </div>
+          )}
+        </div>
+      </div>
+
+      <div className="border-t border-ink-700 bg-ink-900/60">
+        <div className="max-w-3xl mx-auto px-4 pt-3 pb-4 space-y-2">
+          {prompts.map((p) => (
+            <PromptCard key={p.id} prompt={p} />
+          ))}
+          <Composer sessionId={session.id} running={running} status={status?.status} detail={status?.detail} />
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function Welcome({ noFolders }: { noFolders: boolean }) {
+  return (
+    <div className="text-center py-16 text-ink-300">
+      <div className="text-3xl font-semibold text-ink-100 tracking-tight">LocalDex</div>
+      <div className="mt-2 text-sm">Your files. Your terminal. Your local model.</div>
+      {noFolders ? (
+        <div className="mt-6 inline-block text-left text-xs bg-warn/10 border border-warn/30 text-warn rounded-md px-4 py-3">
+          No approved folders yet. Open <b>Settings → Workspace</b> and add the project folder the agent may work in.
+        </div>
+      ) : (
+        <div className="mt-6 text-xs text-ink-400 space-y-1">
+          <div>Describe a task. The agent reads, edits, runs commands and reports back.</div>
+          <div>Use the right panel to set a Goal, watch Workers, or Compact context.</div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function Composer({ sessionId, running, status, detail }: { sessionId: string; running: boolean; status?: string; detail?: string }) {
+  const [text, setText] = useState('');
+  const ref = useRef<HTMLTextAreaElement>(null);
+
+  const submit = () => {
+    const t = text.trim();
+    if (!t) return;
+    send({ type: 'send_message', sessionId, content: t });
+    setText('');
+  };
+
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    el.style.height = 'auto';
+    el.style.height = Math.min(220, el.scrollHeight) + 'px';
+  }, [text]);
+
+  return (
+    <div className="rounded-xl border border-ink-600 bg-ink-900 focus-within:border-accent/60">
+      <textarea
+        ref={ref}
+        value={text}
+        onChange={(e) => setText(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter' && !e.shiftKey) {
+            e.preventDefault();
+            submit();
+          }
+        }}
+        rows={1}
+        placeholder={running ? 'Send a correction — it is delivered before the next model call…' : 'What should LocalDex do? (Enter to send, Shift+Enter for newline)'}
+        className="w-full bg-transparent resize-none px-4 pt-3 pb-1 text-sm focus:outline-none placeholder:text-ink-400"
+      />
+      <div className="flex items-center justify-between px-3 pb-2">
+        <div className="flex items-center gap-2 text-xs text-ink-400">
+          <StatusDot status={status as never} />
+          {statusLabel(status as never, detail)}
+        </div>
+        <div className="flex items-center gap-2">
+          {running && (
+            <Button variant="danger" size="sm" onClick={() => send({ type: 'stop', sessionId })}>
+              ■ Stop
+            </Button>
+          )}
+          <Button variant="primary" size="sm" onClick={submit} disabled={!text.trim()}>
+            {running ? 'Send correction' : 'Send'} ↵
+          </Button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function PromptCard({ prompt }: { prompt: Prompt }) {
+  const [answer, setAnswer] = useState('');
+  const who = prompt.agent === 'main' ? 'Agent' : prompt.agent.replace('worker:', 'Worker ');
+  if (prompt.kind === 'approval') {
+    return (
+      <div className="rounded-lg border border-warn/40 bg-warn/10 px-4 py-3 text-sm">
+        <div className="text-warn text-xs font-medium mb-1">{who} wants to run a command</div>
+        <pre className="font-mono text-xs bg-ink-950 rounded-md px-3 py-2 whitespace-pre-wrap break-words">{prompt.command}</pre>
+        <div className="text-[11px] text-ink-400 mt-1">in {prompt.cwd}</div>
+        <div className="flex gap-2 mt-2">
+          <Button variant="primary" size="sm" onClick={() => send({ type: 'approval_response', id: prompt.id, approved: true })}>
+            Allow
+          </Button>
+          <Button variant="danger" size="sm" onClick={() => send({ type: 'approval_response', id: prompt.id, approved: false })}>
+            Deny
+          </Button>
+        </div>
+      </div>
+    );
+  }
+  return (
+    <div className="rounded-lg border border-accent/40 bg-accent/5 px-4 py-3 text-sm">
+      <div className="text-accent text-xs font-medium mb-1">{who} asks</div>
+      <div className="whitespace-pre-wrap">{prompt.question}</div>
+      <form
+        className="flex gap-2 mt-2"
+        onSubmit={(e) => {
+          e.preventDefault();
+          if (!answer.trim()) return;
+          send({ type: 'ask_user_response', id: prompt.id, answer: answer.trim() });
+        }}
+      >
+        <input className={cx(inputCls, 'flex-1')} autoFocus value={answer} onChange={(e) => setAnswer(e.target.value)} placeholder="Your answer…" />
+        <Button type="submit" variant="primary" size="sm" disabled={!answer.trim()}>
+          Reply
+        </Button>
+      </form>
+    </div>
+  );
+}

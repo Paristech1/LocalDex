@@ -1,0 +1,126 @@
+# LocalDex
+
+**Chat On Steroids, but for your own local LLM.** A browser-based coding agent that drives
+[LM Studio](https://lmstudio.ai) through its OpenAI-compatible API and gives the model real
+access to your files and terminal, with workers, Goal/Loop autonomy, and Compact & Resume.
+
+Your files. Your terminal. Your local model. Nothing leaves your machine.
+
+```
+Browser (React UI)  <-- WebSocket -->  LocalDex server (Node)  -->  LM Studio :1234
+                                             |
+                                             +--> tools: read/write/edit/glob/grep/shell/pty
+                                             +--> workers (parallel sub-agents, own memory)
+                                             +--> sessions  ~/.localdex/sessions/*.json
+```
+
+## Features
+
+- **Agent loop with real tools** – `read_file`, `write_file`, `edit_file`, `list_dir`, `glob`, `grep`
+  (ripgrep), `shell_run`, persistent `terminal_*` ptys, `ask_user`, `update_plan`.
+- **Approved folders** – the agent can only touch paths inside folders you approve. Dangerous shell
+  commands (`rm -rf`, `sudo`, force-push, `curl | sh`, …) prompt for approval.
+- **Live tool results** – every call streams into the chat as a collapsible card with args and output.
+- **Task plan** – the model keeps a checklist via `update_plan`; it renders in the right panel.
+- **Workers** – `delegate_to_worker(name, task)` spawns named sub-agents with their own history.
+  Several delegations in one turn run in parallel; reusing a name continues that worker's context.
+- **Corrections while it runs** – type while a run is in progress and the message is injected before
+  the next model call.
+- **Goal / Loop** – set a goal with done-criteria; after each turn a finish checkpoint asks the model
+  whether it is done and auto-continues if not (bounded by an iteration cap and a Stop button).
+  Loop mode keeps working within a brief indefinitely.
+- **Compact & Resume** – manual or automatic (at a configurable fraction of the context window):
+  the model summarizes decisions, files changed, open items and worker state, and a fresh context
+  is seeded with the summary. The full transcript is archived in the session file.
+- **Works with models that have no native tool support** – LocalDex probes the model once; if it
+  does not emit OpenAI `tool_calls`, it switches to a text protocol and parses calls from the reply.
+  It also recovers Python-style calls (`write_file(path="a", content="b")`), fenced JSON, and
+  common hallucinated tool names (`create_file` → `write_file`).
+
+## Requirements
+
+- Node.js 20+ (tested on 24)
+- LM Studio with the local server running (`lms server start` or Developer → Start Server)
+- A chat model loaded (or JIT loading enabled). See *Choosing a model* below.
+
+## Quick start
+
+```bash
+npm install
+npm run dev          # server on :7331, UI on http://localhost:5173
+```
+
+1. Open http://localhost:5173.
+2. **Settings → Workspace**: approve the project folder the agent may work in.
+3. Pick a model in the top bar (loaded models are marked ●).
+4. Describe a task and press Enter.
+
+Production-style single process (serves the built UI from the server on :7331):
+
+```bash
+npm run build
+npm start            # http://localhost:7331
+```
+
+## Using it
+
+| Panel | What it does |
+| --- | --- |
+| **Chat** | Streaming replies, reasoning (collapsible), tool cards, approval and question prompts. Send while running = correction. |
+| **Plan** | Checklist maintained by the model with `update_plan`. |
+| **Workers** | Status, last task, live stream and full transcript per worker. Reset or delete a worker's memory. |
+| **Goal** | Start a Goal (until done) or a Loop (keep working). Shows iteration, last checkpoint, remaining items. |
+| **Context** | Token usage vs. context window, compactions, "Compact & Resume now", latest summary. |
+| **Log** | Server events: tool-mode detection, recovered tool calls, goal checkpoints, errors. |
+
+Keyboard: `Enter` send, `Shift+Enter` newline, `Cmd/Ctrl+,` settings, `Esc` close.
+
+## Settings
+
+- **Workspace** – approved folders (first one is the default cwd), shell approval mode.
+- **Model & Agent** – LM Studio base URL, default and worker model, tool call mode (auto/native/text),
+  temperature, max steps per run, context length override, auto-compact threshold, worker concurrency.
+- **Capabilities** – toggle individual tools. Fewer tools make small models more reliable.
+- **Instructions** – custom text appended to the system prompt of the main agent and all workers.
+
+Settings and sessions live in `~/.localdex/` (override with `LOCALDEX_HOME`). Server port: `PORT`.
+
+## Choosing a model
+
+Agentic work depends almost entirely on how reliably the model calls tools and tells the truth
+about results. Rough guidance for LM Studio:
+
+- Best: instruction-tuned models with native tool support and the stock chat template, e.g.
+  Qwen2.5-Coder / Qwen3 (14B+), Devstral, Llama 3.x 70B-class, GLM-4, Mistral Small.
+- Load with at least 16k context; 32k+ is comfortable for multi-file work. Auto-compact will keep
+  the conversation inside whatever you load.
+- Uncensored/"heretic" fine-tunes often break the tool-calling template. LocalDex still works with
+  them through the text protocol and call recovery, but expect more hallucinated results. The
+  system prompt tells the model never to claim results it did not observe, and worker reports are
+  annotated when a worker made no tool calls.
+- LM Studio serves one request per loaded model at a time, so worker concurrency > 1 only helps
+  when several models are loaded (set a separate *Worker model*).
+
+## Project layout
+
+```
+shared/   TypeScript types shared by server and UI (messages, session, settings, WS protocol)
+server/   Node + Hono + ws
+  src/lmstudio.ts        OpenAI-compatible client, streaming, tool-mode probe, text-call parser
+  src/tools/             tool implementations + approved-folder permission gate
+  src/agent/loop.ts      the agent loop (stream → tools → repeat)
+  src/agent/workers.ts   named workers with a concurrency semaphore
+  src/agent/goal.ts      finish-checkpoint assessment
+  src/agent/compact.ts   summarize → archive → reseed
+  src/agent/runner.ts    per-session orchestration (corrections, goal controller, auto-compact)
+web/      Vite + React + Tailwind UI
+```
+
+## Security notes
+
+- The agent runs shell commands with your user privileges inside approved folders. Review what you
+  approve; keep *Dangerous only* or *Always ask* for shell approval.
+- Paths such as `~/.ssh`, `~/.aws`, `.env*` and key files are blocked even inside approved folders.
+- Nothing is sent anywhere except your LM Studio server.
+
+MIT. Not affiliated with LM Studio or the Chat On Steroids project.
