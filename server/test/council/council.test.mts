@@ -784,6 +784,104 @@ updateSettings({ council: { ...getSettings().council, allowWrite: true } });
   check('continue: non-chat runs do not save sessions', !plain.memberSessions);
 }
 
+// 26. Hand a Solo chat to the council, and per-message access in Council mode (through the real runner)
+{
+  const { SessionRunner, lastUserRequest, localWorkSummary } = await import(`${SRC}/agent/runner.ts`);
+  const newSession = (mode: 'solo' | 'council'): any => ({ id: `s-esc-${Math.random().toString(36).slice(2, 8)}`, title: 't', createdAt: Date.now(), updatedAt: Date.now(), model: null, messages: [], archive: [], workers: {}, plan: [], goal: null, usage: { promptTokens: 0, completionTokens: 0, lastPromptTokens: 0 }, compactions: 0, compactSummary: null, mode, councilRuns: [] });
+  const secret = 'sk_' + 'live_4eC39HqLyjWDarjtT1zdp7dc';
+  const call = (id: string, name: string, args: unknown) => ({ id, type: 'function', function: { name, arguments: JSON.stringify(args) } });
+  const errors: string[] = [];
+  const unsub = bus.subscribe((ev: any) => { if (ev.type === 'error' && ev.sessionId?.startsWith('s-esc-')) errors.push(ev.message); });
+
+  // A finished Solo turn: the local agent wrote/edited files, ran tests (one failed) and answered.
+  reset(); approvals = 0;
+  const s = newSession('solo');
+  s.messages.push(
+    { role: 'system', content: 'You are LocalDex.' },
+    { role: 'user', content: 'Add a multiply function to src/math.ts with a test' },
+    { role: 'assistant', content: null, tool_calls: [call('t1', 'write_file', { path: 'src/multiply.ts', content: 'export const mul = (a, b) => a * b;' }), call('t2', 'edit_file', { path: 'src/math.ts', old_string: 'x', new_string: 'y' })] },
+    { role: 'tool', tool_call_id: 't1', name: 'write_file', content: 'Wrote src/multiply.ts', ok: true },
+    { role: 'tool', tool_call_id: 't2', name: 'edit_file', content: 'Edited src/math.ts', ok: true },
+    { role: 'assistant', content: null, tool_calls: [call('t3', 'shell_run', { command: 'npm test' })] },
+    { role: 'tool', tool_call_id: 't3', name: 'shell_run', content: 'FAIL tests/multiply.test.ts\nexpected 6, got NaN', ok: false },
+    { role: 'assistant', content: `I added mul() but the test still fails. I used STRIPE_KEY=${secret} from your .env while testing.` },
+    { role: 'user', content: '[system] Step limit (40) reached; run paused.' },
+  );
+  check('escalate: latest request skips [system] notes', lastUserRequest(s.messages) === 'Add a multiply function to src/math.ts with a test');
+  const rn = new SessionRunner(s);
+  await rn.escalate({ pattern: 'single', member: 'claude', note: 'please fix the failing test' });
+  const sent = JSON.parse(fs.readFileSync(path.join(CTL, 'claude.last.json'), 'utf8')).prompt as string;
+  const er = s.councilRuns.at(-1);
+  check('escalate: member prompt has the original request and the note', sent.includes('Add a multiply function to src/math.ts with a test') && sent.includes('please fix the failing test'), sent.slice(0, 120));
+  check('escalate: member prompt summarizes touched files, commands and failures', /Files the local agent touched:[\s\S]*src\/multiply\.ts \(wrote\)[\s\S]*src\/math\.ts \(edited\)/.test(sent) && sent.includes('✗ $ npm test') && /Failures:[\s\S]*expected 6, got NaN/.test(sent) && sent.includes('I added mul()'));
+  check('escalate: history is redacted', !sent.includes(secret) && sent.includes('[REDACTED'));
+  check('escalate: session stays in Solo mode', s.mode === 'solo');
+  const tail = s.messages.slice(-4);
+  check('escalate: a council turn is appended with via', tail[0].role === 'user' && /^\[Handed to council: ask claude\]/.test(tail[0].content) && tail[1].tool_calls?.[0]?.function.name === 'council' && tail[2].role === 'tool' && tail[3].role === 'assistant' && tail[3].via === 'Claude' && !!tail[3].content, tail.map((m: any) => m.role).join(','));
+  check('escalate: run is marked as handed over, member asked directly', er.escalated === true && er.pattern === 'single' && er.steps[0].member === 'claude' && er.status === 'done');
+  check('escalate: risk rated on the request, not the history', er.risk !== 'high', er.risk);
+
+  // A second hand-over uses the same request (the bracketed note is skipped) and a picked pattern.
+  reset();
+  await rn.escalate({ pattern: 'vote' });
+  check('escalate: vote pattern on the same request', s.councilRuns.at(-1).pattern === 'vote' && s.councilRuns.at(-1).escalated && s.mode === 'solo');
+
+  // Summary is capped (longer than the 6k chat context, at most ~20k).
+  const big: any[] = [{ role: 'user', content: 'do a big thing' }];
+  for (let i = 0; i < 40; i++) big.push({ role: 'assistant', content: `answer ${i} ${'x'.repeat(2500)}` });
+  big.push({ role: 'assistant', content: 'the very last answer' });
+  const sum = localWorkSummary(big);
+  check('escalate: summary keeps the newest answers within ~20k', sum.length <= 20_000 && sum.length > 6_000 && sum.includes('the very last answer') && !sum.includes('answer 0 '), String(sum.length));
+
+  // Refuses politely while a run is in progress.
+  reset();
+  const busy = newSession('council'); const rb = new SessionRunner(busy);
+  const pending = rb.handleUserMessage('/plan how should we structure the parser?');
+  const before = errors.length;
+  await rb.escalate({ pattern: 'auto' });
+  await pending;
+  check('escalate: refused while a run is in progress', errors.length === before + 1 && /run is in progress/.test(errors.at(-1) ?? '') && busy.councilRuns.length === 1 && !busy.messages.some((m: any) => /Handed to council/.test(m.content ?? '')));
+  unsub();
+
+  // Per-message access (Council mode). Settings: allowWrite on, confirmWrites on.
+  const base = getSettings().council;
+  reset(); approvals = 0;
+  const cs = newSession('council'); const rc = new SessionRunner(cs);
+  await rc.handleUserMessage('/build add rate limiting to the API', 'read');
+  let ar = cs.councilRuns.at(-1);
+  check('access read: every member read-only, nobody asked', ar.access === 'read' && ar.steps.length > 0 && ar.steps.every((x: any) => x.access === 'read') && approvals === 0, ar.steps.map((x: any) => `${x.role}:${x.access}`).join(','));
+
+  reset(); approvals = 0;
+  updateSettings({ council: { ...getSettings().council, confirmWrites: false } });
+  await rc.handleUserMessage('/frontend fix the typo in the navbar component', 'confirm');
+  ar = cs.councilRuns.at(-1);
+  check('access confirm: builder may edit, the edit step asks (even with confirm off in Settings)', ar.access === 'confirm' && ar.steps[0].access === 'write' && approvals === 1 && getSettings().council.confirmWrites === false);
+  updateSettings({ council: base });
+
+  reset(); approvals = 0;
+  await rc.handleUserMessage('/frontend fix the typo in the navbar component', 'auto');
+  ar = cs.councilRuns.at(-1);
+  check('access auto: builder edits without asking (normal risk)', ar.access === 'auto' && ar.steps[0].access === 'write' && ar.steps[0].status === 'done' && approvals === 0 && getSettings().council.confirmWrites === true, ar.risk);
+
+  reset(); approvals = 0;
+  await rc.handleUserMessage('/backend add a database migration for the users table', 'auto');
+  ar = cs.councilRuns.at(-1);
+  check('access auto: high-risk run still asks', ar.access === 'auto' && ar.risk === 'high' && ar.steps[0].access === 'write' && approvals === 1 && ar.steps[0].transcript.some((t: any) => /"Edits allowed" was picked/.test(t.text ?? '')));
+
+  // Routing follows the picked access: a change request with "Read only" goes to the planner, not a builder.
+  reset(); approvals = 0;
+  await rc.handleUserMessage('fix the typo in README', 'read');
+  ar = cs.councilRuns.at(-1);
+  check('access read: router does not send a change to a builder', ar.steps[0].role === 'planner' && ar.steps.every((x: any) => x.access === 'read') && approvals === 0, ar.routeNote);
+  check('access: never saved into settings', JSON.stringify(getSettings().council) === JSON.stringify(base));
+
+  // No access given → Settings decide, nothing shown on the run.
+  reset(); approvals = 0;
+  await rc.handleUserMessage('/frontend fix the typo in the navbar component');
+  ar = cs.councilRuns.at(-1);
+  check('access: none given → Settings (confirm on) ask, no chip', ar.access === undefined && approvals === 1);
+}
+
 console.log(`\n${pass} passed, ${fail} failed. events: ${JSON.stringify(events)}`);
 reset();
 process.exit(fail ? 1 : 0);

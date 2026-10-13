@@ -195,6 +195,19 @@ export function quorumLabel(q: NonNullable<CouncilRun['quorum']>): string {
 
 export type CouncilPattern = 'single' | 'plan_build_review' | 'second_opinion' | 'vote';
 export type CouncilAccess = 'read' | 'write';
+/**
+ * Per-message access override for one council run (never saved to settings).
+ * read = every member read-only; confirm = builders may edit, each edit step asks; auto = builders edit without asking
+ * unless the run is high risk (risk routing still asks).
+ */
+export type CouncilRunAccess = 'read' | 'confirm' | 'auto';
+export const RUN_ACCESS_LABELS: Record<CouncilRunAccess, string> = { read: 'Read only', confirm: 'Ask before edits', auto: 'Edits allowed' };
+/** The access a message gets when the user doesn't pick one: from Settings → Council. */
+export function defaultRunAccess(c: Pick<CouncilSettings, 'allowWrite' | 'confirmWrites'>): CouncilRunAccess {
+  return !c.allowWrite ? 'read' : c.confirmWrites ? 'confirm' : 'auto';
+}
+/** Patterns the user can pick when handing a Solo chat to the council. 'auto' lets the router pick. */
+export type EscalatePattern = CouncilPattern | 'auto';
 
 export interface CouncilMemberSettings {
   enabled: boolean;
@@ -358,6 +371,10 @@ export interface CouncilRun {
   result?: string;
   /** Vote runs with peer review: aggregate blind ranking of the answers, best first. */
   peerRanking?: CouncilPeerRank[];
+  /** Access picked for this message in the composer (overrides Settings for this run only). */
+  access?: CouncilRunAccess;
+  /** Started from a Solo chat with "Hand to council". */
+  escalated?: boolean;
 }
 
 /** One answer's place in a blind peer review (Borda count over every adviser's ranking). */
@@ -631,7 +648,10 @@ export type ServerEvent =
   | { type: 'log'; level: 'info' | 'warn' | 'error'; message: string };
 
 export type ClientEvent =
-  | { type: 'send_message'; sessionId: string; content: string }
+  /** access: Council mode only, overrides Settings → Council edit access for this message's run. */
+  | { type: 'send_message'; sessionId: string; content: string; access?: CouncilRunAccess }
+  /** Solo mode: hand the latest request, with a summary of what the local agent did, to the council. The mode stays Solo. */
+  | { type: 'council_escalate'; sessionId: string; pattern: EscalatePattern; member?: MemberId; note?: string; access?: CouncilRunAccess }
   | { type: 'new_session' }
   | { type: 'load_session'; id: string }
   | { type: 'delete_session'; id: string }

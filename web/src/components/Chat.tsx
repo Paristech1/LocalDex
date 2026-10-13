@@ -1,8 +1,9 @@
 import { useEffect, useRef, useState } from 'react';
+import { MEMBER_IDS, RUN_ACCESS_LABELS, defaultRunAccess, type ChatMessage, type CouncilRunAccess, type EscalatePattern, type MemberId } from '@localdex/shared';
 import { send, useStore, type Prompt } from '../store';
 import { AssistantBubble, MessageList } from './Message';
 import { ToolCard } from './ToolCard';
-import { CouncilRunCard } from './Council';
+import { CouncilRunCard, MEMBER_META } from './Council';
 import { Button, StatusDot, cx, inputCls, statusLabel } from './ui';
 
 export function Chat() {
@@ -20,6 +21,10 @@ export function Chat() {
     if (stick && scrollRef.current) scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
   });
 
+  const [picker, setPicker] = useState(false);
+  const sessionId = session?.id;
+  useEffect(() => setPicker(false), [sessionId]);
+
   if (!session) return <div className="flex-1 grid place-items-center text-ink-400">No session</div>;
 
   const knownCallIds = new Set(session.messages.filter((m) => m.role === 'tool').map((m) => (m as { tool_call_id: string }).tool_call_id));
@@ -28,6 +33,9 @@ export function Chat() {
   const noFolders = settings && settings.approvedFolders.length === 0;
   const councilMode = !!settings?.council.enabled && session.mode === 'council';
   const liveRun = [...(session.councilRuns ?? [])].reverse().find((r) => r.status === 'running');
+  // Solo with the council on: the latest request can be handed to the council once the local agent has answered.
+  const canEscalate = !!settings?.council.enabled && !councilMode && !running && !liveRun && hasRequest(session.messages);
+  const afterAnswer = canEscalate && lastIsAnswer(session.messages);
 
   return (
     <div className="flex flex-col flex-1 min-w-0 min-h-0">
@@ -42,6 +50,13 @@ export function Chat() {
         <div className="max-w-3xl mx-auto">
           {session.messages.length <= 1 && !showLive && !liveRun && <Welcome noFolders={!!noFolders} council={councilMode} />}
           <MessageList messages={session.messages} />
+          {afterAnswer && !picker && (
+            <div className="-mt-1 mb-2">
+              <button type="button" onClick={() => setPicker(true)} className="text-[11px] text-ink-400 hover:text-[#7cc0f2]" title="Send your latest request, with a summary of what the local agent did, to the cloud council. The chat stays in Solo.">
+                Hand to council ☁
+              </button>
+            </div>
+          )}
           {showLive && (
             <AssistantBubble content={live.content || null} reasoning={live.reasoning} streaming={!live.done}>
               {liveTools.map((t) => (
@@ -67,7 +82,15 @@ export function Chat() {
           {prompts.map((p) => (
             <PromptCard key={p.id} prompt={p} />
           ))}
-          <Composer sessionId={session.id} running={running} status={status?.status} detail={status?.detail} council={councilMode} />
+          {picker && canEscalate && <EscalatePicker sessionId={session.id} onClose={() => setPicker(false)} />}
+          <Composer
+            sessionId={session.id}
+            running={running}
+            status={status?.status}
+            detail={status?.detail}
+            council={councilMode}
+            onEscalate={canEscalate && !picker ? () => setPicker(true) : undefined}
+          />
         </div>
       </div>
     </div>
@@ -121,14 +144,33 @@ function Welcome({ noFolders, council }: { noFolders: boolean; council?: boolean
   );
 }
 
-function Composer({ sessionId, running, status, detail, council }: { sessionId: string; running: boolean; status?: string; detail?: string; council?: boolean }) {
+function Composer({
+  sessionId,
+  running,
+  status,
+  detail,
+  council,
+  onEscalate,
+}: {
+  sessionId: string;
+  running: boolean;
+  status?: string;
+  detail?: string;
+  council?: boolean;
+  onEscalate?: () => void;
+}) {
   const [text, setText] = useState('');
   const ref = useRef<HTMLTextAreaElement>(null);
+  const councilSettings = useStore((s) => s.settings?.council);
+  const fallback: CouncilRunAccess = councilSettings ? defaultRunAccess(councilSettings) : 'read';
+  // Per message, never saved: starts from Settings → Council and follows it when those settings change.
+  const [access, setAccess] = useState<CouncilRunAccess>(fallback);
+  useEffect(() => setAccess(fallback), [fallback]);
 
   const submit = () => {
     const t = text.trim();
     if (!t) return;
-    send({ type: 'send_message', sessionId, content: t });
+    send({ type: 'send_message', sessionId, content: t, ...(council ? { access } : {}) });
     setText('');
   };
 
@@ -164,11 +206,17 @@ function Composer({ sessionId, running, status, detail, council }: { sessionId: 
         className="w-full bg-transparent resize-none px-4 pt-3 pb-1 text-sm focus:outline-none placeholder:text-ink-400"
       />
       <div className="flex items-center justify-between px-3 pb-2">
-        <div className="flex items-center gap-2 text-xs text-ink-400">
+        <div className="flex items-center gap-2 text-xs text-ink-400 min-w-0">
           <StatusDot status={status as never} />
-          {statusLabel(status as never, detail)}
+          <span className="truncate">{statusLabel(status as never, detail)}</span>
         </div>
         <div className="flex items-center gap-2">
+          {council && <AccessPicker value={access} onChange={setAccess} />}
+          {onEscalate && (
+            <Button variant="ghost" size="sm" onClick={onEscalate} title="Hand your latest request to the council; the chat stays in Solo">
+              Hand to council ☁
+            </Button>
+          )}
           {running && (
             <Button variant="danger" size="sm" onClick={() => send({ type: 'stop', sessionId })}>
               ■ Stop
@@ -181,6 +229,117 @@ function Composer({ sessionId, running, status, detail, council }: { sessionId: 
       </div>
     </div>
   );
+}
+
+const ACCESS_ORDER: CouncilRunAccess[] = ['read', 'confirm', 'auto'];
+const ACCESS_TITLE: Record<CouncilRunAccess, string> = {
+  read: 'Every member is read-only for this message',
+  confirm: 'The builder may edit files; each edit step asks you first',
+  auto: 'The builder may edit files without asking (high-risk changes still ask)',
+};
+
+/** Per-message edit access for Council mode. */
+function AccessPicker({ value, onChange }: { value: CouncilRunAccess; onChange: (v: CouncilRunAccess) => void }) {
+  return (
+    <div role="radiogroup" aria-label="Edit access for this message" className="flex rounded-md border border-ink-600 overflow-hidden text-[11px]">
+      {ACCESS_ORDER.map((a) => (
+        <button
+          key={a}
+          type="button"
+          role="radio"
+          aria-checked={value === a}
+          title={ACCESS_TITLE[a]}
+          onClick={() => onChange(a)}
+          className={cx(
+            'px-2 py-1 whitespace-nowrap transition-colors',
+            value === a ? (a === 'auto' ? 'bg-warn/15 text-warn' : 'bg-ink-700 text-ink-100') : 'text-ink-400 hover:text-ink-200',
+          )}
+        >
+          {RUN_ACCESS_LABELS[a]}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+const ESCALATE_OPTIONS: Array<{ id: EscalatePattern; label: string; hint: string }> = [
+  { id: 'auto', label: 'Auto', hint: 'The router picks' },
+  { id: 'single', label: 'Ask one member', hint: 'One member answers' },
+  { id: 'plan_build_review', label: 'Plan → Build → Review', hint: 'Planned, built and reviewed' },
+  { id: 'second_opinion', label: 'Second opinion', hint: 'Built, then critiqued' },
+  { id: 'vote', label: 'Vote', hint: 'Independent answers and a judge' },
+];
+
+/** "Hand to council": pick how the council takes over the latest request. */
+function EscalatePicker({ sessionId, onClose }: { sessionId: string; onClose: () => void }) {
+  const [pattern, setPattern] = useState<EscalatePattern>('auto');
+  const [member, setMember] = useState<MemberId | ''>('');
+  const [note, setNote] = useState('');
+  const members = useStore((s) => s.settings?.council.members);
+  const enabled = MEMBER_IDS.filter((m) => members?.[m]?.enabled !== false);
+  const go = () => {
+    send({ type: 'council_escalate', sessionId, pattern, ...(pattern === 'single' && member ? { member } : {}), ...(note.trim() ? { note: note.trim() } : {}) });
+    onClose();
+  };
+  return (
+    <div className="rounded-lg border border-[#7cc0f2]/40 bg-ink-900 px-3 py-2.5 text-sm space-y-2">
+      <div className="flex items-center gap-2">
+        <span className="text-xs font-medium text-[#7cc0f2]">Hand to council ☁</span>
+        <span className="text-[11px] text-ink-400 truncate">Your latest request and what the local agent did. The chat stays in Solo.</span>
+        <span className="flex-1" />
+        <button type="button" onClick={onClose} className="text-ink-400 hover:text-ink-100 text-xs" aria-label="Close">
+          ✕
+        </button>
+      </div>
+      <div className="flex flex-wrap gap-1">
+        {ESCALATE_OPTIONS.map((o) => (
+          <button
+            key={o.id}
+            type="button"
+            title={o.hint}
+            onClick={() => setPattern(o.id)}
+            className={cx('rounded-md border px-2 py-1 text-xs', pattern === o.id ? 'border-[#7cc0f2]/60 bg-[#7cc0f2]/10 text-ink-100' : 'border-ink-600 text-ink-300 hover:text-ink-100')}
+          >
+            {o.label}
+          </button>
+        ))}
+      </div>
+      <div className="flex flex-wrap items-center gap-2">
+        {pattern === 'single' && (
+          <select className={cx(inputCls, 'w-auto text-xs')} value={member} onChange={(e) => setMember(e.target.value as MemberId | '')} aria-label="Member">
+            <option value="">Router picks</option>
+            {enabled.map((m) => (
+              <option key={m} value={m}>
+                {MEMBER_META[m].label}
+              </option>
+            ))}
+          </select>
+        )}
+        <input
+          className={cx(inputCls, 'flex-1 min-w-[10rem] text-xs')}
+          value={note}
+          onChange={(e) => setNote(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') go();
+          }}
+          placeholder="Add a note (optional)"
+        />
+        <Button variant="primary" size="sm" onClick={go}>
+          Hand over
+        </Button>
+      </div>
+    </div>
+  );
+}
+
+function hasRequest(messages: ChatMessage[]): boolean {
+  return messages.some((m) => m.role === 'user' && m.content.trim() && !m.content.startsWith('['));
+}
+
+/** The last message is a finished assistant answer (not a tool call in progress). */
+function lastIsAnswer(messages: ChatMessage[]): boolean {
+  const last = messages.at(-1);
+  return last?.role === 'assistant' && !!last.content?.trim() && !last.tool_calls?.length;
 }
 
 function PromptCard({ prompt }: { prompt: Prompt }) {

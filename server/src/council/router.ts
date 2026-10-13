@@ -1,4 +1,4 @@
-import type { CouncilMemberRef, CouncilPattern, CouncilRisk, CouncilRole, CouncilSettings, CouncilStep, MemberId, MemberStatus } from '@localdex/shared';
+import type { CouncilMemberRef, CouncilPattern, CouncilRisk, CouncilRole, CouncilRunAccess, CouncilSettings, CouncilStep, MemberId, MemberStatus } from '@localdex/shared';
 import { COUNCIL_ROLES, MEMBER_IDS, isBuilderRole } from '@localdex/shared';
 import { getSettings } from '../config.js';
 import { streamChat } from '../lmstudio.js';
@@ -20,6 +20,10 @@ export interface Route {
    * A `single` run saves the member's own session, and a follow-up to the same member resumes it with just this message.
    */
   chatMessage?: string;
+  /** Access picked for this one message (composer or "Hand to council"); overrides Settings → Council for this run only. */
+  access?: CouncilRunAccess;
+  /** Started from a Solo chat with "Hand to council". */
+  escalated?: boolean;
 }
 
 // ---------- risk ----------
@@ -72,6 +76,12 @@ export function withRisk(route: Route, opts: { upgrade?: boolean } = {}, c: Coun
     out.note = `${out.note}; high risk (${reasons.join(', ')}) → plan → build → review`;
   }
   return out;
+}
+
+/** Settings as one run sees them when the user picked an access mode for that message. */
+export function settingsForAccess(access: CouncilRunAccess | undefined, c: CouncilSettings = getSettings().council): CouncilSettings {
+  if (!access) return c;
+  return { ...c, allowWrite: access !== 'read', confirmWrites: access === 'confirm' };
 }
 
 const MEMBER_ALIASES: Record<string, CouncilMemberRef> = {
@@ -185,8 +195,8 @@ function classifyIntent(task: string, c: CouncilSettings): Route {
 }
 
 /** Optional: ask the local model to classify (free, ~1–3s). Falls back to rules on any problem. */
-export async function classifyWithLocal(task: string, signal: AbortSignal): Promise<Route> {
-  const fallback = classify(task);
+export async function classifyWithLocal(task: string, signal: AbortSignal, c: CouncilSettings = getSettings().council): Promise<Route> {
+  const fallback = classify(task, c);
   const model = getSettings().model;
   if (!model) return fallback;
   const ac = new AbortController();
@@ -220,11 +230,11 @@ export async function classifyWithLocal(task: string, signal: AbortSignal): Prom
       if (!isBuilderRole(role)) role = 'builder';
     }
     if (role === 'builder') role = domainBuilder(task).role;
-    if (!getSettings().council.allowWrite && (pattern === 'plan_build_review' || pattern === 'second_opinion' || isBuilderRole(role))) {
+    if (!c.allowWrite && (pattern === 'plan_build_review' || pattern === 'second_opinion' || isBuilderRole(role))) {
       pattern = 'single';
       role = 'planner';
     }
-    return withRisk({ pattern, role, task, note: `local router (${model}): ${pattern}/${role}` }, { upgrade: true });
+    return withRisk({ pattern, role, task, note: `local router (${model}): ${pattern}/${role}` }, { upgrade: true }, c);
   } catch {
     return { ...fallback, note: `${fallback.note} (local router unavailable)` };
   } finally {
