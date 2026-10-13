@@ -6,7 +6,12 @@ const a = process.argv.slice(2);
   if (a[0] === '--version') return console.log('0.63.0');
   const prompt = a[a.indexOf('-p') + 1] || '';
   const role = c.role(prompt);
-  c.record('gemini', { argv: a, prompt });
+  c.record('gemini', { argv: a, prompt, trustEnv: process.env.GEMINI_CLI_TRUST_WORKSPACE ?? null });
+  // Real Gemini (FatalUntrustedWorkspaceError): headless run in an untrusted folder → stderr message, exit 55.
+  if (c.flag('gemini_untrusted') && !a.includes('--skip-trust') && process.env.GEMINI_CLI_TRUST_WORKSPACE !== 'true') {
+    process.stderr.write('Gemini CLI is not running in a trusted directory. To proceed, either use `--skip-trust`, set the `GEMINI_CLI_TRUST_WORKSPACE=true` environment variable, or trust this directory in interactive mode. For more details, see https://geminicli.com/docs/cli/trusted-folders/#headless-and-automated-environments\n');
+    process.exit(55);
+  }
   const ts = () => new Date().toISOString();
   c.out({ type: 'init', timestamp: ts(), session_id: 'g1', model: a.includes('-m') ? a[a.indexOf('-m') + 1] : 'gemini-3-pro' });
   c.out({ type: 'message', timestamp: ts(), role: 'user', content: prompt.slice(0, 40) });

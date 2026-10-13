@@ -209,6 +209,12 @@ export interface CouncilSettings {
   timeoutMinutes: number;
   /** Subscription-only guard: refuse to run a member that is signed in with an API key. */
   requirePlanBilling: boolean;
+  /**
+   * Let members load agent config from the project folder (Claude project/local settings and .mcp.json,
+   * Cursor project settings) and run Gemini with --skip-trust. Off (default) = only the user's own config,
+   * so a cloned repo cannot add hooks, MCP servers or instructions to a member run.
+   */
+  trustProjectConfig: boolean;
 }
 
 export type MemberBilling = 'plan' | 'api' | 'unknown';
@@ -390,6 +396,7 @@ export const DEFAULT_COUNCIL: CouncilSettings = {
   maxFixRounds: 1,
   timeoutMinutes: 20,
   requirePlanBilling: true,
+  trustProjectConfig: false,
 };
 
 export const DEFAULT_CAPABILITIES: Record<ToolName, boolean> = {
