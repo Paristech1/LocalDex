@@ -3,6 +3,7 @@ import {
   COUNCIL_ROLES,
   MEMBER_IDS,
   type CouncilMemberRef,
+  type CouncilMemberStats,
   type CouncilPattern,
   type CouncilRole,
   type CouncilRun,
@@ -281,6 +282,8 @@ export function CouncilPanel({ onOpenSettings }: { onOpenSettings?: () => void }
         </div>
       </div>
 
+      <Scorecard />
+
       <div>
         <div className="text-[11px] text-ink-400 mb-1.5">Runs {runs.length ? `(${runs.length})` : ''}</div>
         {runs.length === 0 ? (
@@ -301,6 +304,108 @@ export function CouncilPanel({ onOpenSettings }: { onOpenSettings?: () => void }
           </div>
         )}
       </div>
+    </div>
+  );
+}
+
+// ---------- scorecard ----------
+
+const DASH = '—';
+const pct = (n: number, d: number) => (d > 0 ? `${Math.round((n / d) * 100)}%` : DASH);
+
+function roleBreakdown(m: CouncilMemberStats): string {
+  const lines = Object.entries(m.byRole)
+    .filter(([, c]) => c && (c.runs || c.skipped))
+    .map(([role, c]) => `${role}: ${c!.done}/${c!.runs} ok${c!.limited ? `, ${c!.limited} limit` : ''}${c!.skipped ? `, ${c!.skipped} declined` : ''}`);
+  const b = m.builder;
+  if (b.approvedFirst + b.approvedAfterFixes + b.changesRequested) lines.push(`builds: ${b.approvedFirst} approved first try, ${b.approvedAfterFixes} after fixes, ${b.changesRequested} still had changes`);
+  if (m.reviewer.none) lines.push(`reviews without a verdict: ${m.reviewer.none}`);
+  if (m.voter.answers) lines.push(`votes: ${m.voter.answers} answers, avg ${Math.round(m.voter.answerChars / m.voter.answers)} chars`);
+  if (m.peerRanking.count) lines.push(`peer rank: avg ${(m.peerRanking.rankSum / m.peerRanking.count).toFixed(1)} of ${(m.peerRanking.ofSum / m.peerRanking.count).toFixed(1)}`);
+  return lines.join('\n');
+}
+
+function ScoreRow({ id, m }: { id: CouncilMemberRef; m?: CouncilMemberStats }) {
+  const has = !!m && m.runs > 0;
+  // Success counts finished attempts only; cancellations were your call, not the member's.
+  const finished = m ? m.done + m.errors + m.limited : 0;
+  const builds = m ? m.builder.approvedFirst + m.builder.approvedAfterFixes + m.builder.changesRequested : 0;
+  const reviews = m ? m.reviewer.approve + m.reviewer.changes : 0;
+  const tokens = m ? m.inputTokens + m.outputTokens : 0;
+  return (
+    <tr className="border-t border-ink-800" title={m ? roleBreakdown(m) : ''}>
+      <td className="py-1 pr-1.5">
+        <VendorBadge member={id} dim={!has} />
+      </td>
+      <td className="text-right px-1">{has ? m!.runs : DASH}</td>
+      <td className={cx('text-right px-1', has && finished > 0 && m!.done / finished < 0.7 && 'text-warn')}>{has ? pct(m!.done, finished) : DASH}</td>
+      <td className="text-right px-1">{has ? dur(m!.durationMs / m!.runs) : DASH}</td>
+      <td className="text-right px-1">{tokens ? fmtTokens(tokens) : DASH}</td>
+      <td className={cx('text-right px-1', !!m?.limited && 'text-warn')}>{has ? m!.limited : DASH}</td>
+      <td className="text-right px-1" title={builds ? `${m!.builder.approvedFirst} first try · ${m!.builder.approvedAfterFixes} after fixes · ${m!.builder.changesRequested} still changes` : ''}>
+        {pct(m ? m.builder.approvedFirst + m.builder.approvedAfterFixes : 0, builds)}
+      </td>
+      <td className="text-right pl-1">{reviews ? `${m!.reviewer.approve}/${m!.reviewer.changes}` : DASH}</td>
+    </tr>
+  );
+}
+
+function Scorecard() {
+  const stats = useStore((s) => s.councilStats);
+  const [confirming, setConfirming] = useState(false);
+  useEffect(() => {
+    if (!confirming) return;
+    const t = setTimeout(() => setConfirming(false), 4000);
+    return () => clearTimeout(t);
+  }, [confirming]);
+  const any = !!stats && Object.values(stats.members).some((m) => m && (m.runs || m.skipped));
+
+  return (
+    <div>
+      <div className="flex items-center justify-between mb-1.5">
+        <span className="text-[11px] text-ink-400" title={stats ? `Counting since ${new Date(stats.since).toLocaleString()}` : ''}>
+          Scorecard
+        </span>
+        {any && (
+          <button
+            type="button"
+            className={cx('text-[11px]', confirming ? 'text-danger font-medium' : 'text-ink-400 hover:text-ink-100')}
+            onClick={() => {
+              if (!confirming) return setConfirming(true);
+              setConfirming(false);
+              send({ type: 'council_stats_reset' });
+            }}
+            title="Clear all member stats"
+          >
+            {confirming ? 'Click again to clear' : 'Reset'}
+          </button>
+        )}
+      </div>
+      {!any ? (
+        <div className="text-xs text-ink-400">No stats yet. Each member's runs, success rate, time and tokens show up here after council runs.</div>
+      ) : (
+        <div className="overflow-x-auto rounded-md border border-ink-700 bg-ink-900/60 px-2 py-1">
+          <table className="w-full text-[11px] tabular-nums text-ink-200 whitespace-nowrap">
+            <thead>
+              <tr className="text-ink-400 text-[10px]">
+                <th className="text-left font-normal pb-1">Member</th>
+                <th className="text-right font-normal px-1" title="Steps started (declined edits not counted)">Runs</th>
+                <th className="text-right font-normal px-1" title="Finished OK, out of runs that weren't cancelled">OK</th>
+                <th className="text-right font-normal px-1" title="Average time per run">Avg</th>
+                <th className="text-right font-normal px-1" title="Input + output tokens">Tok</th>
+                <th className="text-right font-normal px-1" title="Usage-limit hits">Lim</th>
+                <th className="text-right font-normal px-1" title="Plan → build → review: builds the reviewer approved">Build</th>
+                <th className="text-right font-normal pl-1" title="As reviewer: approved / asked for changes">Rev</th>
+              </tr>
+            </thead>
+            <tbody>
+              {REFS.map((id) => (
+                <ScoreRow key={id} id={id} m={stats!.members[id]} />
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
     </div>
   );
 }

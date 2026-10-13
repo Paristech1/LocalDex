@@ -11,6 +11,7 @@ const { classify, parseCommand } = await import(`${SRC}/council/router.ts`);
 const { runCouncil, runSummary, runVia } = await import(`${SRC}/council/orchestrator.ts`);
 const { memberEnv } = await import(`${SRC}/council/proc.ts`);
 const { updateSettings, getSettings } = await import(`${SRC}/config.ts`);
+const { resetStats } = await import(`${SRC}/council/stats.ts`);
 
 const CTL = process.env.FAKE_CTL!;
 const flag = (n: string, on: boolean) => (on ? fs.writeFileSync(path.join(CTL, n), '1') : fs.rmSync(path.join(CTL, n), { force: true }));
@@ -134,6 +135,38 @@ setTimeout(() => ac.abort(), 600);
 const t0 = Date.now();
 run = await runCouncil(ctx(ac.signal), { pattern: 'single', role: 'researcher', member: 'gemini', task: 'slow', note: 'test' });
 check('stop: run cancelled quickly', run.status === 'cancelled' && Date.now() - t0 < 5000, `${Date.now() - t0}ms ${run.steps[0]?.status}`);
+
+// 15. member scorecard: persistent per-member stats
+{
+  const statsPath = path.join(process.env.LOCALDEX_HOME!, 'council-stats.json');
+  const readStats = () => JSON.parse(fs.readFileSync(statsPath, 'utf8'));
+  check('stats: file written by earlier runs', fs.existsSync(statsPath) && Object.keys(readStats().members).length > 0);
+  resetStats();
+  check('stats: reset leaves an empty file', Object.keys(readStats().members).length === 0);
+  let statEvents = 0;
+  const off = bus.subscribe((ev: any) => { if (ev.type === 'council_stats') statEvents++; });
+
+  reset(); await memberStatuses(true);
+  await runCouncil(ctx(), { pattern: 'single', role: 'researcher', member: 'claude', task: 'What does src/math.ts do?', note: 'test' });
+  reset(); flag('review_changes', true);
+  await runCouncil(ctx(), { pattern: 'plan_build_review', role: 'builder', task: 'Add rate limiting', note: 'test' });
+  reset(); flag('cursor_limit', true);
+  await runCouncil(ctx(), { pattern: 'single', role: 'builder', task: 'fix the typo in README', note: 'test' });
+  off();
+
+  const m = readStats().members;
+  const sum = (x: any) => `${x?.runs}/${x?.done}/${x?.errors}/${x?.limited}`;
+  check('stats: claude = researcher + planner, both done', m.claude?.runs === 2 && m.claude.done === 2 && m.claude.byRole.researcher?.done === 1 && m.claude.byRole.planner?.done === 1, sum(m.claude));
+  check('stats: cursor = build + fix + limit hit', m.cursor?.runs === 3 && m.cursor.done === 2 && m.cursor.limited === 1 && m.cursor.byRole.builder?.runs === 3, sum(m.cursor));
+  check('stats: cursor build approved after fixes', m.cursor?.builder.approvedAfterFixes === 1 && m.cursor.builder.approvedFirst === 0 && m.cursor.builder.changesRequested === 0, JSON.stringify(m.cursor?.builder));
+  check('stats: codex reviewed (1 changes, 1 approve) + took over the limited build', m.codex?.reviewer.changes === 1 && m.codex.reviewer.approve === 1 && m.codex.byRole.builder?.done === 1 && m.codex.runs === 3, `${sum(m.codex)} ${JSON.stringify(m.codex?.reviewer)}`);
+  check('stats: durations and tokens add up', m.claude.durationMs > 0 && m.codex.durationMs > 0 && Object.values(m).some((x: any) => x.inputTokens > 0 && x.outputTokens > 0));
+  check('stats: no gemini/local entries', !m.gemini && !m.local);
+  check('stats: council_stats broadcast as runs progress', statEvents >= 7, `${statEvents} events`);
+
+  resetStats();
+  check('stats: reset clears every member', Object.keys(readStats().members).length === 0);
+}
 
 console.log(`\n${pass} passed, ${fail} failed. events: ${JSON.stringify(events)}`);
 reset();
