@@ -17,6 +17,13 @@ const BRANCH_PREFIX = 'council/';
 const MAX_DIFF = 40_000;
 const MAX_STAT = 4_000;
 const STALE_MS = 7 * 24 * 60 * 60 * 1000;
+/** Untracked files bigger than this (in total) are not copied into a new copy; it then starts from the last commit. */
+const MAX_IMPORT_BYTES = 200 * 1024 * 1024;
+/**
+ * Patch flags that ignore the user's diff config (noprefix, textconv, external diff, renames, color), so the patch
+ * can always be applied with `git apply`.
+ */
+const PATCH_ARGS = ['--binary', '--full-index', '--no-renames', '--no-color', '--no-ext-diff', '--no-textconv', '--src-prefix=a/', '--dst-prefix=b/'];
 
 export function worktreesDir(): string {
   return path.join(DATA_DIR, 'worktrees');
@@ -84,8 +91,10 @@ function isOurs(wt: Pick<CouncilWorktree, 'path' | 'branch'>): boolean {
 }
 
 /**
- * Create a separate copy of the project at its current commit: `git worktree add -b council/<runId>[-<label>]
- * <data>/worktrees/<runId>[-<label>] HEAD`. Uncommitted changes in the user's folder are not in the copy (noted).
+ * Create a separate copy of the project: `git worktree add -b council/<runId>[-<label>] <data>/worktrees/<runId>[-<label>]
+ * HEAD`, then bring in the user's uncommitted changes (tracked edits, staged or not, and untracked files git doesn't
+ * ignore) and commit them on the copy's branch as its base. Diffs and apply then carry only what members change on
+ * top. If that import fails, the copy starts from the last commit and `note` says so.
  */
 export function createWorktree(projectDir: string, runId: string, label?: string): CouncilWorktree {
   const info = repoInfo(projectDir);
@@ -97,20 +106,73 @@ export function createWorktree(projectDir: string, runId: string, label?: string
   if (fs.existsSync(wtPath)) throw new Error(`A separate copy named ${name} already exists.`);
   const add = git(info.root, ['worktree', 'add', '--quiet', '-b', branch, wtPath, info.head]);
   if (!add.ok) throw new Error(`git worktree add failed: ${add.err.split('\n')[0]}`);
-  const dirty = git(info.root, ['status', '--porcelain']).out.trim();
+  const imp = importUncommitted(info, wtPath);
   const wt: CouncilWorktree = {
     path: wtPath,
     cwd: info.prefix ? path.join(wtPath, info.prefix) : wtPath,
     branch,
-    base: info.head,
+    base: imp.base ?? info.head,
     projectDir: path.resolve(projectDir),
     status: 'pending',
     files: [],
     diffStat: '',
-    ...(dirty ? { note: 'Your folder had uncommitted changes. The separate copy starts from your last commit, so it does not include them.' } : {}),
+    ...(imp.files.length ? { imported: imp.files.length } : {}),
+    ...(imp.error ? { note: `Your folder has uncommitted changes, but they couldn't be copied in (${imp.error}). The separate copy starts from your last commit, so it does not include them.` } : {}),
   };
   writeMeta(wt, runId);
   return wt;
+}
+
+interface ImportResult {
+  /** The copy's base commit holding the user's uncommitted changes; absent when there were none or the import failed. */
+  base?: string;
+  files: string[];
+  error?: string;
+}
+
+/** Copy the user's uncommitted changes into a fresh copy and commit them there as its base (see createWorktree). */
+function importUncommitted(info: RepoInfo, wtPath: string): ImportResult {
+  const dirty = zList(git(info.root, ['status', '--porcelain', '-z', '--untracked-files=all', '--no-renames']).out);
+  if (!dirty.length) return { files: [] };
+  const undo = (error: string): ImportResult => {
+    git(wtPath, ['reset', '--quiet', '--hard', info.head]);
+    git(wtPath, ['clean', '-qfd']);
+    return { files: [], error };
+  };
+  try {
+    // Tracked edits, staged or not, against the last commit.
+    const patch = git(info.root, ['diff', ...PATCH_ARGS, 'HEAD']);
+    if (!patch.ok) return undo(`git diff failed: ${patch.err.split('\n')[0]}`);
+    if (patch.out.trim()) {
+      const ap = git(wtPath, ['apply', '--whitespace=nowarn'], patch.out);
+      if (!ap.ok) return undo(`git apply failed: ${ap.err.split('\n')[0]}`);
+    }
+    // New files git doesn't ignore. Nested repositories ("dir/") are left out.
+    const untracked = zList(git(info.root, ['ls-files', '-z', '--others', '--exclude-standard']).out).filter((f) => !f.endsWith('/'));
+    let bytes = 0;
+    for (const f of untracked) {
+      const from = path.join(info.root, f);
+      const to = path.join(wtPath, f);
+      const st = fs.lstatSync(from, { throwIfNoEntry: false });
+      if (!st) continue;
+      fs.mkdirSync(path.dirname(to), { recursive: true });
+      if (st.isSymbolicLink()) fs.symlinkSync(fs.readlinkSync(from), to);
+      else if (st.isFile()) {
+        bytes += st.size;
+        if (bytes > MAX_IMPORT_BYTES) return undo(`new files are over ${MAX_IMPORT_BYTES / 1024 / 1024} MB`);
+        fs.copyFileSync(from, to);
+        fs.chmodSync(to, st.mode & 0o777);
+      }
+    }
+    git(wtPath, ['add', '-A']);
+    if (git(wtPath, ['diff', '--cached', '--quiet']).ok) return { files: [] };
+    const files = zList(git(wtPath, ['diff', '--cached', '-z', '--name-only', '--no-renames']).out);
+    const c = git(wtPath, [...IDENTITY, 'commit', '--quiet', '--no-verify', '-m', 'LocalDex: your uncommitted changes']);
+    if (!c.ok) return undo(`commit failed: ${c.err.split('\n')[0]}`);
+    return { base: git(wtPath, ['rev-parse', 'HEAD']).out.trim(), files };
+  } catch (e) {
+    return undo((e as Error).message);
+  }
 }
 
 /**
@@ -144,7 +206,7 @@ export function worktreeDiff(wt: Pick<CouncilWorktree, 'path' | 'base'>, maxChar
   if (!files.length) return { files, stat: '', diff: '' };
   const stat = git(wt.path, ['diff', '--stat=100', '--no-color', '--no-renames', ...range]).out.trimEnd();
   // Redact before truncating so a cut can't leave half a key behind the marker.
-  let diff = git(wt.path, ['diff', '--no-color', '--no-renames', '--no-ext-diff', ...range]).out;
+  let diff = git(wt.path, ['diff', '--no-color', '--no-renames', '--no-ext-diff', '--no-textconv', '--src-prefix=a/', '--dst-prefix=b/', ...range]).out;
   if (getSettings().council.redactSecrets !== false) diff = redactSecrets(diff).text;
   if (diff.length > maxChars) diff = `${diff.slice(0, maxChars)}\n… [diff truncated]`;
   return { files, stat: stat.length > MAX_STAT ? `${stat.slice(0, MAX_STAT)}\n…` : stat, diff };
@@ -159,8 +221,12 @@ export interface ApplyResult {
 
 /**
  * Bring the copy's changes into the user's folder as uncommitted changes. Never commits, never touches files the copy
- * did not change. Refused (status 'conflict', folder untouched) when the user's folder has uncommitted changes to the
- * same files or the patch no longer fits.
+ * did not change. Refused (status 'conflict', folder untouched) when:
+ * - a changed file is outside the project folder (the project is a subfolder of a bigger repo),
+ * - a changed file in the user's folder is neither as it was when the copy was made (the copy's base, which includes
+ *   the user's uncommitted changes from then) nor clean against their last commit: they edited it since, or the copy
+ *   would create a file that already exists (ignored files like .env included),
+ * - or the patch doesn't fit. A failed attempt puts every touched file (and its index entry) back exactly as it was.
  */
 export function applyWorktree(projectDir: string, wt: CouncilWorktree): ApplyResult {
   const fail = (status: ApplyResult['status'], error: string, files: string[] = []): ApplyResult => ({ ok: false, status, files, error });
@@ -174,18 +240,31 @@ export function applyWorktree(projectDir: string, wt: CouncilWorktree): ApplyRes
   const tip = git(wt.path, ['rev-parse', 'HEAD']).out.trim();
   const files = zList(git(wt.path, ['diff', '-z', '--name-only', '--no-renames', wt.base, tip]).out);
   if (!files.length) return { ok: true, status: 'applied', files };
+  const some = (list: string[]) => `${list.slice(0, 8).join(', ')}${list.length > 8 ? ', …' : ''}`;
 
-  const dirty = git(info.root, ['status', '--porcelain', '--untracked-files=all', '--', ...files]).out.trimEnd();
-  if (dirty) {
-    const names = dirty.split('\n').map((l) => l.slice(3)).slice(0, 8);
-    return fail('conflict', `Your folder has uncommitted changes to ${names.join(', ')}${dirty.split('\n').length > 8 ? ', …' : ''}. Commit, stash or undo them, then apply again. Nothing was changed.`, files);
+  if (info.prefix) {
+    const outside = files.filter((f) => !f.startsWith(info.prefix));
+    if (outside.length) {
+      return fail('conflict', `These changes touch files outside your project folder (${path.resolve(projectDir)}): ${some(outside)}. LocalDex only applies changes inside it. Nothing was changed.`, files);
+    }
   }
 
-  const patch = git(wt.path, ['diff', '--binary', '--full-index', '--no-renames', '--no-color', '--no-ext-diff', wt.base, tip]).out;
+  const blocked = blockedFiles(info.root, wt, files);
+  if (blocked.length) {
+    const ignored = blocked.filter((f) => f.endsWith(' (ignored by git)'));
+    const why = [
+      blocked.length > ignored.length ? `has uncommitted changes to ${some(blocked.filter((f) => !ignored.includes(f)))}` : '',
+      ignored.length ? `already has ${some(ignored)}, which these changes would replace` : '',
+    ].filter(Boolean);
+    return fail('conflict', `Your folder ${why.join(' and ')}. Commit, stash, move or undo them, then apply again. Nothing was changed.`, files);
+  }
+
+  const backup = backupFiles(info.root, files);
+  const patch = git(wt.path, ['diff', ...PATCH_ARGS, wt.base, tip]).out;
   if (git(info.root, ['apply', '--check', '--whitespace=nowarn'], patch).ok) {
     const r = git(info.root, ['apply', '--whitespace=nowarn'], patch);
     if (r.ok) return { ok: true, status: 'applied', files };
-    restore(info.root, files);
+    restoreFiles(info.root, backup);
     return fail('conflict', `git apply failed: ${r.err.split('\n')[0]}. Nothing was changed.`, files);
   }
 
@@ -193,22 +272,119 @@ export function applyWorktree(projectDir: string, wt: CouncilWorktree): ApplyRes
   const r = git(info.root, ['apply', '--3way', '--whitespace=nowarn'], patch);
   const unmerged = zList(git(info.root, ['diff', '-z', '--name-only', '--diff-filter=U']).out);
   if (!r.ok || unmerged.length) {
-    restore(info.root, files);
-    const which = unmerged.length ? unmerged : files;
-    return fail('conflict', `Your folder changed since this copy was made and the changes don't merge cleanly (${which.slice(0, 8).join(', ')}). Nothing was changed.`, files);
+    restoreFiles(info.root, backup);
+    return fail('conflict', `Your folder changed since this copy was made and the changes don't merge cleanly (${some(unmerged.length ? unmerged : files)}). Nothing was changed.`, files);
   }
-  // --3way stages what it applies; leave the files as plain uncommitted edits like any other change.
-  git(info.root, ['reset', '--quiet', '--', ...files]);
+  // --3way stages what it applies; leave the files as plain uncommitted edits, with the index as it was.
+  restoreIndex(info.root, backup);
   return { ok: true, status: 'applied', files };
 }
 
-/** Put files that were clean before an apply attempt back to HEAD (lossless: they had no uncommitted changes). */
-function restore(root: string, files: string[]): void {
-  git(root, ['reset', '--quiet', '--', ...files]);
-  for (const f of files) {
-    if (git(root, ['cat-file', '-e', `HEAD:${f}`]).ok) git(root, ['checkout', 'HEAD', '--', f]);
-    else fs.rmSync(path.join(root, f), { force: true });
+/**
+ * Files an apply must not touch: their content in the user's folder differs from the copy's base, and they are not
+ * clean against the user's last commit (uncommitted edits, or an untracked or ignored file in the way).
+ * Ignored files are labelled, since the user won't see them in `git status`.
+ */
+function blockedFiles(root: string, wt: Pick<CouncilWorktree, 'path' | 'base'>, files: string[]): string[] {
+  const base = new Map<string, string>();
+  for (const line of zList(git(wt.path, ['ls-tree', '-z', '--full-tree', wt.base, '--', ...files]).out)) {
+    const tab = line.indexOf('\t');
+    base.set(line.slice(tab + 1), line.slice(0, tab).split(' ')[2]);
   }
+  const disk = diskIds(root, files);
+  const differs = files.filter((f) => disk.get(f) !== base.get(f));
+  if (!differs.length) return [];
+  const dirty = new Map<string, string>();
+  for (const e of zList(git(root, ['status', '--porcelain', '-z', '--untracked-files=all', '--ignored=matching', '--no-renames', '--', ...differs]).out)) {
+    dirty.set(e.slice(3).replace(/\/$/, ''), e.slice(0, 2));
+  }
+  // A directory where a file should go blocks too.
+  return differs.filter((f) => dirty.has(f) || disk.get(f) === 'dir').map((f) => (dirty.get(f) === '!!' ? `${f} (ignored by git)` : f));
+}
+
+/** Blob id of each file as it is on disk (git's clean filters applied), 'dir' for anything else, absent when missing. */
+function diskIds(root: string, files: string[]): Map<string, string> {
+  const out = new Map<string, string>();
+  const regular: string[] = [];
+  for (const f of files) {
+    const abs = path.join(root, f);
+    const st = fs.lstatSync(abs, { throwIfNoEntry: false });
+    if (!st) continue;
+    if (st.isSymbolicLink()) out.set(f, git(root, ['hash-object', '--stdin'], fs.readlinkSync(abs)).out.trim());
+    else if (st.isFile()) regular.push(f);
+    else out.set(f, 'dir');
+  }
+  if (regular.length) {
+    const ids = git(root, ['hash-object', '--stdin-paths'], `${regular.join('\n')}\n`).out.trim().split('\n');
+    regular.forEach((f, i) => {
+      if (ids[i]) out.set(f, ids[i]);
+    });
+  }
+  return out;
+}
+
+interface FileBackup {
+  file: string;
+  kind: 'missing' | 'file' | 'link';
+  data?: Buffer;
+  mode?: number;
+  link?: string;
+  /** Parent folders that did not exist before the attempt (deepest first); removed again when left empty. */
+  newDirs: string[];
+  /** `git ls-files -s` entries before the attempt. */
+  index: string[];
+}
+
+/** Everything needed to put the files (and their index entries) back exactly as they were before an apply attempt. */
+function backupFiles(root: string, files: string[]): FileBackup[] {
+  const index = new Map<string, string[]>();
+  for (const e of zList(git(root, ['ls-files', '-s', '-z', '--', ...files]).out)) {
+    const f = e.slice(e.indexOf('\t') + 1);
+    index.set(f, [...(index.get(f) ?? []), e]);
+  }
+  return files.map((file): FileBackup => {
+    const abs = path.join(root, file);
+    const newDirs: string[] = [];
+    for (let d = path.dirname(abs); d.startsWith(root + path.sep) && !fs.existsSync(d); d = path.dirname(d)) newDirs.push(d);
+    const st = fs.lstatSync(abs, { throwIfNoEntry: false });
+    const idx = index.get(file) ?? [];
+    if (st?.isSymbolicLink()) return { file, kind: 'link', link: fs.readlinkSync(abs), newDirs, index: idx };
+    if (st?.isFile()) return { file, kind: 'file', data: fs.readFileSync(abs), mode: st.mode & 0o777, newDirs, index: idx };
+    // blockedFiles refuses anything else in the way, so this file did not exist before the attempt.
+    return { file, kind: 'missing', newDirs, index: idx };
+  });
+}
+
+/** Undo a failed apply: files that existed get their old content back, only files that didn't exist are removed. */
+function restoreFiles(root: string, backup: FileBackup[]): void {
+  restoreIndex(root, backup);
+  for (const b of backup) {
+    const abs = path.join(root, b.file);
+    const st = fs.lstatSync(abs, { throwIfNoEntry: false });
+    if (st && !st.isDirectory()) fs.rmSync(abs, { force: true });
+    if (b.kind === 'file') {
+      fs.mkdirSync(path.dirname(abs), { recursive: true });
+      fs.writeFileSync(abs, b.data!);
+      fs.chmodSync(abs, b.mode!);
+    } else if (b.kind === 'link') {
+      fs.mkdirSync(path.dirname(abs), { recursive: true });
+      fs.symlinkSync(b.link!, abs);
+    }
+    for (const d of b.newDirs) {
+      try {
+        fs.rmdirSync(d);
+      } catch {
+        /* not empty or already gone */
+      }
+    }
+  }
+}
+
+/** Put the files' index entries back as they were (dropping entries an apply added). */
+function restoreIndex(root: string, backup: FileBackup[]): void {
+  const zero = '0'.repeat(git(root, ['rev-parse', 'HEAD']).out.trim().length || 40);
+  const lines = backup.flatMap((b) => [`0 ${zero}\t${b.file}`, ...b.index]);
+  if (lines.length) git(root, ['update-index', '-z', '--index-info'], `${lines.join('\0')}\0`);
 }
 
 /** Remove the copy and its branch. Only ever touches worktrees under LocalDex's data folder on council/ branches. */
@@ -274,11 +450,18 @@ export function listCouncilWorktrees(): WorktreeRecord[] {
   return out.sort((a, b) => b.createdAt - a.createdAt);
 }
 
-/** Remove copies that were applied or discarded more than 7 days ago (and their records). Returns how many. */
-export function cleanupStaleWorktrees(now = Date.now(), maxAgeMs = STALE_MS): number {
+/**
+ * Remove copies that were applied or discarded more than 7 days ago, and waiting copies (pending or conflict) that
+ * `isOrphan` says nothing refers to any more (their session or run is gone), with their records. Returns how many.
+ * The caller decides what is orphaned, so this module stays free of sessions.
+ */
+export function cleanupStaleWorktrees(now = Date.now(), maxAgeMs = STALE_MS, isOrphan?: (rec: WorktreeRecord) => boolean): number {
   let n = 0;
   for (const rec of listCouncilWorktrees()) {
-    if ((rec.status !== 'applied' && rec.status !== 'discarded') || now - rec.updatedAt < maxAgeMs) continue;
+    const done = rec.status === 'applied' || rec.status === 'discarded';
+    const stale = done && now - rec.updatedAt >= maxAgeMs;
+    const orphan = !done && !!isOrphan?.(rec);
+    if (!stale && !orphan) continue;
     const r = discardWorktree(rec.projectDir, rec);
     if (!r.ok && isOurs(rec)) continue;
     fs.rmSync(metaFile(rec), { force: true });

@@ -94,6 +94,12 @@ const MEMBER_ALIASES: Record<string, CouncilMemberRef> = {
   local: 'local', lmstudio: 'local',
 };
 
+/** A member name or alias typed by the user; own keys only, so words like "constructor" are not members. */
+function memberAlias(word: string): CouncilMemberRef | undefined {
+  const w = word.toLowerCase();
+  return Object.hasOwn(MEMBER_ALIASES, w) ? MEMBER_ALIASES[w] : undefined;
+}
+
 /** Slash commands in Council mode. Returns null for a plain message. */
 export function parseCommand(text: string): Route | null {
   const m = text.trim().match(/^\/(\w+)\s*([\s\S]*)$/);
@@ -103,8 +109,9 @@ export function parseCommand(text: string): Route | null {
   switch (cmd) {
     case 'ask': {
       const who = rest.match(/^(\w+)\s+([\s\S]+)$/);
-      if (who && MEMBER_ALIASES[who[1].toLowerCase()]) {
-        return { pattern: 'single', role: domainBuilder(who[2]).role, member: MEMBER_ALIASES[who[1].toLowerCase()], task: who[2].trim(), note: `/ask → ${MEMBER_ALIASES[who[1].toLowerCase()]}` };
+      const ref = who ? memberAlias(who[1]) : undefined;
+      if (who && ref) {
+        return { pattern: 'single', role: domainBuilder(who[2]).role, member: ref, task: who[2].trim(), note: `/ask → ${ref}` };
       }
       return { pattern: 'single', role: classify(rest).role, task: rest, note: '/ask → router picks the member' };
     }
@@ -120,7 +127,7 @@ export function parseCommand(text: string): Route | null {
       let task = rest;
       while (members.length < 2) {
         const who = task.match(/^(\w+)\s+([\s\S]+)$/);
-        const ref = who ? MEMBER_ALIASES[who[1].toLowerCase()] : undefined;
+        const ref = who ? memberAlias(who[1]) : undefined;
         if (!who || !ref) break;
         members.push(ref);
         task = who[2].trim();
