@@ -26,6 +26,7 @@ import {
   reviewerPrompt,
   votePrompt,
 } from './prompts.js';
+import { describeKinds, existingRedactions, redactSecrets } from './redact.js';
 
 const MAX_RUNS_KEPT = 30;
 const MAX_OUTPUT = 20_000;
@@ -303,6 +304,9 @@ async function runStep(ctx: CouncilContext, run: CouncilRun, spec: StepSpec): Pr
       bus.emit({ type: 'agent_status', sessionId, agent: 'main', status: 'running', detail: `Council: ${label(spec.member)} (${spec.role})…` });
     }
 
+    // Cloud members only: the prompt leaves this machine, so credentials in it are replaced first.
+    const prompt = c.redactSecrets !== false ? redactForCloud(spec.prompt, step) : spec.prompt;
+
     // Child controller so a mid-run billing surprise can stop just this member.
     const ac = new AbortController();
     const onParentAbort = () => ac.abort();
@@ -310,7 +314,7 @@ async function runStep(ctx: CouncilContext, run: CouncilRun, spec: StepSpec): Pr
     let billingAbort = '';
 
     const res = await MEMBERS[spec.member].run({
-      prompt: spec.prompt,
+      prompt,
       instructions,
       cwd,
       extraDirs: approvedFolders().slice(1),
@@ -395,6 +399,25 @@ async function runStep(ctx: CouncilContext, run: CouncilRun, spec: StepSpec): Pr
   }
 }
 
+/**
+ * Redact a cloud member's prompt and record it on the step. Counts markers already placed upstream
+ * (git diff, chat history) too, so the step shows everything that was held back from this member.
+ */
+function redactForCloud(text: string, step: CouncilStep): string {
+  const r = redactSecrets(text);
+  const all = existingRedactions(r.text);
+  if (all.count > 0) {
+    step.redactions = all.count;
+    step.transcript.push({ kind: 'note', text: `Removed ${all.count} secret${all.count === 1 ? '' : 's'} before sending (${describeKinds(all.kinds)})` });
+  }
+  return r.text;
+}
+
+/** Redact text bound for council members when the setting is on (default). */
+export function redactIfEnabled(text: string): string {
+  return getSettings().council.redactSecrets !== false ? redactSecrets(text).text : text;
+}
+
 // ---------- git helpers (read-only) ----------
 
 interface GitSnap {
@@ -433,6 +456,8 @@ export function gitDiffSince(cwd: string, before: GitSnap): string {
   const untracked = changed.filter((x) => x.code === '??').map((x) => x.file);
   let diff = tracked.length ? git(cwd, ['diff', '--no-color', 'HEAD', '--', ...tracked]).out : '';
   if (untracked.length) diff += `\nNew files:\n${untracked.map((f) => `+ ${f}`).join('\n')}`;
+  // Redact before truncating so a cut can't leave half a key behind the marker.
+  diff = redactIfEnabled(diff);
   return diff.length > MAX_DIFF ? `${diff.slice(0, MAX_DIFF)}\n… [diff truncated]` : diff;
 }
 
