@@ -6,7 +6,7 @@ import { Hono } from 'hono';
 import { serve } from '@hono/node-server';
 import { serveStatic } from '@hono/node-server/serve-static';
 import { WebSocketServer, WebSocket } from 'ws';
-import type { ClientEvent, ServerEvent } from '@localdex/shared';
+import type { ClientEvent, CouncilRunAccess, ServerEvent } from '@localdex/shared';
 import { DATA_DIR, applyMcpToggles, expandHome, getSettings, stripCouncilCommands, updateSettings } from './config.js';
 import { MEMBERS, cachedStatuses, memberStatuses } from './council/registry.js';
 import { getStats, resetStats } from './council/stats.js';
@@ -194,7 +194,15 @@ async function handle(ws: WebSocket, ev: ClientEvent): Promise<void> {
     case 'send_message': {
       const s = getSession(ev.sessionId);
       if (!s) return send(ws, { type: 'error', message: 'Session not found' });
-      void runnerFor(s).handleUserMessage(ev.content);
+      void runnerFor(s).handleUserMessage(ev.content, parseRunAccess(ev.access));
+      return;
+    }
+    case 'council_escalate': {
+      const s = getSession(ev.sessionId);
+      if (!s) return send(ws, { type: 'error', message: 'Session not found' });
+      if (!getSettings().council.enabled) return send(ws, { type: 'error', sessionId: s.id, message: 'Turn on the model council in Settings → Council first.' });
+      const member = ev.member && ev.member in MEMBERS ? ev.member : undefined;
+      void runnerFor(s).escalate({ pattern: ev.pattern, member, note: typeof ev.note === 'string' ? ev.note : undefined, access: parseRunAccess(ev.access) });
       return;
     }
     case 'new_session': {
@@ -360,3 +368,8 @@ function shutdown(): void {
 }
 process.on('SIGINT', shutdown);
 process.on('SIGTERM', shutdown);
+
+/** Only the three known access modes are accepted from the socket; anything else means "use Settings". */
+function parseRunAccess(v: unknown): CouncilRunAccess | undefined {
+  return v === 'read' || v === 'confirm' || v === 'auto' ? v : undefined;
+}

@@ -2,7 +2,9 @@ import { useEffect, useId, useState } from 'react';
 import {
   COUNCIL_ROLES,
   MEMBER_IDS,
+  RUN_ACCESS_LABELS,
   quorumLabel,
+  type CouncilRunAccess,
   type CouncilMemberRef,
   type CouncilMemberStats,
   type CouncilPattern,
@@ -128,6 +130,12 @@ export function CouncilRunCard({ run, defaultOpen, compact }: { run: CouncilRun;
             {running ? 'running' : run.status}
           </span>
           {run.risk && <RiskChip risk={run.risk} reasons={run.riskReasons ?? []} />}
+          {run.access && <AccessChip access={run.access} />}
+          {run.escalated && (
+            <span className="rounded border border-[#7cc0f2]/40 px-1.5 py-px text-[10px] leading-4 text-[#7cc0f2]" title="Handed over from a Solo chat, with a summary of what the local agent did">
+              from Solo
+            </span>
+          )}
           {run.quorum && (
             <span className={cx('text-[10px] truncate', run.quorum.dropped ? 'text-warn' : 'text-ink-400')} title="Advisers needed before the grace timer starts / advisers asked">
               {quorumLabel(run.quorum)}
@@ -302,6 +310,27 @@ function RiskChip({ risk, reasons }: { risk: CouncilRisk; reasons: string[] }) {
       title={reasons.length ? `${risk} risk: ${reasons.join(', ')}` : `${risk} risk`}
     >
       {risk} risk{reasons.length ? ` · ${reasons.join(', ')}` : ''}
+    </span>
+  );
+}
+
+const ACCESS_CLS: Record<CouncilRunAccess, string> = {
+  read: 'border-ink-600 text-ink-300',
+  confirm: 'border-accent/40 text-accent',
+  auto: 'border-warn/40 bg-warn/10 text-warn',
+};
+
+const ACCESS_HINT: Record<CouncilRunAccess, string> = {
+  read: 'Picked for this message: every member was read-only',
+  confirm: 'Picked for this message: the builder could edit, and each edit step asked first',
+  auto: 'Picked for this message: the builder could edit without asking (high-risk runs still ask)',
+};
+
+/** The access picked in the composer for this run. */
+export function AccessChip({ access }: { access: CouncilRunAccess }) {
+  return (
+    <span className={cx('rounded border px-1.5 py-px text-[10px] leading-4 whitespace-nowrap', ACCESS_CLS[access])} title={ACCESS_HINT[access]}>
+      {RUN_ACCESS_LABELS[access]}
     </span>
   );
 }

@@ -78,6 +78,8 @@ export async function runCouncil(ctx: CouncilContext, input: Route): Promise<Cou
     routeNote: route.note,
     risk: route.risk,
     riskReasons: route.riskReasons,
+    ...(route.access ? { access: route.access } : {}),
+    ...(route.escalated ? { escalated: true } : {}),
     steps: [],
   };
   const runs = (ctx.session.councilRuns ??= []);
@@ -121,7 +123,7 @@ export async function runCouncil(ctx: CouncilContext, input: Route): Promise<Cou
 // ---------- patterns ----------
 
 async function single(ctx: CouncilContext, run: CouncilRun, route: Route, statuses: MemberStatus[]): Promise<string> {
-  const access = accessFor(route.role);
+  const access = accessFor(run, route.role);
   const prompt = route.role === 'vision' ? visionPrompt(route.task, findImageRefs(askedPart(route.task))) : route.task;
   const continuation = (member: CouncilMemberRef) => continuationFor(ctx, run, route, member, access);
   if (route.member) {
@@ -189,14 +191,14 @@ async function planBuildReview(ctx: CouncilContext, run: CouncilRun, task: strin
   if (ctx.signal.aborted) return 'Cancelled.';
 
   const before = gitSnapshot(cwd);
-  let builder = await runRole(ctx, run, builderRole, accessFor(builderRole), builderPrompt(task, planText || undefined), statuses);
+  let builder = await runRole(ctx, run, builderRole, accessFor(run, builderRole), builderPrompt(task, planText || undefined), statuses);
   if (!builder || builder.status !== 'done') {
     return [`**The build step did not complete.** ${builder?.error ?? noMemberMessage(builderRole, statuses)}`, planText ? `### Plan (${label(plan!.member)})\n${planText}` : ''].filter(Boolean).join('\n\n');
   }
   if (ctx.signal.aborted) return 'Cancelled.';
 
   // Each round: project checks → reviewer → QA. The first gate that fails sends the builder into a fix round.
-  const gate = checksGateFor(runCwd(run), accessFor(builderRole));
+  const gate = checksGateFor(runCwd(run), accessFor(run, builderRole));
   let report = builder.output ?? '';
   let g: Gates = { checks: null, review: null, reviewOk: false, reviewMissing: false, qa: null, qaOk: false, qaMissing: false };
   let fixes = 0;
@@ -230,7 +232,7 @@ async function planBuildReview(ctx: CouncilContext, run: CouncilRun, task: strin
     }
     if (!feedback || fixes >= maxFixRounds || ctx.signal.aborted) break;
     fixes++;
-    const fix = await runStep(ctx, run, { role: builderRole, member: builder.member, access: accessFor(builderRole), prompt: feedback, note: `fix round ${fixes}${why ? ` (${why})` : ''}` });
+    const fix = await runStep(ctx, run, { role: builderRole, member: builder.member, access: accessFor(run, builderRole), prompt: feedback, note: `fix round ${fixes}${why ? ` (${why})` : ''}` });
     if (fix.status !== 'done') break;
     builder = fix;
     report = `${report}\n\nFix round ${fixes}:\n${fix.output ?? ''}`;
@@ -385,7 +387,7 @@ function gatesHeader(g: Gates, gate: ChecksGate, qaOn: boolean): string {
 async function secondOpinion(ctx: CouncilContext, run: CouncilRun, task: string, statuses: MemberStatus[], builderRole: CouncilRole): Promise<string> {
   const cwd = approvedFolders()[0];
   const before = gitSnapshot(cwd);
-  const builder = await runRole(ctx, run, builderRole, accessFor(builderRole), builderPrompt(task), statuses);
+  const builder = await runRole(ctx, run, builderRole, accessFor(run, builderRole), builderPrompt(task), statuses);
   if (!builder || builder.status !== 'done') return `**The build step did not complete.** ${builder?.error ?? noMemberMessage(builderRole, statuses)}`;
   const critic = await runRole(ctx, run, 'reviewer', 'read', critiquePrompt(task, builder.output ?? '', runDiff(run, cwd, before)), statuses, [builder.member]);
   return [
@@ -513,8 +515,15 @@ function isRiskyRun(run: CouncilRun): boolean {
   return run.risk === 'high' && getSettings().council.riskRouting;
 }
 
-function accessFor(role: CouncilStep['role']): CouncilAccess {
-  return isBuilderRole(role) && getSettings().council.allowWrite ? 'write' : 'read';
+/** Builders may edit when the run's per-message access allows it, or (no override) when Settings → Council does. */
+function accessFor(run: CouncilRun, role: CouncilStep['role']): CouncilAccess {
+  const canWrite = run.access ? run.access !== 'read' : getSettings().council.allowWrite;
+  return isBuilderRole(role) && canWrite ? 'write' : 'read';
+}
+
+/** Whether an edit step asks first, before risk is considered: the run's access mode, or Settings → Council. */
+function confirmsEdits(run: CouncilRun): boolean {
+  return run.access ? run.access === 'confirm' : getSettings().council.confirmWrites;
 }
 
 /** The build step of plan_build_review / second_opinion runs the route's domain builder, or the plain builder. */
@@ -664,12 +673,13 @@ async function runStep(ctx: CouncilContext, run: CouncilRun, spec: StepSpec): Pr
     }
 
     // Human in the loop: a cloud agent that can edit files only starts after the user approves it.
-    if (spec.access === 'write' && risky && !c.confirmWrites) {
-      const why = `High-risk change (${(run.riskReasons ?? []).join(', ') || 'risky'}): asking before edits even though "Ask me before each member that can edit files" is off.`;
+    const confirm = confirmsEdits(run);
+    if (spec.access === 'write' && risky && !confirm) {
+      const why = `High-risk change (${(run.riskReasons ?? []).join(', ') || 'risky'}): asking before edits even though ${run.access ? '"Edits allowed" was picked for this message' : '"Ask me before each member that can edit files" is off'}.`;
       pushItem({ kind: 'note', text: why });
       bus.log('info', `[council] ${why}`);
     }
-    if (spec.access === 'write' && (c.confirmWrites || risky)) {
+    if (spec.access === 'write' && (confirm || risky)) {
       bus.emit({ type: 'agent_status', sessionId, agent: 'main', status: 'waiting', detail: `Approve ${label(spec.member)} editing files?` });
       const approved = await bus
         .requestApproval(sessionId, agent, `Council: let ${label(spec.member)} (${spec.role}) edit files ${wt ? `in a separate copy of your project (${cwd})? Nothing in ${wt.projectDir} changes until you apply the result.` : `in ${cwd}?`}${spec.handoff ? ` It continues ${label(spec.handoff.from)}'s unfinished work.` : ''}\n\n${spec.prompt.slice(0, 600)}${spec.prompt.length > 600 ? '…' : ''}`, cwd, ctx.signal)
