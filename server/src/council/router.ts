@@ -1,4 +1,4 @@
-import type { CouncilMemberRef, CouncilPattern, CouncilRole, CouncilSettings, MemberId, MemberStatus } from '@localdex/shared';
+import type { CouncilMemberRef, CouncilPattern, CouncilRisk, CouncilRole, CouncilSettings, MemberId, MemberStatus } from '@localdex/shared';
 import { MEMBER_IDS } from '@localdex/shared';
 import { getSettings } from '../config.js';
 import { streamChat } from '../lmstudio.js';
@@ -12,6 +12,61 @@ export interface Route {
   member?: CouncilMemberRef;
   task: string;
   note: string;
+  /** Risk rating from `assessRisk`; computed from the task when missing. */
+  risk?: CouncilRisk;
+  riskReasons?: string[];
+}
+
+// ---------- risk ----------
+
+export interface RiskAssessment {
+  risk: CouncilRisk;
+  /** Short labels of the signals that matched, e.g. ['auth', 'migration']. */
+  reasons: string[];
+}
+
+/** Keyword signals for risky changes. Each label is what the user sees on the run card. */
+const HIGH_RISK: [string, RegExp][] = [
+  ['migration', /\b(migrations?|(db|database|sql) (schema|migrat\w*)|schema (change|migration)s?|alter table|create table|(add|drop|rename) (a )?column)\b/i],
+  ['auth', /\b(auth|authn|authz|authenticat\w*|authori[sz]\w*|log ?in|logout|log out|sign[- ]?in|sign[- ]?up|sessions?|passwords?|passwd|oauth\d?|sso|saml|jwt|(access|refresh|auth|bearer|csrf) tokens?|permissions?|rbac|acl|access control|(user|admin) roles?|roles and permissions|2fa|mfa)\b/i],
+  ['payments', /\b(payments?|billing|checkout|invoic\w*|stripe|paypal|credit cards?|refunds?|payouts?)\b/i],
+  ['secrets', /\b(encrypt\w*|decrypt\w*|crypto\w*|ciphers?|secrets?|api[- ]?keys?|private keys?|signing keys?|keys?(store|chain)|credentials?|certificates?|tls|ssl|hmac)\b|\.env\b/i],
+  ['data deletion', /\b(delet\w* (all |the |every |old |existing )?(data|records?|rows?|users?|accounts?|database|tables?|backups?|history)|delete from|drop (table|database|schema|column|index)|truncate|rm -rf|purge|wipe|destroy (the )?(data|database))\b/i],
+  ['deploy/infra', /\b(production|prod|deploy\w*|infra\w*|terraform|kubernetes|k8s|helm|dockerfile|docker-compose|ci( config| pipeline| workflow)?|ci\/cd|github actions|nginx)\b|\.github\/workflows/i],
+  ['security fix', /\b(security (fix|patch|issue|bug|hole)s?|vulnerab\w*|cve-\d+|xss|csrf|(sql|command|shell|prompt) injection|path traversal|rce|sanitiz\w*)\b/i],
+  ['major upgrade', /\b(major (version|upgrade|bump)s?|(upgrade|bump)\w* .{0,40}?\bto v?\d+(\.x|\.0)?(?![\w.]))/i],
+  ['history rewrite', /\b(force[- ]push\w*|push (--force|-f)\b|rebase|reset --hard|rewrite (the )?(repo |commit )?history|filter-branch|filter-repo)/i],
+];
+
+const LOW_RISK: [string, RegExp][] = [
+  ['docs', /\b(readme|docs|documentation|changelog|jsdoc|docstrings?)\b/i],
+  ['typo', /\b(typos?|spelling|misspell\w*|wording)\b/i],
+  ['comments', /\b(code comments?|comments? (in|to|for)|add(ing)? (a )?comments?)\b/i],
+  ['formatting', /\b(formatting|reformat\w*|prettier|whitespace|indentation|lint warnings?)\b/i],
+  ['test rename', /\brenam\w* .{0,60}\b(in|of) (the )?tests?\b|\btest names?\b/i],
+];
+
+/** How risky a task looks. High wins over low; nothing matched = normal. Pure and explainable on purpose. */
+export function assessRisk(task: string): RiskAssessment {
+  const high = HIGH_RISK.filter(([, re]) => re.test(task)).map(([label]) => label);
+  if (high.length) return { risk: 'high', reasons: high };
+  const low = LOW_RISK.filter(([, re]) => re.test(task)).map(([label]) => label);
+  if (low.length) return { risk: 'low', reasons: low };
+  return { risk: 'normal', reasons: [] };
+}
+
+/**
+ * Attach the risk rating to a route. With `upgrade` (router decisions only, never slash commands) and risk routing on,
+ * a high-risk change headed to a lone builder is upgraded to plan → build → review.
+ */
+export function withRisk(route: Route, opts: { upgrade?: boolean } = {}, c: CouncilSettings = getSettings().council): Route {
+  const { risk, reasons } = route.risk ? { risk: route.risk, reasons: route.riskReasons ?? [] } : assessRisk(route.task);
+  const out: Route = { ...route, risk, riskReasons: reasons };
+  if (opts.upgrade && c.riskRouting && risk === 'high' && c.allowWrite && out.pattern === 'single' && out.role === 'builder' && !out.member) {
+    out.pattern = 'plan_build_review';
+    out.note = `${out.note}; high risk (${reasons.join(', ')}) → plan → build → review`;
+  }
+  return out;
 }
 
 const MEMBER_ALIASES: Record<string, CouncilMemberRef> = {
@@ -64,8 +119,12 @@ const PLAN_RE = /\b(plan|design|architect(ure)?|approach for|strategy|spec|roadm
 const RESEARCH_RE = /\b(explain|how does|how do|what does|what is|where is|walk me through|summari[sz]e|understand|overview|map out|trace|why does)\b/i;
 const BIG_RE = /\b(feature|system|module|end[- ]to[- ]end|across|multiple|entire|whole|refactor|architecture|tests?|integration|migrat)/i;
 
-/** Keyword routing: instant, free, predictable. */
+/** Keyword routing: instant, free, predictable. Also rates risk and applies the risk policy. */
 export function classify(task: string, c: CouncilSettings = getSettings().council): Route {
+  return withRisk(classifyIntent(task, c), { upgrade: true }, c);
+}
+
+function classifyIntent(task: string, c: CouncilSettings): Route {
   const t = task.trim();
   if (VOTE_RE.test(t)) return { pattern: 'vote', role: 'researcher', task: t, note: 'rules: a decision/comparison → council vote' };
   if (REVIEW_RE.test(t)) return { pattern: 'single', role: 'reviewer', task: t, note: 'rules: review/audit → reviewer' };
@@ -120,7 +179,7 @@ export async function classifyWithLocal(task: string, signal: AbortSignal): Prom
       pattern = 'single';
       role = 'planner';
     }
-    return { pattern, role, task, note: `local router (${model}): ${pattern}/${role}` };
+    return withRisk({ pattern, role, task, note: `local router (${model}): ${pattern}/${role}` }, { upgrade: true });
   } catch {
     return { ...fallback, note: `${fallback.note} (local router unavailable)` };
   } finally {
@@ -168,10 +227,10 @@ export function availableMembers(statuses: MemberStatus[]): MemberId[] {
   return MEMBER_IDS.filter((m) => !unavailableReason(m, statuses));
 }
 
-/** Heavy roles get the member's stronger model when one is configured. */
-export function modelFor(ref: CouncilMemberRef, role: CouncilRole | 'judge' | 'voter'): string | undefined {
+/** Heavy roles get the member's stronger model when one is configured. `heavy` asks for it on any role (e.g. a risky build). */
+export function modelFor(ref: CouncilMemberRef, role: CouncilRole | 'judge' | 'voter', opts: { heavy?: boolean } = {}): string | undefined {
   if (ref === 'local') return undefined;
   const cfg = getSettings().council.members[ref];
-  const heavy = role === 'planner' || role === 'reviewer' || role === 'judge';
+  const heavy = opts.heavy || role === 'planner' || role === 'reviewer' || role === 'judge';
   return (heavy && cfg.heavyModel) || cfg.model || undefined;
 }

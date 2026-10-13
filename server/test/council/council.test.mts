@@ -135,6 +135,62 @@ const t0 = Date.now();
 run = await runCouncil(ctx(ac.signal), { pattern: 'single', role: 'researcher', member: 'gemini', task: 'slow', note: 'test' });
 check('stop: run cancelled quickly', run.status === 'cancelled' && Date.now() - t0 < 5000, `${Date.now() - t0}ms ${run.steps[0]?.status}`);
 
+// 15. risk-aware routing
+const { assessRisk } = await import(`${SRC}/council/router.ts`);
+const riskTable: [string, string, string[]?][] = [
+  ['fix the password reset check in auth.ts', 'high', ['auth']],
+  ['add a database migration for the orders table', 'high', ['migration']],
+  ['wire Stripe checkout into the billing page', 'high', ['payments']],
+  ['rotate the API keys and encrypt secrets at rest', 'high', ['secrets']],
+  ['delete all user records older than a year', 'high', ['data deletion']],
+  ['run DROP TABLE sessions', 'high'],
+  ['update the GitHub Actions deploy workflow for production', 'high', ['deploy/infra']],
+  ['fix the XSS vulnerability in comments', 'high', ['security fix']],
+  ['upgrade react to v19', 'high', ['major upgrade']],
+  ['force push the rebased branch', 'high', ['history rewrite']],
+  ['fix the typo in README', 'low', ['docs', 'typo']],
+  ['rename the helpers in tests', 'low', ['test rename']],
+  ['reformat src/math.ts with prettier', 'low', ['formatting']],
+  ['add a button to the toolbar', 'normal', []],
+  ['add rate limiting to the API with tests', 'normal', []],
+  ['explain how the author list renders', 'normal', []],
+];
+const riskMiss = riskTable.filter(([t, want, reasons]) => {
+  const a = assessRisk(t);
+  return a.risk !== want || (reasons && !reasons.every((x) => a.reasons.includes(x)));
+});
+check(`risk: assessRisk table (${riskTable.length} cases)`, riskMiss.length === 0, riskMiss.map(([t]) => `${t} → ${JSON.stringify(assessRisk(t))}`).join(' | '));
+const hi = classify('fix the password reset check in auth.ts');
+check('risk: small high-risk change upgraded to pbr', hi.pattern === 'plan_build_review' && hi.role === 'builder' && hi.risk === 'high' && /high risk/.test(hi.note), hi.note);
+const lo = classify('fix the typo in README');
+check('risk: low/normal keep their route', lo.pattern === 'single' && lo.risk === 'low' && classify('add a button to the toolbar').pattern === 'single' && classify('add a button to the toolbar').risk === 'normal');
+const askHi = parseCommand('/ask codex fix the password reset check in auth.ts')!;
+check('risk: slash command keeps its pattern', askHi.pattern === 'single' && askHi.member === 'codex');
+updateSettings({ council: { ...getSettings().council, riskRouting: false } });
+check('risk: switch off → no upgrade, still rated', classify('fix the password reset check in auth.ts').pattern === 'single' && classify('fix the password reset check in auth.ts').risk === 'high');
+updateSettings({ council: { ...getSettings().council, riskRouting: true } });
+
+// High-risk small request end to end, with confirmWrites off and fix rounds at 0.
+reset(); approvals = 0;
+const prevCouncil = getSettings().council;
+updateSettings({ council: { ...prevCouncil, confirmWrites: false, maxFixRounds: 0, members: { ...prevCouncil.members, cursor: { ...prevCouncil.members.cursor, heavyModel: 'composer-heavy' } } } });
+flag('review_changes', true);
+run = await runCouncil(ctx(), classify('fix the password reset check in auth.ts'));
+console.log(runSummary(run));
+check('risk run: plan → build → review → fix → review', run.steps.map((s: any) => s.role).join(',') === 'planner,builder,reviewer,builder,reviewer', run.steps.map((s: any) => `${s.role}:${s.member}`).join(' '));
+const builds = run.steps.filter((s: any) => s.role === 'builder');
+const cursorLog = fs.readFileSync(path.join(CTL, 'cursor.log.jsonl'), 'utf8').trim().split('\n').map((l) => JSON.parse(l));
+check('risk run: builder on the heavy model', builds.every((s: any) => s.model === 'composer-heavy') && cursorLog.every((x: any) => (x.opts?.model?.id ?? x.opts?.model) === 'composer-heavy'), `${builds.map((s: any) => s.model).join(',')} sdk=${JSON.stringify(cursorLog.map((x: any) => x.opts?.model))}`);
+check('risk run: approval asked for each edit even with confirmWrites off', approvals === 2 && builds[0].transcript.some((t: any) => t.kind === 'note' && /High-risk/.test(t.text ?? '')));
+check('risk run: risk persisted on the run', run.risk === 'high' && run.riskReasons?.includes('auth') && /risk: high/.test(runSummary(run)));
+check('risk run: planner/reviewer still heavy, planner unchanged', run.steps[0].model === 'opus');
+
+// Normal-risk run with confirmWrites off: no prompt, default builder model.
+reset(); approvals = 0;
+run = await runCouncil(ctx(), classify('add a button to the toolbar'));
+check('normal run: unchanged (single builder, no prompt, default model)', run.pattern === 'single' && run.risk === 'normal' && approvals === 0 && run.steps[0].model === 'auto', `${run.pattern} ${approvals} ${run.steps[0]?.model}`);
+updateSettings({ council: prevCouncil });
+
 console.log(`\n${pass} passed, ${fail} failed. events: ${JSON.stringify(events)}`);
 reset();
 process.exit(fail ? 1 : 0);

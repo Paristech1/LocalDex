@@ -209,7 +209,15 @@ export interface CouncilSettings {
   timeoutMinutes: number;
   /** Subscription-only guard: refuse to run a member that is signed in with an API key. */
   requirePlanBilling: boolean;
+  /**
+   * Risk-aware routing: high-risk changes (auth, migrations, payments, secrets, deletes, deploy config…) always go
+   * plan → build → review, the builder uses its heavy model, edits are always confirmed, and at least one fix round runs.
+   */
+  riskRouting: boolean;
 }
+
+/** How risky a request looks, from explainable keyword rules. */
+export type CouncilRisk = 'low' | 'normal' | 'high';
 
 export type MemberBilling = 'plan' | 'api' | 'unknown';
 
@@ -273,6 +281,9 @@ export interface CouncilRun {
   endedAt?: number;
   /** How the router decided, shown in the panel. */
   routeNote?: string;
+  /** Risk rating of the request and the signals behind it (e.g. ['auth', 'migration']). */
+  risk?: CouncilRisk;
+  riskReasons?: string[];
   steps: CouncilStep[];
   /** Combined result returned to the user / lead agent. */
   result?: string;
@@ -390,6 +401,7 @@ export const DEFAULT_COUNCIL: CouncilSettings = {
   maxFixRounds: 1,
   timeoutMinutes: 20,
   requirePlanBilling: true,
+  riskRouting: true,
 };
 
 export const DEFAULT_CAPABILITIES: Record<ToolName, boolean> = {
