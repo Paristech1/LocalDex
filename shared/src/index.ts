@@ -17,6 +17,8 @@ export type ChatMessage =
       reasoning?: string;
       tool_calls?: ToolCall[];
       ts?: number;
+      /** Set when the text came from cloud council members rather than the local model, e.g. "claude → codex → gemini". */
+      via?: string;
     }
   | { role: 'tool'; tool_call_id: string; name?: string; content: string; ok?: boolean; ts?: number };
 
@@ -62,7 +64,9 @@ export type ToolName =
   | 'ask_user'
   | 'delegate_to_worker'
   | 'update_plan'
-  | 'load_skill';
+  | 'load_skill'
+  | 'ask_member'
+  | 'council';
 
 export const ALL_TOOL_NAMES: ToolName[] = [
   'read_file',
@@ -80,6 +84,8 @@ export const ALL_TOOL_NAMES: ToolName[] = [
   'delegate_to_worker',
   'update_plan',
   'load_skill',
+  'ask_member',
+  'council',
 ];
 
 export interface ToolSchema {
@@ -147,6 +153,129 @@ export interface Session {
   usage: TokenUsage;
   compactions: number;
   compactSummary: string | null;
+  /** 'solo' = the local model leads (default). 'council' = each message is routed to cloud council members. */
+  mode?: SessionMode;
+  /** Council runs in this session, oldest first (capped). */
+  councilRuns?: CouncilRun[];
+}
+
+export type SessionMode = 'solo' | 'council';
+
+// ---------- Model council ----------
+
+/** Cloud members. Each runs through the vendor's own CLI/SDK on your subscription login. */
+export type MemberId = 'claude' | 'codex' | 'gemini' | 'cursor';
+export const MEMBER_IDS: MemberId[] = ['claude', 'codex', 'gemini', 'cursor'];
+/** 'local' is LocalDex's own LM Studio model (runs as a worker with LocalDex's permissions). */
+export type CouncilMemberRef = MemberId | 'local';
+
+export type CouncilRole = 'planner' | 'builder' | 'reviewer' | 'researcher' | 'quick';
+export const COUNCIL_ROLES: CouncilRole[] = ['planner', 'builder', 'reviewer', 'researcher', 'quick'];
+
+export type CouncilPattern = 'single' | 'plan_build_review' | 'second_opinion' | 'vote';
+export type CouncilAccess = 'read' | 'write';
+
+export interface CouncilMemberSettings {
+  enabled: boolean;
+  /** Executable to run. Empty = find it on PATH and the usual install folders. (Not used for cursor, which is an SDK.) */
+  command?: string;
+  /** Model passed to the member. Empty = the member's own default. */
+  model?: string;
+  /** Stronger model used for 'heavy' work (planner/reviewer). Empty = same as model. */
+  heavyModel?: string;
+}
+
+export interface CouncilSettings {
+  /** Master switch. Off = no council tools, no Council mode. */
+  enabled: boolean;
+  members: Record<MemberId, CouncilMemberSettings>;
+  /** For each role, members to try in order. The first one that is enabled, signed in and not rate-limited wins. */
+  roles: Record<CouncilRole, CouncilMemberRef[]>;
+  /** 'rules' = keyword routing (instant, free). 'local' = ask the local model to classify, falling back to rules. */
+  routing: 'rules' | 'local';
+  /** Pattern for plain messages in Council mode. 'auto' lets the router pick. */
+  defaultPattern: CouncilPattern | 'auto';
+  /** Members asked in parallel for 'vote'. */
+  voteMembers: MemberId[];
+  /** Who combines vote answers. */
+  judge: CouncilMemberRef;
+  /** Allow the builder role to edit files in the approved folders. Off (default) = every member is read-only. */
+  allowWrite: boolean;
+  /** Ask the user (approval prompt) before each member run that can edit files. Default on. */
+  confirmWrites: boolean;
+  /** Review → fix rounds in plan_build_review before giving up. */
+  maxFixRounds: number;
+  /** Per member-run timeout. */
+  timeoutMinutes: number;
+  /** Subscription-only guard: refuse to run a member that is signed in with an API key. */
+  requirePlanBilling: boolean;
+}
+
+export type MemberBilling = 'plan' | 'api' | 'unknown';
+
+export interface MemberStatus {
+  id: MemberId;
+  label: string;
+  installed: boolean;
+  version?: string;
+  /** Resolved executable path (CLIs) or package (SDK). */
+  path?: string;
+  signedIn: boolean;
+  billing: MemberBilling;
+  account?: string;
+  /** Command to run in Terminal to sign in. */
+  loginCommand: string;
+  /** True when LocalDex can open the vendor's sign-in page itself (Cursor SDK). */
+  canLoginInApp: boolean;
+  /** Set while the member is cooling down after a usage-limit error (epoch ms). */
+  limitedUntil?: number;
+  lastError?: string;
+  checkedAt: number;
+}
+
+export type CouncilStepStatus = 'queued' | 'running' | 'done' | 'error' | 'limited' | 'skipped' | 'cancelled';
+
+export interface CouncilTranscriptItem {
+  kind: 'text' | 'tool' | 'thinking' | 'note';
+  text?: string;
+  id?: string;
+  name?: string;
+  args?: unknown;
+  ok?: boolean;
+  result?: string;
+}
+
+export interface CouncilStep {
+  id: string;
+  role: CouncilRole | 'judge' | 'voter';
+  member: CouncilMemberRef;
+  model?: string;
+  access: CouncilAccess;
+  status: CouncilStepStatus;
+  startedAt?: number;
+  endedAt?: number;
+  /** Final answer/report from the member (capped). */
+  output?: string;
+  error?: string;
+  billing?: MemberBilling;
+  usage?: { inputTokens: number; outputTokens: number };
+  transcript: CouncilTranscriptItem[];
+  /** Why this member was picked (router note or fallback reason). */
+  note?: string;
+}
+
+export interface CouncilRun {
+  id: string;
+  pattern: CouncilPattern;
+  task: string;
+  status: 'running' | 'done' | 'error' | 'cancelled';
+  startedAt: number;
+  endedAt?: number;
+  /** How the router decided, shown in the panel. */
+  routeNote?: string;
+  steps: CouncilStep[];
+  /** Combined result returned to the user / lead agent. */
+  result?: string;
 }
 
 export interface SessionSummary {
@@ -234,7 +363,34 @@ export interface Settings {
   mcpServers: Record<string, McpServerConfig>;
   /** Names of installed skills the user has switched off (they stay on disk but are hidden from the model). */
   disabledSkills: string[];
+  council: CouncilSettings;
 }
+
+export const DEFAULT_COUNCIL: CouncilSettings = {
+  enabled: false,
+  members: {
+    claude: { enabled: true, model: 'sonnet', heavyModel: 'opus' },
+    codex: { enabled: true },
+    gemini: { enabled: true },
+    cursor: { enabled: true, model: 'auto' },
+  },
+  roles: {
+    planner: ['claude', 'gemini', 'codex'],
+    builder: ['cursor', 'codex', 'claude'],
+    reviewer: ['codex', 'gemini', 'claude'],
+    researcher: ['gemini', 'claude', 'codex'],
+    quick: ['local', 'gemini'],
+  },
+  routing: 'rules',
+  defaultPattern: 'auto',
+  voteMembers: ['claude', 'codex', 'gemini'],
+  judge: 'claude',
+  allowWrite: false,
+  confirmWrites: true,
+  maxFixRounds: 1,
+  timeoutMinutes: 20,
+  requirePlanBilling: true,
+};
 
 export const DEFAULT_CAPABILITIES: Record<ToolName, boolean> = {
   read_file: true,
@@ -252,6 +408,8 @@ export const DEFAULT_CAPABILITIES: Record<ToolName, boolean> = {
   delegate_to_worker: true,
   update_plan: true,
   load_skill: true,
+  ask_member: true,
+  council: true,
 };
 
 export const DEFAULT_SETTINGS: Settings = {
@@ -269,6 +427,7 @@ export const DEFAULT_SETTINGS: Settings = {
   workerConcurrency: 2,
   systemPrompt: '',
   disabledSkills: [],
+  council: DEFAULT_COUNCIL,
   mcpServers: {
     playwright: {
       command: 'npx',
@@ -301,7 +460,8 @@ export interface ModelInfo {
 
 // ---------- WebSocket protocol ----------
 
-export type AgentId = 'main' | `worker:${string}`;
+/** 'member:<stepId>' streams a council member's live output. */
+export type AgentId = 'main' | `worker:${string}` | `member:${string}`;
 
 export type ServerEvent =
   | { type: 'hello'; settings: Settings; sessions: SessionSummary[]; session: Session | null; models: ModelInfo[] }
@@ -311,6 +471,8 @@ export type ServerEvent =
   | { type: 'models'; models: ModelInfo[]; error?: string }
   | { type: 'mcp_status'; servers: McpServerStatus[] }
   | { type: 'skills'; skills: SkillInfo[] }
+  | { type: 'council_status'; members: MemberStatus[] }
+  | { type: 'council_login'; member: MemberId; url?: string; done?: boolean; error?: string }
   | { type: 'agent_status'; sessionId: string; agent: AgentId; status: AgentStatus; detail?: string }
   | { type: 'assistant_delta'; sessionId: string; agent: AgentId; delta: string }
   | { type: 'reasoning_delta'; sessionId: string; agent: AgentId; delta: string }
@@ -339,5 +501,8 @@ export type ClientEvent =
   | { type: 'set_goal'; sessionId: string; goal: { mode: GoalMode; brief: string; doneCriteria: string; maxIterations: number } }
   | { type: 'clear_goal'; sessionId: string }
   | { type: 'compact'; sessionId: string }
+  | { type: 'set_mode'; sessionId: string; mode: SessionMode }
+  | { type: 'council_refresh' }
+  | { type: 'council_login'; member: MemberId }
   | { type: 'reset_worker'; sessionId: string; name: string }
   | { type: 'delete_worker'; sessionId: string; name: string };

@@ -3,6 +3,7 @@ import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import type { ChatMessage } from '@localdex/shared';
 import { ToolCard } from './ToolCard';
+import { ViaBadge } from './Council';
 import { cx } from './ui';
 
 export const Markdown = memo(function Markdown({ text }: { text: string }) {
@@ -60,16 +61,19 @@ export function AssistantBubble({
   children,
   streaming,
   label,
+  via,
 }: {
   content: string | null;
   reasoning?: string;
   children?: React.ReactNode;
   streaming?: boolean;
   label?: string;
+  via?: string;
 }) {
   return (
-    <div className="my-2">
+    <div className={cx('my-2', via && 'border-l-2 border-[#7cc0f2]/40 pl-3')}>
       {label && <div className="text-[11px] text-ink-400 mb-1 font-mono">{label}</div>}
+      {via && <ViaBadge via={via} />}
       <Reasoning text={reasoning ?? ''} streaming={streaming && !content} />
       {content && (
         <div className="text-ink-100">
@@ -93,7 +97,7 @@ export function MessageList({ messages, label }: { messages: ChatMessage[]; labe
         if (m.role === 'system' || m.role === 'tool') return null;
         if (m.role === 'user') return <UserBubble key={i} text={m.content} />;
         return (
-          <AssistantBubble key={i} content={m.content} reasoning={m.reasoning} label={label}>
+          <AssistantBubble key={i} content={m.content} reasoning={m.reasoning} label={label} via={m.via}>
             {m.tool_calls?.map((tc) => {
               const r = toolResults.get(tc.id);
               let args: unknown = tc.function.arguments;

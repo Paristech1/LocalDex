@@ -4,6 +4,8 @@ import type {
   AgentStatus,
   ClientEvent,
   McpServerStatus,
+  MemberId,
+  MemberStatus,
   ModelInfo,
   ServerEvent,
   SkillInfo,
@@ -53,6 +55,8 @@ export interface State {
   logs: LogEntry[];
   mcp: McpServerStatus[];
   skills: SkillInfo[];
+  council: MemberStatus[];
+  councilLogin: { member: MemberId; url?: string; done?: boolean; error?: string } | null;
   error: string | null;
 }
 
@@ -69,6 +73,8 @@ let state: State = {
   logs: [],
   mcp: [],
   skills: [],
+  council: [],
+  councilLogin: null,
   error: null,
 };
 
@@ -190,6 +196,12 @@ function handle(ev: ServerEvent): void {
       return;
     case 'skills':
       set({ skills: ev.skills });
+      return;
+    case 'council_status':
+      set({ council: ev.members });
+      return;
+    case 'council_login':
+      set({ councilLogin: { member: ev.member, url: ev.url, done: ev.done, error: ev.error } });
       return;
     case 'agent_status':
       if (ev.sessionId !== state.session?.id) return;

@@ -6,6 +6,7 @@ import { shell_run } from './shell.js';
 import { terminal_close, terminal_open, terminal_read, terminal_send } from './terminal.js';
 import { ask_user, delegate_to_worker, update_plan } from './agentTools.js';
 import { load_skill } from './skillTool.js';
+import { ask_member, council } from './councilTools.js';
 import { enabledSkills } from '../skills/store.js';
 import { PermissionError } from './permissions.js';
 import { isMcpTool, mcpToolSchemas, runMcpTool } from '../mcp/client.js';
@@ -27,16 +28,22 @@ export const registry: ToolRegistry = {
   delegate_to_worker,
   update_plan,
   load_skill,
+  ask_member,
+  council,
 };
+
+const COUNCIL_TOOLS = new Set<ToolName>(['ask_member', 'council']);
 
 /** Tool schemas enabled for a given agent kind, honouring the user's capability toggles. */
 export function enabledTools(kind: 'main' | 'worker'): ToolSchema[] {
   const caps = getSettings().capabilities;
+  const councilOn = getSettings().council.enabled;
   const builtin = (Object.keys(registry) as ToolName[])
     .filter((name) => caps[name] !== false)
     .filter((name) => kind === 'main' || !registry[name].mainOnly)
     // No point showing a small model a tool it can't use.
     .filter((name) => name !== 'load_skill' || enabledSkills().length > 0)
+    .filter((name) => councilOn || !COUNCIL_TOOLS.has(name))
     .map((name) => registry[name].schema);
   return [...builtin, ...mcpToolSchemas(kind)];
 }
@@ -75,6 +82,9 @@ export async function executeTool(call: ToolCall, ctx: ToolContext): Promise<Too
   if (!def) return { ok: false, content: `Unknown tool "${name}". Available: ${Object.keys(registry).join(', ')}` };
   if (getSettings().capabilities[name] === false) {
     return { ok: false, content: `Tool "${name}" is disabled in Settings → Capabilities.` };
+  }
+  if (COUNCIL_TOOLS.has(name) && !getSettings().council.enabled) {
+    return { ok: false, content: 'The model council is turned off (Settings → Council).' };
   }
   if (def.mainOnly && ctx.agent !== 'main') {
     return { ok: false, content: `Tool "${name}" is not available to workers.` };

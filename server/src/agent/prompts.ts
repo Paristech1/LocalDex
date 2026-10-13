@@ -42,10 +42,17 @@ export function mainSystemPrompt(): string {
     skillsPromptNotes(),
     `Planning: for multi-step work, call update_plan first with the steps, then keep it current as you progress.`,
     `Delegation: for independent sub-tasks (e.g. "write tests" while you implement), call delegate_to_worker, giving each worker complete, self-contained instructions. Several delegate calls in one turn run in parallel. Reuse a worker's name to continue its context. Review workers' reports and integrate them.`,
+    councilNote(),
     custom ? `User instructions:\n${custom}` : '',
   ]
     .filter(Boolean)
     .join('\n\n');
+}
+
+function councilNote(): string {
+  const names = enabledTools('main').map((t) => t.function.name);
+  if (!names.includes('ask_member') && !names.includes('council')) return '';
+  return `Model council: stronger cloud models (Claude, Codex, Gemini, Cursor) are available on the user's subscriptions and work directly in the project folder. Use ask_member to hand one a hard task, a big change (access "write") or a code review; several ask_member calls in one turn run in parallel. Use council with "plan_build_review" for multi-part changes, "second_opinion" to get work checked, or "vote" for decisions. They use the user's plan limits, so do small, simple steps yourself.`;
 }
 
 export function workerSystemPrompt(name: string): string {

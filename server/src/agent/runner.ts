@@ -1,4 +1,4 @@
-import type { GoalMode, Session } from '@localdex/shared';
+import type { ChatMessage, GoalMode, Session, SessionMode } from '@localdex/shared';
 import { getSettings } from '../config.js';
 import { enabledTools } from '../tools/index.js';
 import { saveSession } from '../store.js';
@@ -8,6 +8,9 @@ import { assessGoal } from './goal.js';
 import { runLoop } from './loop.js';
 import { goalContinuePrompt, mainSystemPrompt } from './prompts.js';
 import { WorkerManager } from './workers.js';
+import { runCouncil, runSummary, runVia, type CouncilContext } from '../council/orchestrator.js';
+import { classify, classifyWithLocal, parseCommand, type Route } from '../council/router.js';
+import type { CouncilRequest } from '../tools/types.js';
 
 /** Orchestrates one session: main loop, corrections, workers, goal/loop autonomy, compaction. */
 export class SessionRunner {
@@ -44,7 +47,85 @@ export class SessionRunner {
     this.session.messages.push({ role: 'user', content, ts: Date.now() });
     this.persist();
     this.sync();
-    await this.run();
+    if (this.councilMode) await this.runCouncilTurn(content);
+    else await this.run();
+  }
+
+  /** Council mode is on for this session and the council is enabled in Settings. */
+  get councilMode(): boolean {
+    return this.session.mode === 'council' && getSettings().council.enabled;
+  }
+
+  setMode(mode: SessionMode): void {
+    this.session.mode = mode;
+    this.persist();
+    this.sync();
+  }
+
+  private councilContext(signal: AbortSignal): CouncilContext {
+    return {
+      session: this.session,
+      signal,
+      persist: () => {
+        this.persist();
+        this.sync();
+      },
+      delegateLocal: (name, task) => this.workers.delegate(name, task, signal),
+    };
+  }
+
+  /** The local lead agent's ask_member / council tools land here. */
+  private councilFor(signal: AbortSignal) {
+    return async (req: CouncilRequest): Promise<string> => {
+      const route: Route = { pattern: req.pattern, role: req.role, member: req.member, task: req.task, note: 'requested by the local lead agent' };
+      const run = await runCouncil(this.councilContext(signal), route);
+      return `[council ${run.pattern} via ${runVia(run)}]\n${runSummary(run)}\n\n${run.result ?? '(no result)'}`;
+    };
+  }
+
+  /** Council mode: route the message to cloud members instead of the local model. */
+  private async runCouncilTurn(content: string): Promise<void> {
+    if (this.running) return;
+    const ac = new AbortController();
+    this.abort = ac;
+    const s = this.session;
+    try {
+      const c = getSettings().council;
+      let route = parseCommand(content);
+      if (!route) {
+        if (c.defaultPattern === 'auto') route = c.routing === 'local' ? await classifyWithLocal(content, ac.signal) : classify(content);
+        else route = { ...classify(content), pattern: c.defaultPattern, note: `default pattern: ${c.defaultPattern}` };
+      }
+      const asked = route.task;
+      const history = conversationContext(s.messages.slice(0, -1));
+      if (history) route = { ...route, task: `${route.task}\n\n---\nEarlier in this conversation (for context):\n${history}` };
+      bus.log('info', `[council] ${route.note}`);
+
+      const run = await runCouncil(this.councilContext(ac.signal), route);
+      const callId = `council-${run.id}`;
+      const now = Date.now();
+      s.messages.push({ role: 'assistant', content: null, tool_calls: [{ id: callId, type: 'function', function: { name: 'council', arguments: JSON.stringify({ pattern: run.pattern, task: asked }) } }], ts: now });
+      s.messages.push({ role: 'tool', tool_call_id: callId, name: 'council', content: runSummary(run), ok: run.status === 'done', ts: now });
+      s.messages.push({ role: 'assistant', content: run.result ?? '(no result)', via: runVia(run), ts: now });
+    } catch (e) {
+      const msg = (e as Error).message;
+      if (!ac.signal.aborted) {
+        bus.log('error', msg);
+        bus.emit({ type: 'error', sessionId: s.id, message: msg });
+      }
+    } finally {
+      this.abort = null;
+      bus.emit({ type: 'agent_status', sessionId: s.id, agent: 'main', status: 'idle' });
+      this.persist();
+      this.sync();
+      if (this.corrections.length) {
+        const pending = this.corrections;
+        this.corrections = [];
+        const next = pending.join('\n\n');
+        s.messages.push({ role: 'user', content: next, ts: Date.now() });
+        void (this.councilMode ? this.runCouncilTurn(next) : this.run());
+      }
+    }
   }
 
   stop(): void {
@@ -132,6 +213,7 @@ export class SessionRunner {
           signal: ac.signal,
           maxSteps: getSettings().maxSteps,
           delegate: (name, task) => this.workers.delegate(name, task, ac.signal),
+          council: getSettings().council.enabled ? this.councilFor(ac.signal) : undefined,
           updatePlan: (steps) => {
             s.plan = steps;
             this.persist();
@@ -223,6 +305,26 @@ export class SessionRunner {
     if (first?.role === 'system') first.content = prompt;
     else this.session.messages.unshift({ role: 'system', content: prompt });
   }
+}
+
+/** Recent user/assistant text so council members can follow up on earlier turns. */
+function conversationContext(messages: ChatMessage[], maxChars = 6000): string {
+  const parts: string[] = [];
+  let used = 0;
+  for (let i = messages.length - 1; i >= 0 && used < maxChars; i--) {
+    const m = messages[i];
+    if (m.role === 'user' && !m.content.startsWith('[')) {
+      const t = `User: ${m.content}`;
+      parts.unshift(t.slice(0, 1500));
+      used += Math.min(t.length, 1500);
+    } else if (m.role === 'assistant' && m.content) {
+      const t = `Assistant${m.via ? ` (${m.via})` : ''}: ${m.content}`;
+      parts.unshift(t.slice(0, 2000));
+      used += Math.min(t.length, 2000);
+    }
+    if (parts.length >= 8) break;
+  }
+  return parts.join('\n\n');
 }
 
 const runners = new Map<string, SessionRunner>();

@@ -3,13 +3,15 @@ import { ALL_TOOL_NAMES, type Settings, type ShellApprovalMode, type ToolMode } 
 import { send, useStore } from '../store';
 import { collectDropped, fromInput, importGithub, removeSkill, setSkillEnabled, summarize, uploadSkills, type UploadEntry } from '../skills';
 import { Button, Field, Toggle, cx, inputCls } from './ui';
+import { CouncilSettingsTab } from './Council';
 
-type Tab = 'workspace' | 'model' | 'capabilities' | 'skills' | 'mcp' | 'prompt';
+export type SettingsTab = 'workspace' | 'model' | 'capabilities' | 'skills' | 'mcp' | 'council' | 'prompt';
+type Tab = SettingsTab;
 
-export function SettingsModal({ onClose }: { onClose: () => void }) {
+export function SettingsModal({ onClose, initialTab }: { onClose: () => void; initialTab?: SettingsTab }) {
   const settings = useStore((s) => s.settings);
   const models = useStore((s) => s.models);
-  const [tab, setTab] = useState<Tab>(settings?.approvedFolders.length ? 'model' : 'workspace');
+  const [tab, setTab] = useState<Tab>(initialTab ?? (settings?.approvedFolders.length ? 'model' : 'workspace'));
   if (!settings) return null;
 
   const patch = (p: Partial<Settings>) => send({ type: 'set_settings', patch: p });
@@ -26,6 +28,7 @@ export function SettingsModal({ onClose }: { onClose: () => void }) {
               ['capabilities', 'Capabilities'],
               ['skills', 'Skills'],
               ['mcp', 'MCP Servers'],
+              ['council', 'Council'],
               ['prompt', 'Instructions'],
             ] as Array<[Tab, string]>
           ).map(([id, label]) => (
@@ -46,6 +49,7 @@ export function SettingsModal({ onClose }: { onClose: () => void }) {
             {tab === 'capabilities' && <CapabilitiesTab settings={settings} patch={patch} />}
             {tab === 'skills' && <SkillsTab />}
             {tab === 'mcp' && <McpTab settings={settings} patch={patch} />}
+            {tab === 'council' && <CouncilSettingsTab settings={settings} patch={patch} />}
             {tab === 'prompt' && <PromptTab settings={settings} patch={patch} />}
           </div>
           <div className="border-t border-ink-700 px-5 py-3 flex justify-end">

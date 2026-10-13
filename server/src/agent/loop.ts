@@ -1,7 +1,7 @@
 import type { AgentId, ChatMessage, PlanStep, ToolCall, ToolSchema } from '@localdex/shared';
 import { streamChat } from '../lmstudio.js';
 import { executeTool } from '../tools/index.js';
-import type { ToolContext } from '../tools/types.js';
+import type { CouncilRequest, ToolContext } from '../tools/types.js';
 import { bus } from './bus.js';
 
 export type StopReason = 'done' | 'max_steps' | 'aborted' | 'error';
@@ -18,6 +18,7 @@ export interface LoopParams {
   temperature?: number;
   delegate?: (name: string, task: string) => Promise<string>;
   updatePlan?: (steps: PlanStep[]) => void;
+  council?: (req: CouncilRequest) => Promise<string>;
   /** Called before each model call; returns user messages to inject (mid-run corrections). */
   pullCorrections?: () => string[];
   /** Called before each model call; may compact `messages` in place. */
@@ -134,6 +135,7 @@ export async function runLoop(p: LoopParams): Promise<LoopResult> {
       askUser: (q) => bus.askUser(sessionId, agent, q, p.signal),
       delegate: p.delegate,
       updatePlan: p.updatePlan,
+      council: p.council,
     };
 
     const outcomes = await executeCalls(result.toolCalls, ctx);
@@ -205,7 +207,8 @@ async function executeCalls(calls: ToolCall[], ctx: ToolContext): Promise<Outcom
   };
 
   for (let i = 0; i < calls.length; i++) {
-    if (calls[i].function.name === 'delegate_to_worker') {
+    // Workers and council asks run in parallel with each other (that is the point of tag-teaming).
+    if (calls[i].function.name === 'delegate_to_worker' || calls[i].function.name === 'ask_member') {
       parallel.push(runOne(i));
       continue;
     }

@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { send, useStore, type Prompt } from '../store';
 import { AssistantBubble, MessageList } from './Message';
 import { ToolCard } from './ToolCard';
+import { CouncilRunCard } from './Council';
 import { Button, StatusDot, cx, inputCls, statusLabel } from './ui';
 
 export function Chat() {
@@ -25,6 +26,8 @@ export function Chat() {
   const liveTools = (live?.tools ?? []).filter((t) => !knownCallIds.has(t.callId));
   const showLive = live && (live.content || live.reasoning || liveTools.length > 0);
   const noFolders = settings && settings.approvedFolders.length === 0;
+  const councilMode = !!settings?.council.enabled && session.mode === 'council';
+  const liveRun = [...(session.councilRuns ?? [])].reverse().find((r) => r.status === 'running');
 
   return (
     <div className="flex flex-col flex-1 min-w-0 min-h-0">
@@ -37,7 +40,7 @@ export function Chat() {
         className="flex-1 overflow-y-auto px-6 py-4"
       >
         <div className="max-w-3xl mx-auto">
-          {session.messages.length <= 1 && !showLive && <Welcome noFolders={!!noFolders} />}
+          {session.messages.length <= 1 && !showLive && !liveRun && <Welcome noFolders={!!noFolders} council={councilMode} />}
           <MessageList messages={session.messages} />
           {showLive && (
             <AssistantBubble content={live.content || null} reasoning={live.reasoning} streaming={!live.done}>
@@ -46,7 +49,12 @@ export function Chat() {
               ))}
             </AssistantBubble>
           )}
-          {running && !showLive && (
+          {liveRun && (
+            <div className="my-3">
+              <CouncilRunCard run={liveRun} defaultOpen compact />
+            </div>
+          )}
+          {running && !showLive && !liveRun && (
             <div className="flex items-center gap-2 text-xs text-ink-400 my-3">
               <StatusDot status={status?.status} /> {statusLabel(status?.status, status?.detail)}
             </div>
@@ -59,14 +67,38 @@ export function Chat() {
           {prompts.map((p) => (
             <PromptCard key={p.id} prompt={p} />
           ))}
-          <Composer sessionId={session.id} running={running} status={status?.status} detail={status?.detail} />
+          <Composer sessionId={session.id} running={running} status={status?.status} detail={status?.detail} council={councilMode} />
         </div>
       </div>
     </div>
   );
 }
 
-function Welcome({ noFolders }: { noFolders: boolean }) {
+function Welcome({ noFolders, council }: { noFolders: boolean; council?: boolean }) {
+  if (council && !noFolders) {
+    return (
+      <div className="text-center py-16 text-ink-300">
+        <div className="text-3xl font-semibold text-ink-100 tracking-tight">
+          LocalDex <span className="text-[#7cc0f2]">Council</span>
+        </div>
+        <div className="mt-2 text-sm">Claude, Codex, Gemini and Cursor on your subscriptions. Routed by task.</div>
+        <div className="mt-6 inline-grid grid-cols-[auto_1fr] gap-x-4 gap-y-1 text-left text-xs">
+          <span className="font-mono text-ink-200">/ask claude …</span>
+          <span className="text-ink-400">one member, by name</span>
+          <span className="font-mono text-ink-200">/build …</span>
+          <span className="text-ink-400">plan → build → review</span>
+          <span className="font-mono text-ink-200">/second …</span>
+          <span className="text-ink-400">build, then a second opinion</span>
+          <span className="font-mono text-ink-200">/review …</span>
+          <span className="text-ink-400">reviewer only</span>
+          <span className="font-mono text-ink-200">/vote …</span>
+          <span className="text-ink-400">independent answers + a judge</span>
+          <span className="font-mono text-ink-200">anything else</span>
+          <span className="text-ink-400">the router picks</span>
+        </div>
+      </div>
+    );
+  }
   return (
     <div className="text-center py-16 text-ink-300">
       <div className="text-3xl font-semibold text-ink-100 tracking-tight">LocalDex</div>
@@ -85,7 +117,7 @@ function Welcome({ noFolders }: { noFolders: boolean }) {
   );
 }
 
-function Composer({ sessionId, running, status, detail }: { sessionId: string; running: boolean; status?: string; detail?: string }) {
+function Composer({ sessionId, running, status, detail, council }: { sessionId: string; running: boolean; status?: string; detail?: string; council?: boolean }) {
   const [text, setText] = useState('');
   const ref = useRef<HTMLTextAreaElement>(null);
 
@@ -104,7 +136,7 @@ function Composer({ sessionId, running, status, detail }: { sessionId: string; r
   }, [text]);
 
   return (
-    <div className="rounded-xl border border-ink-600 bg-ink-900 focus-within:border-accent/60">
+    <div className={cx('rounded-xl border bg-ink-900', council ? 'border-[#7cc0f2]/40 focus-within:border-[#7cc0f2]/70' : 'border-ink-600 focus-within:border-accent/60')}>
       <textarea
         ref={ref}
         value={text}
@@ -116,7 +148,15 @@ function Composer({ sessionId, running, status, detail }: { sessionId: string; r
           }
         }}
         rows={1}
-        placeholder={running ? 'Send a correction — it is delivered before the next model call…' : 'What should LocalDex do? (Enter to send, Shift+Enter for newline)'}
+        placeholder={
+          council
+            ? running
+              ? 'Queue a follow-up — it runs when the council finishes…'
+              : 'Ask the council… (/ask claude, /build, /second, /review, /vote; Enter to send)'
+            : running
+              ? 'Send a correction — it is delivered before the next model call…'
+              : 'What should LocalDex do? (Enter to send, Shift+Enter for newline)'
+        }
         className="w-full bg-transparent resize-none px-4 pt-3 pb-1 text-sm focus:outline-none placeholder:text-ink-400"
       />
       <div className="flex items-center justify-between px-3 pb-2">
@@ -141,16 +181,17 @@ function Composer({ sessionId, running, status, detail }: { sessionId: string; r
 
 function PromptCard({ prompt }: { prompt: Prompt }) {
   const [answer, setAnswer] = useState('');
-  const who = prompt.agent === 'main' ? 'Agent' : prompt.agent.replace('worker:', 'Worker ');
+  const isMember = prompt.agent.startsWith('member:');
+  const who = prompt.agent === 'main' ? 'Agent' : isMember ? 'Council' : prompt.agent.replace('worker:', 'Worker ');
   if (prompt.kind === 'approval') {
     return (
       <div className="rounded-lg border border-warn/40 bg-warn/10 px-4 py-3 text-sm">
-        <div className="text-warn text-xs font-medium mb-1">{who} wants to run a command</div>
+        <div className="text-warn text-xs font-medium mb-1">{isMember ? 'A council member wants to edit files' : `${who} wants to run a command`}</div>
         <pre className="font-mono text-xs bg-ink-950 rounded-md px-3 py-2 whitespace-pre-wrap break-words">{prompt.command}</pre>
         <div className="text-[11px] text-ink-400 mt-1">in {prompt.cwd}</div>
         <div className="flex gap-2 mt-2">
           <Button variant="primary" size="sm" onClick={() => send({ type: 'approval_response', id: prompt.id, approved: true })}>
-            Allow
+            {isMember ? 'Allow edits' : 'Allow'}
           </Button>
           <Button variant="danger" size="sm" onClick={() => send({ type: 'approval_response', id: prompt.id, approved: false })}>
             Deny

@@ -142,6 +142,49 @@ program on your machine.
 MCP tools appear to the model as `mcp_<server>_<tool>`. Their output is wrapped in `<mcp_result>` tags and the system
 prompt tells the model to treat it as untrusted data (web pages can contain prompt injection).
 
+## Model council (cloud models on your subscriptions)
+
+LocalDex can hand work to **Claude, Codex (OpenAI), Gemini and Cursor**. Each one runs through the vendor's own tool, on the subscription you are signed into there. LocalDex never handles your passwords or keys.
+
+| Member | Runs as | Sign in once (Terminal) |
+|---|---|---|
+| Claude | `claude -p --output-format stream-json` | `claude auth login` (Pro/Max) |
+| Codex | `codex exec --json` | `codex login` (ChatGPT plan) |
+| Gemini | `gemini -p -o stream-json` | `gemini`, then "Login with Google" |
+| Cursor | `@cursor/sdk` local agent | **Settings → Council → Sign in** |
+
+Install the CLIs you want (`npm i -g @anthropic-ai/claude-code @openai/codex @google/gemini-cli`), then turn on **Settings → Council**. The tab shows each member's install, sign-in and billing status.
+
+**Two ways to use it**
+
+- **Council mode** (top bar → ☁ Council): each message goes to the council.
+  - `/ask claude …` asks one member by name.
+  - `/build …` runs plan → build → review.
+  - `/second …` builds, then gets a second opinion.
+  - `/review …` sends it to the reviewer only.
+  - `/vote …` collects independent answers, then a judge combines them.
+  - Plain messages are routed automatically (keyword rules, or the local model if you pick that).
+- **Solo mode**: your local model leads. It can call `ask_member` and `council` itself when a task is too big for it, so the work tag-teams.
+
+**Routing and fallback.** Each role (planner, builder, reviewer, researcher, quick) has an ordered list of members. A member that is off, signed out, or at its usage limit is skipped. When a member hits a limit mid-run, the next one takes over, and the first one cools down until its reset time.
+
+**Guardrails**
+
+- **Subscription only (default on).**
+  - API-key variables (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GEMINI_API_KEY`, …) are removed before a member starts.
+  - Members signed in with an API key are refused.
+  - If Claude starts on API billing anyway, LocalDex stops it.
+- **Read-only by default.** File edits by the builder are off until you enable them. When on, LocalDex asks before each edit step.
+- **Separate permissions.** Members use their vendor's own tools and permission modes, not LocalDex's tools:
+  - Claude: edits blocked when read-only, `acceptEdits` when allowed.
+  - Codex: `read-only` / `workspace-write` sandbox.
+  - Gemini: `plan` / `auto_edit` approval mode.
+  - Cursor: mutating tools disallowed when read-only.
+- **Approved folders only.** Members start in your first approved folder, and the other approved folders are passed as extra directories.
+- **Executables come from config only.** Member programs are found on `PATH`, or set with `council.members.<name>.command` in `~/.localdex/config.json`. That setting cannot be changed from the UI.
+
+The task, and any files a member reads, go to that vendor. Every message written by the council is marked with ☁ in the chat, and the **Council** tab in the right panel shows each run step by step: who did what, live output, tool calls, timing and tokens.
+
 ## Choosing a model
 
 Agentic work depends almost entirely on how reliably the model calls tools and tells the truth

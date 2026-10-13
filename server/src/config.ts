@@ -1,7 +1,14 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
-import { DEFAULT_SETTINGS, DEFAULT_CAPABILITIES, type Settings } from '@localdex/shared';
+import {
+  DEFAULT_COUNCIL,
+  DEFAULT_SETTINGS,
+  DEFAULT_CAPABILITIES,
+  MEMBER_IDS,
+  type CouncilSettings,
+  type Settings,
+} from '@localdex/shared';
 
 export const DATA_DIR = process.env.LOCALDEX_HOME ?? path.join(os.homedir(), '.localdex');
 export const SESSIONS_DIR = path.join(DATA_DIR, 'sessions');
@@ -18,10 +25,42 @@ function load(): Settings {
       ...DEFAULT_SETTINGS,
       ...raw,
       capabilities: { ...DEFAULT_CAPABILITIES, ...(raw.capabilities ?? {}) },
+      council: mergeCouncil(DEFAULT_COUNCIL, raw.council),
     };
   } catch {
     return { ...DEFAULT_SETTINGS };
   }
+}
+
+/** Deep-merge a (partial) council patch so older config files and partial UI patches keep every field. */
+export function mergeCouncil(base: CouncilSettings, patch: Partial<CouncilSettings> | undefined): CouncilSettings {
+  if (!patch) return base;
+  const members = { ...base.members };
+  for (const id of MEMBER_IDS) {
+    if (patch.members?.[id]) members[id] = { ...base.members[id], ...patch.members[id] };
+  }
+  return {
+    ...base,
+    ...patch,
+    members,
+    roles: { ...base.roles, ...(patch.roles ?? {}) },
+  };
+}
+
+/**
+ * Settings patches from the UI/WebSocket may not change which program a council member runs:
+ * like MCP commands, executables can only be set in ~/.localdex/config.json.
+ */
+export function stripCouncilCommands(patch: Partial<CouncilSettings> | undefined): Partial<CouncilSettings> | undefined {
+  if (!patch?.members) return patch;
+  const members: Partial<CouncilSettings['members']> = {};
+  for (const id of MEMBER_IDS) {
+    const m = patch.members[id];
+    if (!m) continue;
+    const { command: _drop, ...rest } = m;
+    members[id] = { ...rest, command: settings.council.members[id]?.command } as CouncilSettings['members'][typeof id];
+  }
+  return { ...patch, members: members as CouncilSettings['members'] };
 }
 
 export function getSettings(): Settings {
@@ -33,6 +72,7 @@ export function updateSettings(patch: Partial<Settings>): Settings {
     ...settings,
     ...patch,
     capabilities: { ...settings.capabilities, ...(patch.capabilities ?? {}) },
+    council: mergeCouncil(settings.council, patch.council),
   };
   if (patch.approvedFolders) {
     settings.approvedFolders = Array.from(

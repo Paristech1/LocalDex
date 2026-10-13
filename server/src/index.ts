@@ -7,7 +7,8 @@ import { serve } from '@hono/node-server';
 import { serveStatic } from '@hono/node-server/serve-static';
 import { WebSocketServer, WebSocket } from 'ws';
 import type { ClientEvent, ServerEvent } from '@localdex/shared';
-import { DATA_DIR, applyMcpToggles, expandHome, getSettings, updateSettings } from './config.js';
+import { DATA_DIR, applyMcpToggles, expandHome, getSettings, stripCouncilCommands, updateSettings } from './config.js';
+import { MEMBERS, cachedStatuses, memberStatuses } from './council/registry.js';
 import { listModels } from './lmstudio.js';
 import { createSession, deleteSession, flushAll, getSession, listSessions, saveSession } from './store.js';
 import { bus } from './agent/bus.js';
@@ -126,6 +127,7 @@ const wss = new WebSocketServer({
   },
 });
 let modelsCache: Awaited<ReturnType<typeof listModels>> = [];
+let loginAbort: AbortController | null = null;
 
 function send(ws: WebSocket, ev: ServerEvent): void {
   if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(ev));
@@ -156,6 +158,9 @@ wss.on('connection', (ws) => {
   send(ws, { type: 'hello', settings: getSettings(), sessions, session: current, models: modelsCache });
   send(ws, { type: 'mcp_status', servers: mcpStatuses() });
   send(ws, { type: 'skills', skills: listSkills() });
+  const cached = cachedStatuses();
+  if (cached.length) send(ws, { type: 'council_status', members: cached });
+  void memberStatuses().catch(() => undefined);
   void refreshModels();
 
   ws.on('message', async (raw) => {
@@ -214,14 +219,41 @@ async function handle(ws: WebSocket, ev: ClientEvent): Promise<void> {
     }
     case 'set_settings': {
       // MCP server definitions run local programs, so only enable/disable toggles are accepted over the socket.
-      const { mcpServers, ...rest } = ev.patch;
-      let settings = updateSettings(rest);
+      const { mcpServers, council, ...rest } = ev.patch;
+      let settings = updateSettings(council ? { ...rest, council: stripCouncilCommands(council) as typeof council } : rest);
       if (mcpServers) {
         settings = applyMcpToggles(mcpServers);
         void reloadMcp();
       }
       bus.emit({ type: 'settings', settings });
       if (rest.baseUrl) void refreshModels();
+      if (council?.members) void memberStatuses(true).catch(() => undefined);
+      return;
+    }
+    case 'set_mode': {
+      const s = getSession(ev.sessionId);
+      if (!s) return;
+      if (ev.mode === 'council' && !getSettings().council.enabled) {
+        return send(ws, { type: 'error', sessionId: s.id, message: 'Turn on the model council in Settings → Council first.' });
+      }
+      runnerFor(s).setMode(ev.mode === 'council' ? 'council' : 'solo');
+      return;
+    }
+    case 'council_refresh':
+      void memberStatuses(true).catch((e) => send(ws, { type: 'error', message: `Council status check failed: ${(e as Error).message}` }));
+      return;
+    case 'council_login': {
+      // Only members with an official in-app sign-in (Cursor SDK). CLIs sign in from Terminal.
+      const adapter = MEMBERS[ev.member];
+      if (!adapter?.login) return send(ws, { type: 'error', message: `${adapter?.label ?? ev.member} signs in from Terminal; see Settings → Council.` });
+      loginAbort?.abort();
+      const ac = new AbortController();
+      loginAbort = ac;
+      setTimeout(() => ac.abort(), 5 * 60_000).unref();
+      const r = await adapter.login((url) => bus.emit({ type: 'council_login', member: ev.member, url }), ac.signal);
+      if (loginAbort === ac) loginAbort = null;
+      bus.emit({ type: 'council_login', member: ev.member, done: true, error: r.ok ? undefined : r.error });
+      void memberStatuses(true).catch(() => undefined);
       return;
     }
     case 'list_models':
