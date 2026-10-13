@@ -1,6 +1,6 @@
-import type { CouncilAccess, CouncilRole } from '@localdex/shared';
+import type { CouncilAccess, CouncilStep } from '@localdex/shared';
 
-const ROLE_BRIEF: Record<CouncilRole | 'judge' | 'voter', string> = {
+const ROLE_BRIEF: Record<CouncilStep['role'], string> = {
   planner: 'You are the PLANNER. Inspect the code you need, then produce a concrete, numbered implementation plan: files to change (full paths), what to change in each, new files, edge cases, and how to verify (exact commands). Do not change any files.',
   builder: 'You are the BUILDER. Carry out the task (and the plan, if one is given) completely. Make the edits, keep changes minimal and consistent with the codebase style, and verify where you can.',
   frontend: 'You are the BUILDER for frontend work (UI, components, styling, layout, accessibility). Carry out the task (and the plan, if one is given) completely. Follow the project\'s existing component patterns, styling system and design tokens; keep layouts responsive and accessible (labels, focus, contrast); keep changes minimal and verify where you can (typecheck, build, tests).',
@@ -10,11 +10,12 @@ const ROLE_BRIEF: Record<CouncilRole | 'judge' | 'voter', string> = {
   vision: 'You are the VISION member. The request is about one or more images (screenshots, mockups, designs). Open each image with your own file-reading tools and look at it carefully, then answer: describe what matters, compare it with the code when asked, and give concrete, actionable findings (components, layout, spacing, colors, text, errors shown). Do not change any files.',
   quick: 'Answer the question directly and briefly. Do not change any files.',
   voter: 'You are one of several independent advisers. Give your own best answer with your reasoning. Be decisive. Do not change any files.',
+  peer: 'You are a PEER REVIEWER on the council. Several advisers answered the same question independently; their answers are shown anonymized as Response A, B, C… Judge each one on correctness, completeness and usefulness for this codebase, not on style or length. Do not change any files.',
   judge: 'You are the JUDGE. Several advisers answered the same question independently. Compare their answers, say where they agree and disagree, point out any that are wrong, and give one final recommendation. Do not change any files.',
 };
 
 /** System-style instructions for a member run. */
-export function memberInstructions(role: CouncilRole | 'judge' | 'voter', access: CouncilAccess, cwd: string): string {
+export function memberInstructions(role: CouncilStep['role'], access: CouncilAccess, cwd: string): string {
   return [
     `You are a member of the LocalDex model council, working inside the user's project at ${cwd}.`,
     ROLE_BRIEF[role],
@@ -67,8 +68,19 @@ export function votePrompt(question: string): string {
   return `Question from the user:\n${question}\n\nGive your answer. End with one line starting "Bottom line:".`;
 }
 
-export function judgePrompt(question: string, answers: Array<{ member: string; text: string }>): string {
-  return `Question from the user:\n${question}\n\n${answers.map((a, i) => `--- Adviser ${i + 1} (${a.member}) ---\n${a.text}`).join('\n\n')}\n\nCompare the answers and give the final recommendation. Structure: "Agreement", "Disagreement", "Recommendation".`;
+/** `ranking`: the advisers' blind peer ranking (names revealed), if one ran. */
+export function judgePrompt(question: string, answers: Array<{ member: string; text: string }>, ranking?: string): string {
+  return `Question from the user:\n${question}\n\n${answers.map((a, i) => `--- Adviser ${i + 1} (${a.member}) ---\n${a.text}`).join('\n\n')}\n\n${ranking ? `${ranking}\nTreat the ranking as one signal of quality, not a verdict: the majority can be wrong.\n\n` : ''}Compare the answers and give the final recommendation. Structure: "Agreement", "Disagreement", "Recommendation".`;
+}
+
+/** Blind peer review: every response is anonymized; the reviewer may be reading its own answer without knowing. */
+export function peerReviewPrompt(question: string, responses: Array<{ letter: string; text: string }>): string {
+  const letters = responses.map((r) => r.letter);
+  return [
+    `Question from the user:\n${question}`,
+    ...responses.map((r) => `--- Response ${r.letter} ---\n${r.text}`),
+    `Evaluate each response in two or three sentences: what it gets right, what it gets wrong or misses. Then rank them from best to worst. End with exactly one line in this format and nothing after it:\nRANKING: ${letters.join(' > ')}\n(using your own order, every letter once).`,
+  ].join('\n\n');
 }
 
 export function parseVerdict(review: string): 'approve' | 'changes' | 'unknown' {

@@ -1,4 +1,4 @@
-import type { CouncilMemberRef, CouncilPattern, CouncilRisk, CouncilRole, CouncilSettings, MemberId, MemberStatus } from '@localdex/shared';
+import type { CouncilMemberRef, CouncilPattern, CouncilRisk, CouncilRole, CouncilSettings, CouncilStep, MemberId, MemberStatus } from '@localdex/shared';
 import { COUNCIL_ROLES, MEMBER_IDS, isBuilderRole } from '@localdex/shared';
 import { getSettings } from '../config.js';
 import { streamChat } from '../lmstudio.js';
@@ -268,7 +268,7 @@ export function availableMembers(statuses: MemberStatus[]): MemberId[] {
 }
 
 /** Heavy roles get the member's stronger model when one is configured. `heavy` asks for it on any role (e.g. a risky build). */
-export function modelFor(ref: CouncilMemberRef, role: CouncilRole | 'judge' | 'voter', opts: { heavy?: boolean } = {}): string | undefined {
+export function modelFor(ref: CouncilMemberRef, role: CouncilStep['role'], opts: { heavy?: boolean } = {}): string | undefined {
   if (ref === 'local') return undefined;
   const cfg = getSettings().council.members[ref];
   const heavy = opts.heavy || role === 'planner' || role === 'reviewer' || role === 'judge';

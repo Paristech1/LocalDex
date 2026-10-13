@@ -432,6 +432,73 @@ run = await runCouncil(ctx(), { pattern: 'single', role: 'backend', member: 'cod
 check('edits off: backend builder is read-only too', run.steps[0].access === 'read' && approvals === 0);
 updateSettings({ council: { ...getSettings().council, allowWrite: true } });
 
+// 22. blind peer review in votes (llm-council stage 2)
+{
+  const { parseRanking, aggregateRanking, anonymize } = await import(`${SRC}/council/peer.ts`);
+  const pr = (t: string, n = 3) => JSON.stringify(parseRanking(t, n));
+  const parseCases: [string, string, number?][] = [
+    ['Looks good.\nRANKING: B > A > C', '["B","A","C"]'],
+    ['ranking: c>a>b', '["C","A","B"]'],
+    ['**RANKING:** Response B > Response C > Response A', '["B","C","A"]'],
+    ['Final ranking - b , a ,c', '["B","A","C"]'],
+    ['RANKING:\nC, B, A', '["C","B","A"]'],
+    ['RANKING: B > A', '["B","A"]'],
+    ['RANKING: B > B > Z > A > C', '["B","A","C"]'],
+    ['RANKING: D > A > B > C', '["D","A","B","C"]', 4],
+    ['RANKING: D > A > B', '["A","B"]'],
+    ['RANKING: A > B > C\nchanged my mind\nRANKING: C > B > A', '["C","B","A"]'],
+    ['RANKING: I think A wins', '["A"]'],
+    ['RANKING: none of them', 'null'],
+    ['I like B best, then A.', 'null'],
+    ['', 'null'],
+  ];
+  const parseMiss = parseCases.filter(([t, want, n]) => pr(t, n) !== want);
+  check(`peer: ranking parser on messy input (${parseCases.length} cases)`, parseMiss.length === 0, parseMiss.map(([t, w, n]) => `${JSON.stringify(t)} → ${pr(t, n)} (want ${w})`).join(' | '));
+
+  const agg = aggregateRanking(['claude', 'codex', 'gemini'], [
+    { reviewer: 'claude', order: ['codex', 'claude', 'gemini'] },
+    { reviewer: 'codex', order: ['codex', 'gemini', 'claude'] },
+    { reviewer: 'gemini', order: ['gemini', 'codex'] },
+  ]);
+  check('peer: Borda aggregate with partial ballot and self ranks', JSON.stringify(agg) === JSON.stringify([
+    { member: 'codex', avgRank: 1.33, votes: 3, selfRank: 1 },
+    { member: 'gemini', avgRank: 2, votes: 3, selfRank: 1 },
+    { member: 'claude', avgRank: 2.5, votes: 2, selfRank: 2 },
+  ]), JSON.stringify(agg));
+  const anon = anonymize('Use zod. (claude)\n\nBottom line: zod.\n— Codex\nAs Gemini, I prefer it. [Cursor] The Claude API is fine.');
+  check('peer: anonymize strips signatures, keeps vendor mentions', !/\(claude\)|Codex|As Gemini|\[Cursor\]/.test(anon) && /The Claude API is fine/.test(anon) && /I prefer it/.test(anon), JSON.stringify(anon));
+
+  const statsPath = path.join(process.env.LOCALDEX_HOME!, 'council-stats.json');
+  const readLog = (m: string) => fs.readFileSync(path.join(CTL, `${m}.log.jsonl`), 'utf8').trim().split('\n').map((l) => JSON.parse(l));
+  resetStats(); reset();
+  run = await runCouncil(ctx(), { pattern: 'vote', role: 'researcher', task: 'zod or valibot?', note: 'test' });
+  console.log(runSummary(run));
+  const peers = run.steps.filter((s: any) => s.role === 'peer');
+  check('peer: voters → 3 peer reviews → judge', run.steps.map((s: any) => s.role).join(',') === 'voter,voter,voter,peer,peer,peer,judge' && peers.every((s: any) => s.status === 'done' && s.access === 'read' && /peer review/.test(s.note ?? '')), run.steps.map((s: any) => `${s.role}:${s.member}:${s.status}`).join(' '));
+  check('peer: reviews ran concurrently', peers.every((a: any) => peers.every((b: any) => a === b || (a.startedAt < b.endedAt && b.startedAt < a.endedAt))));
+  const gemPeer = readLog('gemini').find((x: any) => /PEER REVIEWER/.test(x.prompt))?.prompt ?? '';
+  check('peer: prompt is anonymized (letters, no names or signatures)', /--- Response A ---/.test(gemPeer) && /--- Response C ---/.test(gemPeer) && !/\((claude|codex|gemini)\)|— (claude|codex)|Adviser \d/i.test(gemPeer) && /RANKING:/.test(gemPeer), gemPeer.slice(0, 200));
+  const pk = run.peerRanking ?? [];
+  check('peer: rankings parsed (codex messy format too) and aggregated', pk.length === 3 && pk.every((r: any) => r.votes === 3) && pk[2].member === 'gemini' && pk[2].avgRank === 3 && pk[2].selfRank === 3 && Math.abs(pk[0].avgRank + pk[1].avgRank - 3) < 0.02, JSON.stringify(pk));
+  const judgeGot = readLog('claude').find((x: any) => /Compare the answers/.test(x.prompt))?.prompt ?? '';
+  check('peer: judge prompt includes the ranking with names', /Advisers ranked the answers blind/.test(judgeGot) && /3rd Gemini, avg rank 3\.0 \(3 votes\)/.test(judgeGot), judgeGot.split('\n').find((l: string) => /ranked/.test(l)) ?? '');
+  check('peer: result shows a peer ranking line under the verdict', /### Council verdict[\s\S]*Peer ranking \(blind\): 1\. (Claude|Codex) \(avg 1\.\d\) · 2\. (Claude|Codex) \(avg 1\.\d\) · 3\. Gemini \(avg 3\.0\)/.test(run.result ?? ''), (run.result ?? '').split('\n').find((l: string) => /Peer ranking/.test(l)) ?? '');
+  const sm = JSON.parse(fs.readFileSync(statsPath, 'utf8')).members;
+  check('peer: scorecard recordPeerRanking updated', sm.gemini?.peerRanking.count === 1 && sm.gemini.peerRanking.rankSum === 3 && sm.gemini.peerRanking.ofSum === 3 && sm.claude?.peerRanking.count === 1 && sm.codex?.peerRanking.count === 1 && sm.claude.peerRanking.rankSum + sm.codex.peerRanking.rankSum === 3 && sm.codex.byRole.peer?.done === 1, JSON.stringify({ c: sm.claude?.peerRanking, x: sm.codex?.peerRanking, g: sm.gemini?.peerRanking }));
+
+  reset(); flag('peer_garbage', true);
+  run = await runCouncil(ctx(), { pattern: 'vote', role: 'researcher', task: 'zod or valibot?', note: 'test' });
+  check('peer: no usable rankings → no aggregate, judge still runs', !run.peerRanking && run.steps.filter((s: any) => s.role === 'peer').length === 3 && run.steps.at(-1).role === 'judge' && !/Peer ranking/.test(run.result ?? '') && run.steps.some((s: any) => s.role === 'peer' && s.transcript.some((t: any) => /No usable RANKING/.test(t.text ?? ''))));
+
+  reset(); updateSettings({ council: { ...getSettings().council, peerReview: false } });
+  run = await runCouncil(ctx(), { pattern: 'vote', role: 'researcher', task: 'zod or valibot?', note: 'test' });
+  const judgeOff = readLog('claude').find((x: any) => /Compare the answers/.test(x.prompt))?.prompt ?? '';
+  check('peer: setting off → no peer steps, no ranking', !run.steps.some((s: any) => s.role === 'peer') && !run.peerRanking && run.steps.at(-1).role === 'judge' && !/ranked/.test(judgeOff));
+  updateSettings({ council: { ...getSettings().council, peerReview: true } });
+  check('peer: setting defaults to on', DEFAULT_COUNCIL.peerReview === true);
+  resetStats();
+}
+
 console.log(`\n${pass} passed, ${fail} failed. events: ${JSON.stringify(events)}`);
 reset();
 process.exit(fail ? 1 : 0);

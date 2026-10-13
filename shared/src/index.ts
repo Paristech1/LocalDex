@@ -229,6 +229,8 @@ export interface CouncilSettings {
    * plan → build → review, the builder uses its heavy model, edits are always confirmed, and at least one fix round runs.
    */
   riskRouting: boolean;
+  /** Vote: before the judge, each adviser ranks all answers blind (anonymized as Response A/B/C…). Default on. */
+  peerReview: boolean;
 }
 
 /** How risky a request looks, from explainable keyword rules. */
@@ -283,7 +285,7 @@ export interface CouncilTranscriptItem {
 
 export interface CouncilStep {
   id: string;
-  role: CouncilRole | 'judge' | 'voter';
+  role: CouncilRole | 'judge' | 'voter' | 'peer';
   member: CouncilMemberRef;
   model?: string;
   access: CouncilAccess;
@@ -317,6 +319,20 @@ export interface CouncilRun {
   steps: CouncilStep[];
   /** Combined result returned to the user / lead agent. */
   result?: string;
+  /** Vote runs with peer review: aggregate blind ranking of the answers, best first. */
+  peerRanking?: CouncilPeerRank[];
+}
+
+/** One answer's place in a blind peer review (Borda count over every adviser's ranking). */
+export interface CouncilPeerRank {
+  /** Who wrote the answer (the advisers didn't know). */
+  member: CouncilMemberRef;
+  /** Average 1-based position across the rankings that placed it. */
+  avgRank: number;
+  /** Rankings that placed this answer. */
+  votes: number;
+  /** Where its own author ranked it, if the author's ranking placed it. */
+  selfRank?: number;
 }
 
 /** Counters for one member (overall, or in one role). `runs` counts started steps; declined edits are `skipped` and not runs. */
@@ -341,7 +357,7 @@ export interface CouncilMemberStats extends CouncilStepCounts {
   reviewer: { approve: number; changes: number; none: number };
   /** Vote participation: answers given and their total length in characters. */
   voter: { answers: number; answerChars: number };
-  /** Blind peer ranking (filled by a later feature): sum of ranks and of field sizes; average rank = rankSum / count. */
+  /** Blind peer ranking in votes: sum of ranks and of field sizes; average rank = rankSum / count. */
   peerRanking: { count: number; rankSum: number; ofSum: number };
 }
 
@@ -471,6 +487,7 @@ export const DEFAULT_COUNCIL: CouncilSettings = {
   redactSecrets: true,
   consultNudges: true,
   riskRouting: true,
+  peerReview: true,
 };
 
 export const DEFAULT_CAPABILITIES: Record<ToolName, boolean> = {

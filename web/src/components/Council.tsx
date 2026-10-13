@@ -5,6 +5,7 @@ import {
   type CouncilMemberRef,
   type CouncilMemberStats,
   type CouncilPattern,
+  type CouncilPeerRank,
   type CouncilRisk,
   type CouncilRole,
   type CouncilRun,
@@ -45,6 +46,14 @@ const ROLE_HINT: Record<CouncilRole, string> = {
   researcher: 'Answers questions about the codebase (read-only)',
   vision: 'Looks at screenshots and mockups you mention (read-only)',
   quick: 'Short questions (local model first = free)',
+};
+
+/** Step-row labels that differ from the role id. */
+const STEP_LABEL: Partial<Record<CouncilStep['role'], string>> = { peer: 'peer review' };
+const STEP_HINT: Partial<Record<CouncilStep['role'], string>> = {
+  voter: 'Answers the question independently (read-only)',
+  peer: 'Ranks every answer blind, its own included, without knowing whose is whose (read-only)',
+  judge: 'Combines the answers into one recommendation (read-only)',
 };
 
 export function VendorBadge({ member, dim }: { member: CouncilMemberRef; dim?: boolean }) {
@@ -122,7 +131,7 @@ export function CouncilRunCard({ run, defaultOpen, compact }: { run: CouncilRun;
         </div>
         {!compact && <div className="text-xs text-ink-300 truncate mt-0.5">{run.task.split('\n')[0]}</div>}
         <div className="flex flex-wrap items-center gap-1 mt-1.5">
-          {run.steps.map((s, i) => (
+          {run.steps.filter((s) => s.role !== 'peer').map((s, i) => (
             <span key={s.id} className="flex items-center gap-1">
               {i > 0 && <span className="text-ink-500 text-[10px]">→</span>}
               <VendorBadge member={s.member} dim={s.status !== 'done' && s.status !== 'running'} />
@@ -140,9 +149,33 @@ export function CouncilRunCard({ run, defaultOpen, compact }: { run: CouncilRun;
           {run.steps.map((s) => (
             <StepRow key={s.id} step={s} now={now} defaultOpen={s.status === 'running'} />
           ))}
+          {run.peerRanking && run.peerRanking.length > 0 && <PeerRanking ranking={run.peerRanking} />}
           {!running && run.status === 'error' && run.result && <div className="text-xs text-danger whitespace-pre-wrap">{run.result}</div>}
         </div>
       )}
+    </div>
+  );
+}
+
+function PeerRanking({ ranking }: { ranking: CouncilPeerRank[] }) {
+  return (
+    <div className="rounded-md border border-ink-700 bg-ink-950/40 px-2.5 py-1.5">
+      <div className="text-[11px] text-ink-400 mb-1" title="Each adviser ranked every answer without knowing whose was whose. Combined with a Borda count; 1 is best.">
+        Peer ranking (blind)
+      </div>
+      <ol className="space-y-0.5">
+        {ranking.map((r, i) => (
+          <li key={r.member} className="flex items-center gap-2 text-xs">
+            <span className="w-4 text-right text-ink-400">{i + 1}.</span>
+            <VendorBadge member={r.member} />
+            <span className="text-ink-300">avg {r.avgRank.toFixed(1)}</span>
+            <span className="text-[10px] text-ink-400">
+              {r.votes} vote{r.votes === 1 ? '' : 's'}
+              {r.selfRank ? ` · ranked itself #${r.selfRank}` : ''}
+            </span>
+          </li>
+        ))}
+      </ol>
     </div>
   );
 }
@@ -179,7 +212,9 @@ function StepRow({ step, now, defaultOpen }: { step: CouncilStep; now: number; d
     <div className="rounded-md border border-ink-700 bg-ink-950/40">
       <button type="button" onClick={() => setOpen((o) => !o)} className="w-full text-left px-2.5 py-1.5 flex items-center gap-2 text-xs">
         <span className={cx('w-3 text-center', STEP_STYLE[step.status])}>{STEP_ICON[step.status]}</span>
-        <span className="text-ink-300 w-[68px] shrink-0 capitalize" title={step.role in ROLE_HINT ? ROLE_HINT[step.role as CouncilRole] : undefined}>{step.role}</span>
+        <span className="text-ink-300 w-[76px] shrink-0 capitalize whitespace-nowrap" title={step.role in ROLE_HINT ? ROLE_HINT[step.role as CouncilRole] : STEP_HINT[step.role]}>
+          {STEP_LABEL[step.role] ?? step.role}
+        </span>
         <VendorBadge member={step.member} />
         {step.model && <span className="font-mono text-[10px] text-ink-400 truncate max-w-[90px]">{step.model}</span>}
         <span
@@ -608,10 +643,14 @@ export function CouncilSettingsTab({ settings, patch }: TabProps) {
           <Toggle label="Ask me before each member that can edit files" checked={c.confirmWrites} onChange={(v) => setC({ confirmWrites: v })} />
         </div>
         <Toggle label="Always plan and review risky changes" checked={c.riskRouting} onChange={(v) => setC({ riskRouting: v })} />
+        <Toggle label="Advisers rank each other's answers (blind) before the judge" checked={c.peerReview !== false} onChange={(v) => setC({ peerReview: v })} />
         <Toggle label="Subscription only (refuse members signed in with an API key)" checked={c.requirePlanBilling} onChange={(v) => setC({ requirePlanBilling: v })} />
         <Toggle label="Remove secrets before sending to members" checked={c.redactSecrets !== false} onChange={(v) => setC({ redactSecrets: v })} />
         <Toggle label="Suggest asking the council when the local model is stuck" checked={c.consultNudges} onChange={(v) => setC({ consultNudges: v })} />
       </div>
+      <p className="text-[11px] text-ink-400">
+        Blind ranking adds one extra read-only run per adviser in each vote: every adviser sees all answers as Response A, B, C… without names, ranks them, and the judge gets the combined ranking.
+      </p>
       <p className="text-[11px] text-ink-400">
         Removing secrets replaces API keys, tokens, passwords and private keys in prompts, chat history and diffs with [REDACTED] before they reach a cloud member. Members can still open files in the project folder themselves.
       </p>

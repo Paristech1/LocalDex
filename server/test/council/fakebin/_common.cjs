@@ -7,7 +7,7 @@ exports.record = (name, data) => { try { fs.mkdirSync(CTL, { recursive: true });
 exports.out = (o) => process.stdout.write(JSON.stringify(o) + '\n');
 exports.sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 exports.readStdin = () => new Promise((r) => { let d = ''; if (process.stdin.isTTY) return r(''); process.stdin.setEncoding('utf8'); process.stdin.on('data', (c) => (d += c)); process.stdin.on('end', () => r(d)); });
-exports.role = (text) => (/You are the PLANNER/.test(text) ? 'planner' : /You are the BUILDER/.test(text) ? 'builder' : /You are the REVIEWER/.test(text) ? 'reviewer' : /You are the JUDGE/.test(text) ? 'judge' : /You are the VISION/.test(text) ? 'vision' : /independent advisers/.test(text) ? 'voter' : /RESEARCHER/.test(text) ? 'researcher' : 'quick');
+exports.role = (text) => (/You are a PEER REVIEWER/.test(text) ? 'peer' : /You are the PLANNER/.test(text) ? 'planner' : /You are the BUILDER/.test(text) ? 'builder' : /You are the REVIEWER/.test(text) ? 'reviewer' : /You are the JUDGE/.test(text) ? 'judge' : /You are the VISION/.test(text) ? 'vision' : /independent advisers/.test(text) ? 'voter' : /RESEARCHER/.test(text) ? 'researcher' : 'quick');
 exports.answer = (role, who, prompt) => {
   const fixRound = /requested fixes/.test(prompt);
   switch (role) {
@@ -15,9 +15,21 @@ exports.answer = (role, who, prompt) => {
     case 'builder': return fixRound ? `Fixed the reviewer's point: \`rateLimit\` now evicts stale timestamps so memory stays bounded (src/rateLimit.ts). (${who})` : `Implemented the plan (${who}).\n- Created \`src/rateLimit.ts\` (sliding window, 60 req/min default)\n- Added a test in \`tests/rateLimit.test.ts\`\n- Ran \`npm test\`: 3 passed`;
     case 'reviewer': return exports.flag('review_changes') && !fs.existsSync(path.join(CTL, 'reviewed_once')) ? (fs.writeFileSync(path.join(CTL, 'reviewed_once'), '1'), `VERDICT: CHANGES_REQUESTED\n- src/rateLimit.ts:8 — timestamps are never evicted, so the map grows forever. Drop entries older than the window on each call.`) : `VERDICT: APPROVE\nThe sliding window is correct and the test covers both sides of the limit. Minor: consider making the window configurable later. (${who})`;
     case 'judge': return `**Agreement:** All advisers prefer **zod** for this codebase: it is already a transitive dependency and has the larger ecosystem.\n\n**Disagreement:** Gemini notes valibot's smaller bundle matters for the web client.\n\n**Recommendation:** Use zod on the server now; revisit valibot only if the web bundle size becomes a problem.`;
-    case 'voter': return who === 'gemini' ? `Valibot is tree-shakeable and much smaller in the browser, but zod is fine on the server.\n\nBottom line: zod for the server, consider valibot for the web bundle.` : `Zod: mature, great TypeScript inference, huge ecosystem, already used by your MCP dependency.\n\nBottom line: zod.`;
+    case 'voter': return who === 'gemini' ? `Valibot is tree-shakeable and much smaller in the browser, but zod is fine on the server. (gemini)\n\nBottom line: zod for the server, consider valibot for the web bundle.` : `Zod: mature, great TypeScript inference, huge ecosystem, already used by your MCP dependency.\n\nBottom line: zod.\n— ${who}`;
+    case 'peer': return exports.peerAnswer(who, prompt);
     case 'researcher': return `\`src/math.ts\` exports a single \`add(a, b)\` function; nothing imports it yet. The README is a one-line description. (${who})`;
     case 'vision': return `The screenshot shows the login form with the submit button cut off at narrow widths. (${who})`;
     default: return `Short answer from ${who}: \`add\` returns the sum of its two arguments.`;
   }
+};
+// Blind peer review: rank responses whose bottom line is plain "zod." first, then the rest, ties by letter.
+// Codex answers in a messy format to exercise the parser; flag peer_garbage → no RANKING line at all.
+exports.peerAnswer = (who, prompt) => {
+  const letters = [...prompt.matchAll(/^--- Response ([A-Z]) ---$/gm)].map((m) => m[1]);
+  const body = (l) => (prompt.split(`--- Response ${l} ---`)[1] || '').split(/\n--- Response |\n\nEvaluate each/)[0];
+  const zod = (l) => (/Bottom line: zod\./.test(body(l)) ? 1 : 0);
+  const order = [...letters].sort((a, b) => zod(b) - zod(a) || a.localeCompare(b));
+  const notes = letters.map((l) => `Response ${l}: ${zod(l) ? 'clear and decisive.' : 'hedges between two options.'}`).join('\n');
+  if (exports.flag('peer_garbage')) return `${notes}\n\nThey are all fine, honestly.`;
+  return who === 'codex' ? `${notes}\n\n**Final ranking** - ${order.map((l) => l.toLowerCase()).join(' , ')}` : `${notes}\n\nRANKING: ${order.join(' > ')}`;
 };
