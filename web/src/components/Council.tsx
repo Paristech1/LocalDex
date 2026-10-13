@@ -986,7 +986,7 @@ export function CouncilSettingsTab({ settings, patch }: TabProps) {
         When you follow up with the same member in Council mode, it picks up its own earlier session (files it read, its reasoning) and gets only your new message instead of the pasted chat history. Plan → build → review and votes always start fresh.
       </p>
       <p className="text-[11px] text-ink-400">
-        With a separate copy, builders work in a git worktree of your project (made from your last commit, kept in LocalDex's data folder). Checks and reviewers run there too. When the run ends you see the diff and choose Apply to my folder (uncommitted changes, nothing is committed) or Discard. Folders that aren't git repos are edited directly. The local model always edits your folder directly.
+        With a separate copy, builders work in a git worktree of your project (kept in LocalDex's data folder; it includes your uncommitted changes). Checks and reviewers run there too. When the run ends you see the diff and choose Apply to my folder (uncommitted changes, nothing is committed) or Discard. If a copy can't be made, for example the folder isn't a git repo, LocalDex asks before a builder edits your folder directly. The local model always edits your folder directly. /arena always uses two copies.
       </p>
       <p className="text-[11px] text-ink-400">
         Removing secrets replaces API keys, tokens, passwords and private keys in prompts, chat history and diffs with [REDACTED] before they reach a cloud member. Members can still open files in the project folder themselves.

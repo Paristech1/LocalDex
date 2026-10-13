@@ -165,8 +165,21 @@ Install the CLIs you want (`npm i -g @anthropic-ai/claude-code @openai/codex @go
   - `/vote …` collects independent answers, then a judge combines them.
   - `/frontend …` and `/backend …` send a change to the UI or backend builder.
   - `/vision …` asks a vision-capable member to look at a screenshot or mockup (name the image file; the member opens it itself).
+  - `/arena …` (or `/arena claude codex …`) races two builders on the same task, each in its own copy of the project. A third member compares the diffs and recommends one; you keep one or discard both.
   - Plain messages are routed automatically (keyword rules, or the local model if you pick that).
-- **Solo mode**: your local model leads. It can call `ask_member` and `council` itself when a task is too big for it, so the work tag-teams.
+  - The composer has a per-message access switch: **Read only**, **Ask before edits**, **Edits allowed**. It applies to that run only and never changes Settings.
+- **Solo mode**: your local model leads. It can call `ask_member` and `council` itself when a task is too big for it, so the work tag-teams. **Hand to council ☁** under the last answer sends your latest request, plus what the local agent already did (files touched, commands, failures), to the council without leaving Solo.
+
+**How runs work**
+
+- **Separate copy (on by default).** Builders edit a git worktree of your project in LocalDex's data folder, including your uncommitted changes. Checks and reviewers run there too. At the end you see the diff and choose **Apply to my folder** (lands as uncommitted changes) or **Discard**. Apply refuses, and changes nothing, if a file it would touch changed in your folder meanwhile. If no copy can be made (e.g. not a git repo), LocalDex asks before editing your folder directly.
+- **Plan → build → review** adds an optional checks gate (your test command, after approval) and a QA step, with strict verdicts and fix rounds.
+- **Votes** wait for a quorum with a grace timer, then advisers rank each other's answers blind before the judge decides.
+- **Handoff.** When a member hits its usage limit mid-run, the next one gets a written handoff and continues.
+- **Follow-ups** in Council mode resume the same member's own session instead of re-sending the chat.
+- **Risk routing** sends risky changes (migrations, auth, deletes…) to stronger models and always asks before editing.
+- **Scorecard** in the Council tab tracks each member's runs, success rate, time, tokens, limits, build and review outcomes.
+- **Secrets are redacted** (API keys, tokens, passwords, private keys) from prompts, history and diffs before they reach a cloud member.
 
 **Routing and fallback.** Each role (planner, builder, frontend, backend, reviewer, researcher, vision, quick) has an ordered list of members. Changes with clear UI signals (CSS, components, layout…) go to the frontend builder, clear backend signals (API, SQL, migrations…) to the backend builder, anything mixed to the builder. Requests that name an image file or a screenshot/mockup go to vision (read-only). A member that is off, signed out, or at its usage limit is skipped. When a member hits a limit mid-run, the next one takes over, and the first one cools down until its reset time.
 
@@ -183,7 +196,7 @@ Install the CLIs you want (`npm i -g @anthropic-ai/claude-code @openai/codex @go
   - Gemini: `plan` / `auto_edit` approval mode.
   - Cursor: mutating tools disallowed when read-only.
 - **Project config is not trusted by default.** A cloned repo can't add hooks, MCP servers or settings to a member run: Claude loads only your user settings and no MCP servers (`--setting-sources user --strict-mcp-config`), Cursor loads only user settings, and Gemini runs without `--skip-trust`, so it only works in folders you have trusted in Gemini. Codex already ignores `.codex/` config in projects you haven't trusted. Settings → Council → Advanced → *Trust project config* turns this off for repos you trust.
-- **Approved folders only.** Members start in your first approved folder, and the other approved folders are passed as extra directories.
+- **Approved folders only.** Members start in your first approved folder, and the other approved folders are passed as extra directories (not when a builder works in a separate copy).
 - **Executables come from config only.** Member programs are found on `PATH`, or set with `council.members.<name>.command` in `~/.localdex/config.json`. That setting cannot be changed from the UI.
 
 The task, and any files a member reads, go to that vendor. Every message written by the council is marked with ☁ in the chat, and the **Council** tab in the right panel shows each run step by step: who did what, live output, tool calls, timing and tokens.

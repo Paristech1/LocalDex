@@ -573,7 +573,7 @@ async function arena(ctx: CouncilContext, run: CouncilRun, route: Route, statuse
     const ok = await bus
       .requestApproval(
         sessionId,
-        'main',
+        `member:arena-${run.id}`,
         `Council arena: let ${label(a.member)} and ${label(b.member)} (${role}) each edit files in their own separate copy of your project?${isRiskyRun(run) ? ` High-risk change (${(run.riskReasons ?? []).join(', ')}).` : ''}\n- ${label(a.member)}: ${a.worktree.cwd}\n- ${label(b.member)}: ${b.worktree.cwd}\nNothing in ${dir} changes until you keep one.\n\n${prompt.slice(0, 600)}${prompt.length > 600 ? '…' : ''}`,
         dir,
         ctx.signal,
