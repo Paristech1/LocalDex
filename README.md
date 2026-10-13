@@ -180,6 +180,7 @@ Install the CLIs you want (`npm i -g @anthropic-ai/claude-code @openai/codex @go
   - Codex: `read-only` / `workspace-write` sandbox.
   - Gemini: `plan` / `auto_edit` approval mode.
   - Cursor: mutating tools disallowed when read-only.
+- **Project config is not trusted by default.** A cloned repo can't add hooks, MCP servers or settings to a member run: Claude loads only your user settings and no MCP servers (`--setting-sources user --strict-mcp-config`), Cursor loads only user settings, and Gemini runs without `--skip-trust`, so it only works in folders you have trusted in Gemini. Codex already ignores `.codex/` config in projects you haven't trusted. Settings → Council → Advanced → *Trust project config* turns this off for repos you trust.
 - **Approved folders only.** Members start in your first approved folder, and the other approved folders are passed as extra directories.
 - **Executables come from config only.** Member programs are found on `PATH`, or set with `council.members.<name>.command` in `~/.localdex/config.json`. That setting cannot be changed from the UI.
 

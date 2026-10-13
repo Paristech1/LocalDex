@@ -135,6 +135,36 @@ const t0 = Date.now();
 run = await runCouncil(ctx(ac.signal), { pattern: 'single', role: 'researcher', member: 'gemini', task: 'slow', note: 'test' });
 check('stop: run cancelled quickly', run.status === 'cancelled' && Date.now() - t0 < 5000, `${Date.now() - t0}ms ${run.steps[0]?.status}`);
 
+// 15. project config is not trusted by default (untrusted repo can't add hooks/MCP servers/instructions)
+const last = (m: string) => JSON.parse(fs.readFileSync(path.join(CTL, `${m}.last.json`), 'utf8'));
+const hasPair = (argv: string[], a: string, b: string) => argv.some((x, i) => x === a && argv[i + 1] === b);
+reset(); process.env.GEMINI_CLI_TRUST_WORKSPACE = 'true';
+await runCouncil(ctx(), { pattern: 'single', role: 'researcher', member: 'claude', task: 'What does src/math.ts do?', note: 'test' });
+let cl = last('claude').argv as string[];
+check('trust off: claude gets --setting-sources user + --strict-mcp-config', hasPair(cl, '--setting-sources', 'user') && cl.includes('--strict-mcp-config') && !cl.includes('--bare'), cl.join(' '));
+await runCouncil(ctx(), { pattern: 'single', role: 'researcher', member: 'gemini', task: 'What does src/math.ts do?', note: 'test' });
+let gm = last('gemini');
+check('trust off: gemini runs without --skip-trust and without the trust env var', !gm.argv.includes('--skip-trust') && gm.trustEnv === null, gm.argv.filter((x: string) => x.startsWith('-')).join(' '));
+await runCouncil(ctx(), { pattern: 'single', role: 'researcher', member: 'cursor', task: 'What does src/math.ts do?', note: 'test' });
+check('trust off: cursor loads user settings only', JSON.stringify(last('cursor').opts?.local?.settingSources) === '["user"]', JSON.stringify(last('cursor').opts?.local?.settingSources));
+
+reset(); flag('gemini_untrusted', true);
+run = await runCouncil(ctx(), { pattern: 'single', role: 'researcher', member: 'gemini', task: 'What does src/math.ts do?', note: 'test' });
+const gErr = run.steps[0]?.error ?? '';
+check('untrusted folder: gemini refusal becomes an actionable error', run.steps[0]?.member === 'gemini' && run.steps[0].status === 'error' && /doesn't trust this folder/.test(gErr) && /choose Trust/.test(gErr) && /Trust project config/.test(gErr), gErr.slice(0, 120));
+check('untrusted folder: not mistaken for sign-in or usage limit', !/not signed in/i.test(gErr) && run.steps[0]?.status !== 'limited');
+
+reset(); updateSettings({ council: { ...getSettings().council, trustProjectConfig: true } }); flag('gemini_untrusted', true);
+await runCouncil(ctx(), { pattern: 'single', role: 'researcher', member: 'claude', task: 'What does src/math.ts do?', note: 'test' });
+cl = last('claude').argv as string[];
+check('trust on: claude loads project settings and MCP config', hasPair(cl, '--setting-sources', 'user,project,local') && !cl.includes('--strict-mcp-config'), cl.join(' '));
+run = await runCouncil(ctx(), { pattern: 'single', role: 'researcher', member: 'gemini', task: 'What does src/math.ts do?', note: 'test' });
+gm = last('gemini');
+check('trust on: gemini gets --skip-trust and runs', gm.argv.includes('--skip-trust') && run.steps[0].status === 'done');
+await runCouncil(ctx(), { pattern: 'single', role: 'researcher', member: 'cursor', task: 'What does src/math.ts do?', note: 'test' });
+check('trust on: cursor loads user + project settings', JSON.stringify(last('cursor').opts?.local?.settingSources) === '["user","project"]');
+updateSettings({ council: { ...getSettings().council, trustProjectConfig: false } }); delete process.env.GEMINI_CLI_TRUST_WORKSPACE;
+
 console.log(`\n${pass} passed, ${fail} failed. events: ${JSON.stringify(events)}`);
 reset();
 process.exit(fail ? 1 : 0);

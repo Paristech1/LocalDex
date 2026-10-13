@@ -480,6 +480,15 @@ export function CouncilSettingsTab({ settings, patch }: TabProps) {
       <p className="text-[11px] text-ink-400">
         With edits off, every member is read-only: planners plan, reviewers review, and change requests come back as proposals. Members never get LocalDex's own tools; they use their vendor's tools inside the project folder. To point a member at a specific executable, set <span className="font-mono">council.members.&lt;name&gt;.command</span> in <span className="font-mono">~/.localdex/config.json</span>.
       </p>
+      <details className="pt-1">
+        <summary className="text-xs text-ink-300 cursor-pointer select-none">Advanced</summary>
+        <div className="space-y-2 pt-2">
+          <Toggle label="Trust project config (load the project's own agent settings)" checked={c.trustProjectConfig} onChange={(v) => setC({ trustProjectConfig: v })} />
+          <div className="text-xs text-warn bg-warn/10 border border-warn/30 rounded-md px-3 py-2">
+            Only turn this on for repos you trust. When on, members load the folder's <span className="font-mono">.claude/settings.json</span> hooks, <span className="font-mono">.mcp.json</span> servers and Cursor project settings, and Gemini runs with <span className="font-mono">--skip-trust</span>. A cloned repo can use these to run commands or slip in instructions. Off: members use only your own config, and Gemini runs only in folders you have trusted in Gemini.
+          </div>
+        </div>
+      </details>
     </>
   );
 }

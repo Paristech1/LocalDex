@@ -10,6 +10,20 @@ function bin(): string | null {
   return resolveBinary('gemini', getSettings().council.members.gemini.command);
 }
 
+/** Gemini's FatalUntrustedWorkspaceError: headless runs in a folder the user never trusted exit with 55. */
+const UNTRUSTED_EXIT_CODE = 55;
+
+export function isUntrustedFolder(code: number | null, output: string): boolean {
+  return code === UNTRUSTED_EXIT_CODE || /not running in a trusted directory/i.test(output);
+}
+
+function untrustedFolderMessage(cwd: string): string {
+  return (
+    `Gemini doesn't trust this folder yet. Open it once in Gemini (run \`gemini\` in ${cwd} and choose Trust), ` +
+    'or turn on "Trust project config" in Settings → Council (lets a repo\'s own agent settings run).'
+  );
+}
+
 function geminiHome(): string {
   return process.env.GEMINI_CLI_HOME ? path.join(process.env.GEMINI_CLI_HOME, '.gemini') : path.join(os.homedir(), '.gemini');
 }
@@ -65,7 +79,9 @@ export const geminiMember: MemberAdapter = {
 
     const prompt = `${o.instructions}\n\n---\n\n${o.prompt}`;
     // read: 'plan' is Gemini's read-only mode. write: auto-approve edits; shell still needs approval, which headless mode denies.
-    const args = ['-p', prompt, '-o', 'stream-json', '--approval-mode', o.access === 'write' ? 'auto_edit' : 'plan', '--skip-trust'];
+    const trustProject = getSettings().council.trustProjectConfig;
+    const args = ['-p', prompt, '-o', 'stream-json', '--approval-mode', o.access === 'write' ? 'auto_edit' : 'plan'];
+    if (trustProject) args.push('--skip-trust');
     if (o.model) args.push('-m', o.model);
     if (o.extraDirs.length) args.push('--include-directories', o.extraDirs.join(','));
 
@@ -77,7 +93,11 @@ export const geminiMember: MemberAdapter = {
     const errors: string[] = [];
     let usage: MemberResult['usage'];
 
-    const run = await runJsonl(b, args, { cwd: o.cwd, env: memberEnv(), signal: o.signal, timeoutMs: o.timeoutMs }, (ev) => {
+    // GEMINI_CLI_TRUST_WORKSPACE=true in our own environment would trust the folder just like --skip-trust.
+    const env = memberEnv();
+    if (!trustProject) delete env.GEMINI_CLI_TRUST_WORKSPACE;
+
+    const run = await runJsonl(b, args, { cwd: o.cwd, env, signal: o.signal, timeoutMs: o.timeoutMs }, (ev) => {
       switch (ev.type) {
         case 'init':
           model = typeof ev.model === 'string' ? ev.model : undefined;
@@ -117,6 +137,9 @@ export const geminiMember: MemberAdapter = {
     if (run.aborted) return { ok: false, text, error: 'Cancelled.', cancelled: true, billing, model, usage };
     if (run.timedOut) return { ok: false, text, error: `Timed out after ${Math.round(o.timeoutMs / 60000)} min.`, billing, model, usage };
     const errText = resultError || (status === 'error' ? errors.join('\n') : '') || (run.code !== 0 ? errors.join('\n') || run.stderrTail || run.plainTail || `exit code ${run.code}` : '');
+    if (isUntrustedFolder(run.code, `${errText}\n${run.stderrTail}`)) {
+      return { ok: false, text, error: untrustedFolderMessage(o.cwd), billing, model, usage };
+    }
     if (errText) {
       const limited = detectLimit(errText) || detectLimit(run.stderrTail);
       const notSignedIn = !limited && /auth|login|credential|sign in/i.test(errText);

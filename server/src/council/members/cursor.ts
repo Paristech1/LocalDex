@@ -114,7 +114,8 @@ export const cursorMember: MemberAdapter = {
         name: 'LocalDex council',
         model: { id: model },
         systemPrompt: o.instructions,
-        local: { cwd: o.cwd, dirs: o.extraDirs },
+        // Only the user's own Cursor settings unless the user opted in to project config (see trustProjectConfig).
+        local: { cwd: o.cwd, dirs: o.extraDirs, settingSources: getSettings().council.trustProjectConfig ? ['user', 'project'] : ['user'] },
         ...(o.access === 'read' ? { disallowedTools: MUTATING_TOOLS } : { disallowedTools: ['delete'] }),
       });
       run = await agent.send(o.prompt);

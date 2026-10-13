@@ -6,6 +6,16 @@ import type { MemberBilling } from '@localdex/shared';
 /** Tools that change files. Blocked for read-only council roles. */
 const WRITE_TOOLS = ['Edit', 'Write', 'MultiEdit', 'NotebookEdit'];
 
+/**
+ * Print mode skips the workspace-trust prompt, so a cloned repo's .claude/settings.json (hooks, permissions)
+ * and .mcp.json would load unasked. By default load only the user's own settings and no MCP servers at all
+ * (--strict-mcp-config with no --mcp-config). Both flags take a single value / none, so nothing variadic
+ * follows them here; the prompt goes in on stdin.
+ */
+export function projectConfigArgs(trustProject: boolean): string[] {
+  return trustProject ? ['--setting-sources', 'user,project,local'] : ['--setting-sources', 'user', '--strict-mcp-config'];
+}
+
 function bin(): string | null {
   return resolveBinary('claude', getSettings().council.members.claude.command);
 }
@@ -50,6 +60,7 @@ export const claudeMember: MemberAdapter = {
       '--output-format', 'stream-json',
       '--verbose',
       '--include-partial-messages',
+      ...projectConfigArgs(getSettings().council.trustProjectConfig),
       '--append-system-prompt', o.instructions,
     ];
     if (o.model) args.push('--model', o.model);
