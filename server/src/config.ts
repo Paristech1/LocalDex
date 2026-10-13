@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import {
+  COUNCIL_ROLES,
   DEFAULT_COUNCIL,
   DEFAULT_SETTINGS,
   DEFAULT_CAPABILITIES,
@@ -39,11 +40,17 @@ export function mergeCouncil(base: CouncilSettings, patch: Partial<CouncilSettin
   for (const id of MEMBER_IDS) {
     if (patch.members?.[id]) members[id] = { ...base.members[id], ...patch.members[id] };
   }
+  // Roles missing from older config files (e.g. frontend/backend/vision) keep their defaults.
+  const roles = { ...base.roles };
+  for (const role of COUNCIL_ROLES) {
+    const order = patch.roles?.[role];
+    if (Array.isArray(order)) roles[role] = order;
+  }
   return {
     ...base,
     ...patch,
     members,
-    roles: { ...base.roles, ...(patch.roles ?? {}) },
+    roles,
   };
 }
 

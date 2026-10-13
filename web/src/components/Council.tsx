@@ -39,8 +39,11 @@ const PATTERN_LABEL: Record<CouncilPattern, string> = {
 const ROLE_HINT: Record<CouncilRole, string> = {
   planner: 'Writes the implementation plan (read-only)',
   builder: 'Makes the changes (edits only if allowed below)',
+  frontend: 'Builds UI work: components, CSS, layout (edits like the builder)',
+  backend: 'Builds API, database and server work (edits like the builder)',
   reviewer: 'Checks the diff, asks for fixes (read-only)',
   researcher: 'Answers questions about the codebase (read-only)',
+  vision: 'Looks at screenshots and mockups you mention (read-only)',
   quick: 'Short questions (local model first = free)',
 };
 
@@ -176,7 +179,7 @@ function StepRow({ step, now, defaultOpen }: { step: CouncilStep; now: number; d
     <div className="rounded-md border border-ink-700 bg-ink-950/40">
       <button type="button" onClick={() => setOpen((o) => !o)} className="w-full text-left px-2.5 py-1.5 flex items-center gap-2 text-xs">
         <span className={cx('w-3 text-center', STEP_STYLE[step.status])}>{STEP_ICON[step.status]}</span>
-        <span className="text-ink-300 w-[68px] shrink-0 capitalize">{step.role}</span>
+        <span className="text-ink-300 w-[68px] shrink-0 capitalize" title={step.role in ROLE_HINT ? ROLE_HINT[step.role as CouncilRole] : undefined}>{step.role}</span>
         <VendorBadge member={step.member} />
         {step.model && <span className="font-mono text-[10px] text-ink-400 truncate max-w-[90px]">{step.model}</span>}
         <span
@@ -600,7 +603,7 @@ export function CouncilSettingsTab({ settings, patch }: TabProps) {
         </Field>
       </div>
       <div className="space-y-1 pt-1">
-        <Toggle label="Let the builder edit files in approved folders" checked={c.allowWrite} onChange={(v) => setC({ allowWrite: v })} />
+        <Toggle label="Let builders (builder, frontend, backend) edit files in approved folders" checked={c.allowWrite} onChange={(v) => setC({ allowWrite: v })} />
         <div className={cx(!c.allowWrite && 'opacity-40 pointer-events-none')}>
           <Toggle label="Ask me before each member that can edit files" checked={c.confirmWrites} onChange={(v) => setC({ confirmWrites: v })} />
         </div>

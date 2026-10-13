@@ -15,6 +15,8 @@ echo '{"active":"paris@example.com"}' > "$GEMINI_CLI_HOME/.gemini/google_account
 cat > "$LOCALDEX_HOME/config.json" <<JSON
 { "approvedFolders": ["$DEMO_DIR"],
   "council": { "enabled": true, "allowWrite": true, "confirmWrites": true,
+    "roles": { "planner": ["claude", "gemini", "codex"], "builder": ["cursor", "codex", "claude"], "reviewer": ["codex", "gemini", "claude"],
+               "researcher": ["gemini", "claude", "codex"], "quick": ["local", "gemini"] },
     "members": { "claude": {"enabled": true, "command": "$HERE/fakebin/claude", "model": "sonnet", "heavyModel": "opus"},
                  "codex": {"enabled": true, "command": "$HERE/fakebin/codex"},
                  "gemini": {"enabled": true, "command": "$HERE/fakebin/gemini"},

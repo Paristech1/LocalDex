@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import type { CouncilMemberRef, CouncilMemberStats, CouncilRun, CouncilStats, CouncilStep, CouncilStepCounts } from '@localdex/shared';
+import { isBuilderRole } from '@localdex/shared';
 import { DATA_DIR } from '../config.js';
 import { bus } from '../agent/bus.js';
 import { parseVerdict } from './prompts.js';
@@ -129,7 +130,7 @@ export function recordStep(step: CouncilStep, _run: CouncilRun): void {
 /** Called at the end of a plan → build → review run with the reviewer's final verdict. */
 export function recordBuildOutcome(run: CouncilRun, verdict: 'approve' | 'changes' | 'unknown'): void {
   if (verdict === 'unknown') return;
-  const builds = run.steps.filter((s) => s.role === 'builder' && s.status === 'done');
+  const builds = run.steps.filter((s) => isBuilderRole(s.role) && s.status === 'done');
   const builder = builds.at(-1);
   if (!builder) return;
   const b = member(builder.member).builder;

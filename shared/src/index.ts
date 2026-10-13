@@ -169,8 +169,13 @@ export const MEMBER_IDS: MemberId[] = ['claude', 'codex', 'gemini', 'cursor'];
 /** 'local' is LocalDex's own LM Studio model (runs as a worker with LocalDex's permissions). */
 export type CouncilMemberRef = MemberId | 'local';
 
-export type CouncilRole = 'planner' | 'builder' | 'reviewer' | 'researcher' | 'quick';
-export const COUNCIL_ROLES: CouncilRole[] = ['planner', 'builder', 'reviewer', 'researcher', 'quick'];
+export type CouncilRole = 'planner' | 'builder' | 'frontend' | 'backend' | 'reviewer' | 'researcher' | 'vision' | 'quick';
+export const COUNCIL_ROLES: CouncilRole[] = ['planner', 'builder', 'frontend', 'backend', 'reviewer', 'researcher', 'vision', 'quick'];
+/** Roles that make changes. `frontend` and `backend` are domain builders and behave exactly like `builder`. */
+export const BUILDER_ROLES: CouncilRole[] = ['builder', 'frontend', 'backend'];
+export function isBuilderRole(role: string): boolean {
+  return (BUILDER_ROLES as string[]).includes(role);
+}
 
 export type CouncilPattern = 'single' | 'plan_build_review' | 'second_opinion' | 'vote';
 export type CouncilAccess = 'read' | 'write';
@@ -199,7 +204,7 @@ export interface CouncilSettings {
   voteMembers: MemberId[];
   /** Who combines vote answers. */
   judge: CouncilMemberRef;
-  /** Allow the builder role to edit files in the approved folders. Off (default) = every member is read-only. */
+  /** Allow the builder roles (builder, frontend, backend) to edit files in the approved folders. Off (default) = every member is read-only. */
   allowWrite: boolean;
   /** Ask the user (approval prompt) before each member run that can edit files. Default on. */
   confirmWrites: boolean;
@@ -446,8 +451,11 @@ export const DEFAULT_COUNCIL: CouncilSettings = {
   roles: {
     planner: ['claude', 'gemini', 'codex'],
     builder: ['cursor', 'codex', 'claude'],
+    frontend: ['gemini', 'cursor', 'claude'],
+    backend: ['codex', 'claude', 'cursor'],
     reviewer: ['codex', 'gemini', 'claude'],
     researcher: ['gemini', 'claude', 'codex'],
+    vision: ['gemini', 'claude'],
     quick: ['local', 'gemini'],
   },
   routing: 'rules',

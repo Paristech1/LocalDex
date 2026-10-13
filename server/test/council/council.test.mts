@@ -7,11 +7,12 @@ const SRC = new URL('../../src', import.meta.url).pathname;
 const DEMO = process.env.DEMO_DIR!;
 const { bus } = await import(`${SRC}/agent/bus.ts`);
 const { memberStatuses, clearLimit, markLimited } = await import(`${SRC}/council/registry.ts`);
-const { classify, parseCommand } = await import(`${SRC}/council/router.ts`);
+const { classify, parseCommand, findImageRefs } = await import(`${SRC}/council/router.ts`);
 const { runCouncil, runSummary, runVia } = await import(`${SRC}/council/orchestrator.ts`);
 const { memberEnv } = await import(`${SRC}/council/proc.ts`);
-const { updateSettings, getSettings } = await import(`${SRC}/config.ts`);
+const { updateSettings, getSettings, mergeCouncil } = await import(`${SRC}/config.ts`);
 const { resetStats } = await import(`${SRC}/council/stats.ts`);
+const { DEFAULT_COUNCIL } = await import(`${SRC}/../../shared/src/index.ts`);
 
 const CTL = process.env.FAKE_CTL!;
 const flag = (n: string, on: boolean) => (on ? fs.writeFileSync(path.join(CTL, n), '1') : fs.rmSync(path.join(CTL, n), { force: true }));
@@ -51,7 +52,7 @@ check('router: /vote', r('/vote zod or valibot?') === 'vote/researcher');
 check('router: comparison → vote', r('Should we use zod or valibot here?') === 'vote/researcher');
 check('router: review', r('review the rate limiter for bugs') === 'single/reviewer');
 check('router: small fix → builder', r('fix the typo in README') === 'single/builder');
-check('router: feature → pbr', r('add rate limiting to the API with tests') === 'plan_build_review/builder');
+check('router: feature → pbr', r('add rate limiting to the API with tests') === 'plan_build_review/backend');
 check('router: short question → quick', r('what does add() do?') === 'single/quick');
 check('router: design → planner', r('design a caching strategy for the API') === 'single/planner');
 
@@ -165,7 +166,7 @@ check('trust on: gemini gets --skip-trust and runs', gm.argv.includes('--skip-tr
 await runCouncil(ctx(), { pattern: 'single', role: 'researcher', member: 'cursor', task: 'What does src/math.ts do?', note: 'test' });
 check('trust on: cursor loads user + project settings', JSON.stringify(last('cursor').opts?.local?.settingSources) === '["user","project"]');
 updateSettings({ council: { ...getSettings().council, trustProjectConfig: false } }); delete process.env.GEMINI_CLI_TRUST_WORKSPACE;
-// 15. secret redaction before anything goes to a cloud member
+// 16. secret redaction before anything goes to a cloud member
 {
   const { redactSecrets } = await import(`${SRC}/council/redact.ts`);
   const positives: [string, string][] = [
@@ -243,7 +244,7 @@ updateSettings({ council: { ...getSettings().council, trustProjectConfig: false 
   updateSettings({ council: { ...getSettings().council, redactSecrets: true } });
 }
 
-// 15. consult triggers: system prompt + Solo-mode nudges
+// 17. consult triggers: system prompt + Solo-mode nudges
 {
   const { mainSystemPrompt } = await import(`${SRC}/agent/prompts.ts`);
   const { ConsultNudger, consultEnabled, FAILURES_HINT } = await import(`${SRC}/agent/consultNudge.ts`);
@@ -285,7 +286,7 @@ updateSettings({ council: { ...getSettings().council, trustProjectConfig: false 
   check('consult: no nudge after the model already asked', n.observe([sh('npm test', false)]) === null && n.failuresHint() === '');
 }
 
-// 15. member scorecard: persistent per-member stats
+// 18. member scorecard: persistent per-member stats
 {
   const statsPath = path.join(process.env.LOCALDEX_HOME!, 'council-stats.json');
   const readStats = () => JSON.parse(fs.readFileSync(statsPath, 'utf8'));
@@ -316,7 +317,7 @@ updateSettings({ council: { ...getSettings().council, trustProjectConfig: false 
   resetStats();
   check('stats: reset clears every member', Object.keys(readStats().members).length === 0);
 }
-// 15. risk-aware routing
+// 19. risk-aware routing
 const { assessRisk } = await import(`${SRC}/council/router.ts`);
 const riskTable: [string, string, string[]?][] = [
   ['fix the password reset check in auth.ts', 'high', ['auth']],
@@ -369,9 +370,10 @@ check('risk run: planner/reviewer still heavy, planner unchanged', run.steps[0].
 // Normal-risk run with confirmWrites off: no prompt, default builder model.
 reset(); approvals = 0;
 run = await runCouncil(ctx(), classify('add a button to the toolbar'));
-check('normal run: unchanged (single builder, no prompt, default model)', run.pattern === 'single' && run.risk === 'normal' && approvals === 0 && run.steps[0].model === 'auto', `${run.pattern} ${approvals} ${run.steps[0]?.model}`);
+// (With domain roles this UI task goes to the frontend builder.)
+check('normal run: unchanged (single builder, no prompt, default model)', run.pattern === 'single' && run.risk === 'normal' && approvals === 0 && run.steps[0].role === 'frontend' && !/heavy model/.test(run.steps[0].note ?? ''), `${run.pattern} ${approvals} ${run.steps[0]?.role} ${run.steps[0]?.model}`);
 updateSettings({ council: prevCouncil });
-// 15. health check: deep refresh adds a checklist and each member's models
+// 20. health check: deep refresh adds a checklist and each member's models
 reset();
 const t15 = Date.now();
 st = await memberStatuses(true, true);
@@ -392,6 +394,43 @@ reset(); markLimited('gemini', 'Quota exceeded. Try again in 30 minutes.');
 st = await memberStatuses();
 check('health: cooling-down member fails "Not cooling down"', ck('gemini', 'Not cooling down')?.ok === false && ck('claude', 'Not cooling down')?.ok === true);
 reset(); await memberStatuses(true);
+// 21. domain roles: frontend / backend builders and vision
+const same = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b);
+check('roles: old config (5 roles) loads with new role defaults', same(getSettings().council.roles.frontend, ['gemini', 'cursor', 'claude']) && same(getSettings().council.roles.backend, ['codex', 'claude', 'cursor']) && same(getSettings().council.roles.vision, ['gemini', 'claude']));
+const merged = mergeCouncil(DEFAULT_COUNCIL, { roles: { planner: ['gemini'] } } as any);
+check('roles: mergeCouncil keeps custom roles and fills new ones', same(merged.roles.planner, ['gemini']) && same(merged.roles.vision, ['gemini', 'claude']) && same(merged.roles.builder, DEFAULT_COUNCIL.roles.builder));
+check('router: CSS/button → frontend', r('make the submit button blue in the CSS') === 'single/frontend');
+check('router: Tailwind layout → frontend', r('fix the responsive layout of the settings page with Tailwind') === 'single/frontend');
+check('router: endpoint → backend', r('add a /health endpoint') === 'single/backend');
+check('router: SQL → backend', r('fix the SQL in the orders query') === 'single/backend');
+check('router: mixed UI + API → builder', r('add a button that calls the new API endpoint') === 'single/builder');
+check('router: screenshot path → vision', r('what is wrong in screenshots/login.png?') === 'single/vision');
+check('router: screenshot word → vision', r('the screenshot I saved shows a broken header, why?') === 'single/vision');
+const refs = findImageRefs('compare docs/mockup.png with ~/Desktop/x.webp and "shots/b.JPG", not notes.md');
+check('router: image refs found', same(refs, ['docs/mockup.png', '~/Desktop/x.webp', 'shots/b.JPG']), JSON.stringify(refs));
+check('router: /frontend /backend /vision', r('/frontend tidy the header') === 'single/frontend' && r('/backend tidy the server') === 'single/backend' && r('/vision look at a.png') === 'single/vision');
+check('router: /build on backend work → backend builder', r('/build add pagination to the users endpoint') === 'plan_build_review/backend');
+
+reset(); approvals = 0;
+run = await runCouncil(ctx(), parseCommand('/frontend make the submit button blue')!);
+let gem = JSON.parse(fs.readFileSync(path.join(CTL, 'gemini.last.json'), 'utf8'));
+check('/frontend: runs on gemini with write access, approval asked', run.steps.length === 1 && run.steps[0].role === 'frontend' && run.steps[0].member === 'gemini' && run.steps[0].access === 'write' && approvals === 1 && gem.argv.includes('auto_edit') && /BUILDER for frontend/.test(gem.prompt), runSummary(run));
+
+reset(); approvals = 0;
+run = await runCouncil(ctx(), classify('add rate limiting middleware to the API server with tests'));
+console.log(runSummary(run));
+check('pbr backend: planner=claude, backend=codex(write), reviewer≠codex', run.pattern === 'plan_build_review' && run.steps.map((s: any) => `${s.role}:${s.member}:${s.access}`).join(',') === 'planner:claude:read,backend:codex:write,reviewer:gemini:read' && approvals === 1);
+check('pbr backend: codex made the change', fs.existsSync(`${DEMO}/src/rateLimit.ts`) && /BUILDER for backend/.test(JSON.parse(fs.readFileSync(path.join(CTL, 'codex.last.json'), 'utf8')).prompt));
+
+reset(); approvals = 0;
+run = await runCouncil(ctx(), classify('what is wrong in screenshots/login.png?'));
+gem = JSON.parse(fs.readFileSync(path.join(CTL, 'gemini.last.json'), 'utf8'));
+check('vision: gemini, read-only, no approval, image path in prompt', run.steps[0]?.role === 'vision' && run.steps[0].member === 'gemini' && run.steps[0].access === 'read' && approvals === 0 && gem.argv.includes('plan') && /- screenshots\/login\.png/.test(gem.prompt) && /Open each image with your own tools/.test(gem.prompt) && /submit button/.test(run.result ?? ''));
+
+updateSettings({ council: { ...getSettings().council, allowWrite: false } }); approvals = 0; reset();
+run = await runCouncil(ctx(), { pattern: 'single', role: 'backend', member: 'codex', task: 'fix the typo', note: 'test' });
+check('edits off: backend builder is read-only too', run.steps[0].access === 'read' && approvals === 0);
+updateSettings({ council: { ...getSettings().council, allowWrite: true } });
 
 console.log(`\n${pass} passed, ${fail} failed. events: ${JSON.stringify(events)}`);
 reset();
