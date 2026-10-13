@@ -6,6 +6,9 @@ import { memberEnv, resolveBinary, runJsonl, runQuick } from '../proc.js';
 import { detectLimit, parseResetAt, stringify, type MemberAdapter, type MemberResult, type MemberRunOptions } from '../types.js';
 import type { MemberBilling } from '@localdex/shared';
 
+/** Gemini CLI's model aliases (`-m auto|pro|flash|flash-lite`). It has no non-interactive model listing. */
+const GEMINI_ALIASES = ['auto', 'pro', 'flash', 'flash-lite'];
+
 function bin(): string | null {
   return resolveBinary('gemini', getSettings().council.members.gemini.command);
 }
@@ -71,6 +74,10 @@ export const geminiMember: MemberAdapter = {
     const signedIn = sel === 'oauth-personal' ? a.hasOauth : !!sel;
     const billing: MemberBilling = !signedIn ? 'unknown' : sel === 'oauth-personal' ? 'plan' : sel === 'gemini-api-key' || sel === 'vertex-ai' ? 'api' : 'unknown';
     return { ...base, installed: true, version, path: b, signedIn, billing, account: a.account };
+  },
+
+  async listModels() {
+    return { models: GEMINI_ALIASES, source: 'suggested' };
   },
 
   async run(o: MemberRunOptions): Promise<MemberResult> {

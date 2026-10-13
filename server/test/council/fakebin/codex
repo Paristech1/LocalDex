@@ -4,6 +4,7 @@ const c = require('./_common.cjs'); const fs = require('fs'); const path = requi
 const a = process.argv.slice(2);
 (async () => {
   if (a[0] === '--version') return console.log('codex-cli 0.162.1');
+  if (a[0] === 'debug' && a[1] === 'models') { c.record('codex-models', { argv: a }); return console.log(JSON.stringify({ models: a.includes('--bundled') ? [{ slug: 'gpt-bundled-1', visibility: 'list' }] : [{ slug: 'gpt-fake-6-sol', visibility: 'list' }, { slug: 'gpt-fake-5', visibility: 'list' }, { slug: 'codex-internal', visibility: 'hide' }] })); }
   if (a[0] === 'login' && a[1] === 'status') return console.error(c.flag('codex_signed_out') ? 'Not logged in' : c.flag('codex_api') ? 'Logged in using an API key - sk-proj-***' : 'Logged in using ChatGPT');
   const prompt = await c.readStdin();
   c.record('codex', { argv: a, prompt });

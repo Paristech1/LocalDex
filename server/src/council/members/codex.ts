@@ -1,5 +1,5 @@
 import { getSettings } from '../../config.js';
-import { memberEnv, resolveBinary, runJsonl, runQuick } from '../proc.js';
+import { memberEnv, resolveBinary, runCapture, runJsonl, runQuick } from '../proc.js';
 import { detectLimit, parseResetAt, stringify, type MemberAdapter, type MemberResult, type MemberRunOptions } from '../types.js';
 import type { MemberBilling } from '@localdex/shared';
 
@@ -44,6 +44,26 @@ export const codexMember: MemberAdapter = {
     const signedIn = /logged in/i.test(out) && !/not logged in/i.test(out);
     const billing: MemberBilling = !signedIn ? 'unknown' : /api key/i.test(out) ? 'api' : /chatgpt/i.test(out) ? 'plan' : 'unknown';
     return { ...base, installed: true, version, path: b, signedIn, billing };
+  },
+
+  /**
+   * `codex debug models` prints Codex's model catalog; signed in, Codex refreshes it for your ChatGPT account.
+   * Signed out we ask for the catalog bundled with the CLI (no network) and call it suggestions.
+   */
+  async listModels(st) {
+    const b = st.path ?? bin();
+    if (!b) return { models: [], source: 'suggested' };
+    const account = st.signedIn && st.billing !== 'api';
+    const r = await runCapture(b, ['debug', 'models', ...(account ? [] : ['--bundled'])], 10_000);
+    if (r.timedOut) throw new Error('codex debug models timed out');
+    let models: string[] = [];
+    try {
+      const j = JSON.parse(r.stdout) as { models?: Array<{ slug?: string; visibility?: string }> };
+      models = (j.models ?? []).filter((m) => m.slug && m.visibility !== 'hide').map((m) => m.slug!);
+    } catch {
+      throw new Error((r.stderr.trim() || `codex debug models exited with ${r.code}`).slice(0, 200));
+    }
+    return { models, source: account ? 'account' : 'suggested' };
   },
 
   async run(o: MemberRunOptions): Promise<MemberResult> {

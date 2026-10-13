@@ -249,6 +249,19 @@ export interface MemberStatus {
   limitedUntil?: number;
   lastError?: string;
   checkedAt: number;
+  /** Models this member can use: listed by the vendor for your account, or a short list of known aliases. */
+  models?: string[];
+  modelsSource?: 'account' | 'suggested';
+  /** Health checklist (CLI found, signed in, billing, models, cooldown). */
+  checks?: MemberCheck[];
+  /** When the last full health check (with model listing) finished (epoch ms). */
+  healthCheckedAt?: number;
+}
+
+export interface MemberCheck {
+  name: string;
+  ok: boolean;
+  detail?: string;
 }
 
 export type CouncilStepStatus = 'queued' | 'running' | 'done' | 'error' | 'limited' | 'skipped' | 'cancelled';
@@ -563,7 +576,8 @@ export type ClientEvent =
   | { type: 'clear_goal'; sessionId: string }
   | { type: 'compact'; sessionId: string }
   | { type: 'set_mode'; sessionId: string; mode: SessionMode }
-  | { type: 'council_refresh' }
+  /** deep: also list each member's models (the health check). */
+  | { type: 'council_refresh'; deep?: boolean }
   | { type: 'council_login'; member: MemberId }
   | { type: 'council_stats_reset' }
   | { type: 'reset_worker'; sessionId: string; name: string }

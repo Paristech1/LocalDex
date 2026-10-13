@@ -4,6 +4,7 @@ const c = require('./_common.cjs');
 const a = process.argv.slice(2);
 (async () => {
   if (a[0] === '--version') return console.log('2.1.296 (Claude Code)');
+  if (a[0] === '--help') return console.log("Usage: claude [options]\n\nOptions:\n  --model <model>   Model for the current session. Provide\n                    an alias for the latest model (e.g.\n                    'opus' or 'sonnet') or a\n                    model's full name.\n  -n, --name <name> Set a display name");
   if (a[0] === 'auth' && a[1] === 'status') return console.log(JSON.stringify(c.flag('claude_signed_out') ? { loggedIn: false } : { loggedIn: true, authMethod: c.flag('claude_api') ? 'api_key' : 'claude.ai', email: 'paris@example.com' }));
   const prompt = await c.readStdin();
   c.record('claude', { argv: a, prompt });

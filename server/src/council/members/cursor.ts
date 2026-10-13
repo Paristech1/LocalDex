@@ -28,6 +28,8 @@ interface SdkAgent {
 interface CursorSdk {
   Agent: { create(options: Record<string, unknown>): Promise<SdkAgent> };
   Cursor: {
+    /** Models available to the signed-in account (cloud catalog call made by the SDK itself). */
+    models?: { list(): Promise<Array<{ id: string; displayName?: string; aliases?: string[] }>> };
     auth: {
       status(): Promise<{ status: 'logged-in' | 'logged-out'; email?: string }>;
       login(options: { openBrowser?: boolean | ((url: string) => void); onLoginUrl?: (url: string) => void; signal?: AbortSignal; apiKeyName?: string }): Promise<{ apiKey: string; email?: string }>;
@@ -82,6 +84,13 @@ export const cursorMember: MemberAdapter = {
     } catch (e) {
       return { ...base, installed: true, path: sdkPath, signedIn: false, billing: 'unknown' as MemberBilling, lastError: (e as Error).message };
     }
+  },
+
+  async listModels(st) {
+    const sdk = await loadSdk();
+    if (!sdk?.Cursor.models || !st.signedIn) return { models: ['auto'], source: 'suggested' };
+    const list = await sdk.Cursor.models.list();
+    return { models: list.map((m) => m.id).filter(Boolean), source: 'account' };
   },
 
   async login(onUrl, signal) {

@@ -93,6 +93,44 @@ export function runQuick(bin: string, args: string[], timeoutMs = 15_000): { cod
   }
 }
 
+/**
+ * Async version of runQuick for commands that may be slow (model listing touches the network),
+ * so the server keeps serving while it waits. Output is capped; never throws.
+ */
+export function runCapture(bin: string, args: string[], timeoutMs: number, maxBytes = 8_000_000): Promise<{ code: number | null; stdout: string; stderr: string; timedOut: boolean }> {
+  return new Promise((resolve) => {
+    let stdout = '';
+    let stderr = '';
+    let timedOut = false;
+    let child: ReturnType<typeof spawn>;
+    try {
+      child = spawn(bin, args, { env: memberEnv(), stdio: ['ignore', 'pipe', 'pipe'] });
+    } catch (e) {
+      return resolve({ code: null, stdout: '', stderr: (e as Error).message, timedOut: false });
+    }
+    const timer = setTimeout(() => {
+      timedOut = true;
+      child.kill('SIGKILL');
+    }, timeoutMs);
+    child.stdout!.setEncoding('utf8');
+    child.stdout!.on('data', (c: string) => {
+      if (stdout.length < maxBytes) stdout += c;
+    });
+    child.stderr!.setEncoding('utf8');
+    child.stderr!.on('data', (c: string) => {
+      stderr = (stderr + c).slice(-4000);
+    });
+    child.on('error', (e) => {
+      clearTimeout(timer);
+      resolve({ code: null, stdout, stderr: `${stderr}\n${e.message}`, timedOut });
+    });
+    child.on('close', (code) => {
+      clearTimeout(timer);
+      resolve({ code, stdout, stderr, timedOut });
+    });
+  });
+}
+
 export interface JsonlRunResult {
   code: number | null;
   signal: NodeJS.Signals | null;

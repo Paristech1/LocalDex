@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useId, useState } from 'react';
 import {
   COUNCIL_ROLES,
   MEMBER_IDS,
@@ -518,18 +518,14 @@ export function CouncilSettingsTab({ settings, patch }: TabProps) {
                 </div>
               )}
               <div className="grid grid-cols-2 gap-2">
-                <ModelInput label="Model" value={cfg.model ?? ''} placeholder={id === 'cursor' ? 'auto' : 'CLI default'} suggestions={SUGGEST[id]} onCommit={(v) => setMember(id, { model: v || undefined })} />
-                <ModelInput label="Heavy model (plan/review/judge)" value={cfg.heavyModel ?? ''} placeholder="same as model" suggestions={SUGGEST[id]} onCommit={(v) => setMember(id, { heavyModel: v || undefined })} />
+                <ModelInput label="Model" value={cfg.model ?? ''} placeholder={id === 'cursor' ? 'auto' : 'CLI default'} suggestions={modelOptions(id, st)} onCommit={(v) => setMember(id, { model: v || undefined })} />
+                <ModelInput label="Heavy model (plan/review/judge)" value={cfg.heavyModel ?? ''} placeholder="same as model" suggestions={modelOptions(id, st)} onCommit={(v) => setMember(id, { heavyModel: v || undefined })} />
               </div>
             </li>
           );
         })}
       </ul>
-      <div className="flex justify-end">
-        <Button size="sm" onClick={() => send({ type: 'council_refresh' })}>
-          ↻ Re-check members
-        </Button>
-      </div>
+      <HealthReport statuses={statuses} />
 
       <h4 className="text-sm font-medium pt-2">Roles</h4>
       <p className="text-xs text-ink-400 -mt-2">For each role, members are tried left to right. A member that is off, signed out or at its usage limit is skipped automatically.</p>
@@ -639,6 +635,7 @@ const INSTALL: Record<MemberId, string> = {
   cursor: 'npm install   # in the LocalDex folder (installs @cursor/sdk)',
 };
 
+/** Fallback picks when a member has not listed its models yet. */
 const SUGGEST: Record<MemberId, string[]> = {
   claude: ['sonnet', 'opus', 'haiku'],
   codex: [],
@@ -646,13 +643,85 @@ const SUGGEST: Record<MemberId, string[]> = {
   cursor: ['auto', 'composer-2.5'],
 };
 
-function ModelInput({ label, value, placeholder, suggestions, onCommit }: { label: string; value: string; placeholder: string; suggestions: string[]; onCommit: (v: string) => void }) {
+type ModelOption = { value: string; note: string };
+
+/** The member's own list first (labelled by where it came from), then the built-in picks it did not already include. */
+function modelOptions(id: MemberId, st: MemberStatus | undefined): ModelOption[] {
+  const listed = st?.models ?? [];
+  const note = st?.modelsSource === 'account' ? 'from your account' : 'suggested';
+  const seen = new Set(listed);
+  return [...listed.map((value) => ({ value, note })), ...SUGGEST[id].filter((m) => !seen.has(m)).map((value) => ({ value, note: 'suggested' }))];
+}
+
+function HealthReport({ statuses }: { statuses: MemberStatus[] }) {
+  // The health check is done once a status arrives with a newer healthCheckedAt than when we asked.
+  const lastRun = Math.max(0, ...statuses.map((s) => s.healthCheckedAt ?? 0));
+  const [pendingSince, setPendingSince] = useState<number | null>(null);
+  const running = pendingSince !== null && lastRun <= pendingSince;
+  useEffect(() => {
+    if (pendingSince !== null && lastRun > pendingSince) setPendingSince(null);
+  }, [lastRun, pendingSince]);
+  const run = () => {
+    setPendingSince(lastRun);
+    send({ type: 'council_refresh', deep: true });
+  };
+
+  return (
+    <div className="space-y-2">
+      <div className="flex items-center justify-end gap-3">
+        {lastRun > 0 && <span className="text-[11px] text-ink-400">Last health check {new Date(lastRun).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit', second: '2-digit' })}</span>}
+        <Button size="sm" onClick={() => send({ type: 'council_refresh' })} disabled={running}>
+          ↻ Re-check members
+        </Button>
+        <Button size="sm" onClick={run} disabled={running}>
+          {running ? 'Checking…' : 'Run health check'}
+        </Button>
+      </div>
+      {lastRun > 0 && (
+        <div className="grid grid-cols-2 gap-2">
+          {MEMBER_IDS.map((id) => {
+            const st = statuses.find((s) => s.id === id);
+            return (
+              <div key={id} className="rounded-md border border-ink-700 bg-ink-900/60 px-2.5 py-2">
+                <div className="text-xs font-medium mb-1" style={{ color: MEMBER_META[id].color }}>
+                  {MEMBER_META[id].label}
+                </div>
+                <ul className="space-y-0.5">
+                  {(st?.checks ?? []).map((c) => (
+                    <li key={c.name} className="flex gap-1.5 text-[11px] leading-snug">
+                      <span className={cx('shrink-0 w-3', c.ok ? 'text-accent' : 'text-danger')} aria-label={c.ok ? 'passed' : 'failed'}>
+                        {c.ok ? '✓' : '✗'}
+                      </span>
+                      <span className="text-ink-100 shrink-0">{c.name}</span>
+                      {c.detail && (
+                        <span className="text-ink-400 truncate" title={c.detail}>
+                          {c.detail}
+                        </span>
+                      )}
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function ModelInput({ label, value, placeholder, suggestions, onCommit }: { label: string; value: string; placeholder: string; suggestions: ModelOption[]; onCommit: (v: string) => void }) {
   const [v, setV] = useState(value);
   useEffect(() => setV(value), [value]);
-  const id = `dl-${label}-${placeholder}`.replace(/\W+/g, '-');
+  // One datalist per input: each member has its own model list.
+  const id = `dl-${useId().replace(/\W+/g, '')}`;
+  const fromAccount = suggestions.filter((s) => s.note === 'from your account').length;
   return (
     <label className="block">
-      <span className="text-[11px] text-ink-400">{label}</span>
+      <span className="text-[11px] text-ink-400">
+        {label}
+        {fromAccount > 0 && <span> · {fromAccount} from your account</span>}
+      </span>
       <input
         className={cx(inputCls, 'text-xs py-1 font-mono')}
         value={v}
@@ -665,7 +734,7 @@ function ModelInput({ label, value, placeholder, suggestions, onCommit }: { labe
       {suggestions.length > 0 && (
         <datalist id={id}>
           {suggestions.map((s) => (
-            <option key={s} value={s} />
+            <option key={s.value} value={s.value} label={s.note} />
           ))}
         </datalist>
       )}

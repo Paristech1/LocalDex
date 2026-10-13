@@ -242,7 +242,7 @@ async function handle(ws: WebSocket, ev: ClientEvent): Promise<void> {
       return;
     }
     case 'council_refresh':
-      void memberStatuses(true).catch((e) => send(ws, { type: 'error', message: `Council status check failed: ${(e as Error).message}` }));
+      void memberStatuses(true, ev.deep === true).catch((e) => send(ws, { type: 'error', message: `Council status check failed: ${(e as Error).message}` }));
       return;
     case 'council_stats_reset':
       resetStats();
