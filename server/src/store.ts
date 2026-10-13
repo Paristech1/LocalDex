@@ -3,6 +3,7 @@ import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import type { Session, SessionSummary } from '@localdex/shared';
 import { SESSIONS_DIR } from './config.js';
+import { recoverInterruptedRuns } from './council/recover.js';
 
 const cache = new Map<string, Session>();
 const timers = new Map<string, NodeJS.Timeout>();
@@ -40,6 +41,8 @@ export function getSession(id: string): Session | null {
     const s = JSON.parse(fs.readFileSync(file(id), 'utf8')) as Session;
     // Reset transient worker status on load.
     for (const w of Object.values(s.workers ?? {})) w.status = 'idle';
+    // Council runs left "running" by a server that stopped mid-run are cancelled, so their changes can be applied or discarded.
+    if (recoverInterruptedRuns(s)) saveNow(s);
     cache.set(id, s);
     return s;
   } catch {

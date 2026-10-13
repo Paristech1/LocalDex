@@ -48,6 +48,7 @@ import { describeKinds, existingRedactions, redactSecrets } from './redact.js';
 import { recordBuildOutcome, recordPeerRanking, recordStep } from './stats.js';
 import { buildHandoff, handoffReason, withHandoff } from './handoff.js';
 import { applyWorktree, createWorktree, discardWorktree, recordWorktreeStatus, repoInfo, snapshotWorktree, worktreeDiff } from './worktrees.js';
+import { runCopies } from './recover.js';
 import { LETTERS, aggregateRanking, anonymize, parseRanking, rankingForJudge, rankingLine, shuffle, type PeerBallot } from './peer.js';
 
 const MAX_RUNS_KEPT = 30;
@@ -807,7 +808,8 @@ async function runStep(ctx: CouncilContext, run: CouncilRun, spec: StepSpec): Pr
   };
 
   try {
-    if (!spec.worktree) prepareWorkspace(run, spec, pushItem);
+    // Set when a copy was wanted for this edit step but couldn't be made: the edits would go straight into the folder.
+    const direct = spec.worktree ? undefined : prepareWorkspace(run, spec, pushItem);
     const wt = spec.worktree ?? (run.worktree?.status === 'pending' ? run.worktree : undefined);
     const cwd = spec.worktree ? spec.worktree.cwd : runCwd(run);
     const instructions = memberInstructions(spec.role, spec.access, cwd) + (wt ? `\n\n${worktreeInstructions(wt)}` : '');
@@ -840,14 +842,20 @@ async function runStep(ctx: CouncilContext, run: CouncilRun, spec: StepSpec): Pr
       pushItem({ kind: 'note', text: why });
       bus.log('info', `[council] ${why}`);
     }
-    if (spec.access === 'write' && (confirm || risky) && !spec.preApproved) {
+    // A wanted copy that couldn't be made always asks, whatever the access mode: the edits would land in the folder itself.
+    if (spec.access === 'write' && (confirm || risky || direct) && !spec.preApproved) {
       bus.emit({ type: 'agent_status', sessionId, agent: 'main', status: 'waiting', detail: `Approve ${label(spec.member)} editing files?` });
+      const where = direct
+        ? `directly in ${cwd}? A separate copy couldn't be made (${direct}), so its edits go straight into your folder, with no apply or discard step.`
+        : wt
+          ? `in a separate copy of your project (${cwd})? Nothing in ${wt.projectDir} changes until you apply the result.`
+          : `in ${cwd}?`;
       const approved = await bus
-        .requestApproval(sessionId, agent, `Council: let ${label(spec.member)} (${spec.role}) edit files ${wt ? `in a separate copy of your project (${cwd})? Nothing in ${wt.projectDir} changes until you apply the result.` : `in ${cwd}?`}${spec.handoff ? ` It continues ${label(spec.handoff.from)}'s unfinished work.` : ''}\n\n${spec.prompt.slice(0, 600)}${spec.prompt.length > 600 ? '…' : ''}`, cwd, ctx.signal)
+        .requestApproval(sessionId, agent, `Council: let ${label(spec.member)} (${spec.role}) edit files ${where}${spec.handoff ? ` It continues ${label(spec.handoff.from)}'s unfinished work.` : ''}\n\n${spec.prompt.slice(0, 600)}${spec.prompt.length > 600 ? '…' : ''}`, cwd, ctx.signal)
         .catch(() => false);
       if (!approved) {
-        step.status = ctx.signal.aborted ? 'cancelled' : 'skipped';
-        step.error = ctx.signal.aborted ? 'Cancelled.' : 'You declined file edits for this step.';
+        step.status = ctx.signal.aborted ? 'cancelled' : direct ? 'error' : 'skipped';
+        step.error = ctx.signal.aborted ? 'Cancelled.' : direct ? "You declined edits straight into your folder (no separate copy could be made), so this step didn't run." : 'You declined file edits for this step.';
         return step;
       }
       bus.emit({ type: 'agent_status', sessionId, agent: 'main', status: 'running', detail: `Council: ${label(spec.member)} (${spec.role})…` });
@@ -862,7 +870,15 @@ async function runStep(ctx: CouncilContext, run: CouncilRun, spec: StepSpec): Pr
     const onParentAbort = () => ac.abort();
     ctx.signal.addEventListener('abort', onParentAbort, { once: true });
     spec.signal?.addEventListener('abort', onParentAbort, { once: true });
-    if (spec.signal?.aborted) ac.abort();
+    // A Stop (or a dropped vote) that came while statuses were checked or the approval was open: don't start the member.
+    if (ctx.signal.aborted || spec.signal?.aborted) ac.abort();
+    if (ac.signal.aborted) {
+      ctx.signal.removeEventListener('abort', onParentAbort);
+      spec.signal?.removeEventListener('abort', onParentAbort);
+      step.status = 'cancelled';
+      step.error = stoppedReason(ctx, spec) ?? 'Cancelled.';
+      return step;
+    }
     let billingAbort = '';
     let produced = false;
 
@@ -870,7 +886,8 @@ async function runStep(ctx: CouncilContext, run: CouncilRun, spec: StepSpec): Pr
       prompt,
       instructions,
       cwd,
-      extraDirs: approvedFolders().slice(1),
+      // In a separate copy, other approved folders would be live edits outside it, so members get none.
+      extraDirs: wt ? [] : approvedFolders().slice(1),
       access: spec.access,
       model: step.model,
       signal: ac.signal,
@@ -1011,30 +1028,43 @@ function runCwd(run: CouncilRun): string {
   return run.worktree?.status === 'pending' ? run.worktree.cwd : approvedFolders()[0];
 }
 
+/** Runs whose separate copy couldn't be made, with why. Later edit steps don't retry, so all edits land in one place. */
+const copyFailed = new WeakMap<CouncilRun, string>();
+
 /**
  * Before the run's first edit step: make a separate copy for the builders when the setting is on and the folder is
- * a git repo with a commit. The local model is never moved into a copy (it only works in approved folders), and
- * when no copy can be made the member edits the folder directly, with a note on the step.
+ * a git repo with a commit. The local model is never moved into a copy (it only works in approved folders).
+ * Returns why, when a copy was wanted for this cloud edit step but couldn't be made: the member would then edit the
+ * folder directly, so runStep always asks first.
  */
-function prepareWorkspace(run: CouncilRun, spec: StepSpec, note: (item: CouncilStep['transcript'][number]) => void): void {
-  if (spec.access !== 'write' || run.worktree || getSettings().council.builderWorktree === false) return;
-  const dir = approvedFolders()[0];
+function prepareWorkspace(run: CouncilRun, spec: StepSpec, note: (item: CouncilStep['transcript'][number]) => void): string | undefined {
+  if (spec.access !== 'write' || run.worktree || getSettings().council.builderWorktree === false) return undefined;
   if (spec.member === 'local') {
     note({ kind: 'note', text: "The local model edits your folder directly (LocalDex's own folder permissions apply)." });
-    return;
+    return undefined;
   }
+  const failed = copyFailed.get(run);
+  if (failed) return failed;
+  const dir = approvedFolders()[0];
+  let why: string;
   if (!repoInfo(dir)) {
+    why = 'not a git repository with a commit';
     note({ kind: 'note', text: 'Not a git repository with a commit, so this member edits your folder directly instead of a separate copy.' });
-    return;
+  } else {
+    try {
+      const wt = (run.worktree = createWorktree(dir, run.id));
+      note({ kind: 'note', text: `Working in a separate copy: ${wt.cwd} (branch ${wt.branch}). Your folder stays unchanged until you apply.` });
+      if (wt.imported) note({ kind: 'note', text: `Brought your uncommitted changes (${wt.imported} file${wt.imported === 1 ? '' : 's'}) into the copy, so members build on them.` });
+      if (wt.note) note({ kind: 'note', text: wt.note });
+      return undefined;
+    } catch (e) {
+      why = (e as Error).message;
+      note({ kind: 'note', text: `Couldn't make a separate copy (${why}), so this member edits your folder directly.` });
+      bus.log('warn', `[council] worktree: ${why}`);
+    }
   }
-  try {
-    run.worktree = createWorktree(dir, run.id);
-    note({ kind: 'note', text: `Working in a separate copy: ${run.worktree.cwd} (branch ${run.worktree.branch}). Your folder stays unchanged until you apply.` });
-    if (run.worktree.note) note({ kind: 'note', text: run.worktree.note });
-  } catch (e) {
-    note({ kind: 'note', text: `Couldn't make a separate copy (${(e as Error).message}), so this member edits your folder directly.` });
-    bus.log('warn', `[council] worktree: ${(e as Error).message}`);
-  }
+  copyFailed.set(run, why);
+  return why;
 }
 
 function worktreeInstructions(wt: CouncilWorktree): string {
@@ -1130,6 +1160,19 @@ export function applyRunChanges(run: CouncilRun): CouncilWorktree | undefined {
 /** Throw a run's waiting changes away: removes its copy and branch. */
 export function discardRunChanges(run: CouncilRun): CouncilWorktree | undefined {
   return run.worktree ? discardCopy(run.worktree) : undefined;
+}
+
+/** A session is being deleted: remove every copy of its runs that is still waiting. Returns how many were removed. */
+export function discardSessionCopies(session: Session): number {
+  let n = 0;
+  for (const run of session.councilRuns ?? []) {
+    for (const wt of runCopies(run)) {
+      if (wt.status !== 'pending' && wt.status !== 'conflict') continue;
+      discardCopy(wt);
+      n++;
+    }
+  }
+  return n;
 }
 
 function applyCopy(wt: CouncilWorktree): CouncilWorktree {

@@ -7,11 +7,13 @@ import { serve } from '@hono/node-server';
 import { serveStatic } from '@hono/node-server/serve-static';
 import { WebSocketServer, WebSocket } from 'ws';
 import type { ClientEvent, CouncilRunAccess, CouncilWorktree, ServerEvent } from '@localdex/shared';
+import { MEMBER_IDS } from '@localdex/shared';
 import { DATA_DIR, applyMcpToggles, expandHome, getSettings, stripCouncilCommands, updateSettings } from './config.js';
 import { MEMBERS, cachedStatuses, memberStatuses } from './council/registry.js';
 import { getStats, resetStats } from './council/stats.js';
 import { cleanupStaleWorktrees } from './council/worktrees.js';
-import { applyArenaEntry, applyRunChanges, discardArena, discardRunChanges } from './council/orchestrator.js';
+import { applyArenaEntry, applyRunChanges, discardArena, discardRunChanges, discardSessionCopies } from './council/orchestrator.js';
+import { waitingCopyPaths } from './council/recover.js';
 import { listModels } from './lmstudio.js';
 import { createSession, deleteSession, flushAll, getSession, listSessions, saveSession } from './store.js';
 import { bus } from './agent/bus.js';
@@ -112,9 +114,11 @@ const server = serve({ fetch: app.fetch, port: PORT, hostname: BIND_HOST }, () =
   console.log(`Data dir         →  ${DATA_DIR}`);
   console.log(`LM Studio        →  ${getSettings().baseUrl}`);
   void reloadMcp();
-  // Builder copies that were applied or discarded more than a week ago.
+  // Builder copies applied or discarded more than a week ago, and waiting copies whose session or run is gone.
+  // Loading every session first also cancels runs a previous server left "running".
   try {
-    const n = cleanupStaleWorktrees();
+    const waiting = waitingCopyPaths(listSessions().map((x) => getSession(x.id)).filter((x): x is NonNullable<typeof x> => !!x));
+    const n = cleanupStaleWorktrees(undefined, undefined, (rec) => !waiting.has(path.resolve(rec.path)));
     if (n) console.log(`Council          →  removed ${n} old separate cop${n === 1 ? 'y' : 'ies'}`);
   } catch (e) {
     console.warn(`Council: worktree cleanup failed: ${(e as Error).message}`);
@@ -201,7 +205,7 @@ async function handle(ws: WebSocket, ev: ClientEvent): Promise<void> {
       const s = getSession(ev.sessionId);
       if (!s) return send(ws, { type: 'error', message: 'Session not found' });
       if (!getSettings().council.enabled) return send(ws, { type: 'error', sessionId: s.id, message: 'Turn on the model council in Settings → Council first.' });
-      const member = ev.member && ev.member in MEMBERS ? ev.member : undefined;
+      const member = MEMBER_IDS.find((m) => m === ev.member);
       void runnerFor(s).escalate({ pattern: ev.pattern, member, note: typeof ev.note === 'string' ? ev.note : undefined, access: parseRunAccess(ev.access) });
       return;
     }
@@ -218,7 +222,10 @@ async function handle(ws: WebSocket, ev: ClientEvent): Promise<void> {
       return send(ws, { type: 'session', session: s });
     }
     case 'delete_session': {
+      const gone = getSession(ev.id);
       dropRunner(ev.id);
+      // Its waiting copies could never be applied any more.
+      if (gone) discardSessionCopies(gone);
       deleteSession(ev.id);
       bus.emit({ type: 'sessions', sessions: listSessions() });
       return;
@@ -291,7 +298,7 @@ async function handle(ws: WebSocket, ev: ClientEvent): Promise<void> {
     }
     case 'council_login': {
       // Only members with an official in-app sign-in (Cursor SDK). CLIs sign in from Terminal.
-      const adapter = MEMBERS[ev.member];
+      const adapter = MEMBER_IDS.includes(ev.member) ? MEMBERS[ev.member] : undefined;
       if (!adapter?.login) return send(ws, { type: 'error', message: `${adapter?.label ?? ev.member} signs in from Terminal; see Settings → Council.` });
       loginAbort?.abort();
       const ac = new AbortController();

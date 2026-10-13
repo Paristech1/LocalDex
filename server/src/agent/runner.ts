@@ -15,7 +15,8 @@ import type { CouncilRequest } from '../tools/types.js';
 /** Orchestrates one session: main loop, corrections, workers, goal/loop autonomy, compaction. */
 export class SessionRunner {
   private abort: AbortController | null = null;
-  private corrections: string[] = [];
+  /** Messages sent while a run is in flight, each with the access picked for it (Council mode). */
+  private corrections: QueuedMessage[] = [];
   readonly workers: WorkerManager;
 
   constructor(readonly session: Session) {
@@ -37,7 +38,7 @@ export class SessionRunner {
   /** User sent a message. Starts a run, or queues a correction if one is already in flight. */
   async handleUserMessage(content: string, access?: CouncilRunAccess): Promise<void> {
     if (this.running) {
-      this.corrections.push(content);
+      this.corrections.push({ content, ...(access ? { access } : {}) });
       bus.log('info', 'Correction queued; it will be delivered before the next model call.');
       return;
     }
@@ -128,7 +129,7 @@ export class SessionRunner {
       bus.emit({ type: 'error', sessionId: sid, message: 'Nothing to hand over yet: send a request first.' });
       return;
     }
-    const pattern: EscalatePattern = opts.pattern in ESCALATE_LABELS ? opts.pattern : 'auto';
+    const pattern: EscalatePattern = Object.hasOwn(ESCALATE_LABELS, opts.pattern) ? opts.pattern : 'auto';
     const note = (opts.note ?? '').trim().slice(0, 2000);
     const label = pattern === 'single' && opts.member ? `ask ${opts.member}` : ESCALATE_LABELS[pattern];
     // Bracketed, so later council context and the next hand-over skip it; it also keeps user/assistant turns alternating.
@@ -181,9 +182,10 @@ export class SessionRunner {
       if (this.corrections.length) {
         const pending = this.corrections;
         this.corrections = [];
-        const next = pending.join('\n\n');
+        const next = pending.map((m) => m.content).join('\n\n');
         s.messages.push({ role: 'user', content: next, ts: Date.now() });
-        void (this.councilMode ? this.runCouncilTurn(next) : this.run());
+        // Queued follow-ups keep the access picked for them; several at once get the strictest one.
+        void (this.councilMode ? this.runCouncilTurn(next, strictestAccess(pending.map((m) => m.access))) : this.run());
       }
     }
   }
@@ -242,7 +244,7 @@ export class SessionRunner {
   private pullCorrections = (): string[] => {
     const out = this.corrections;
     this.corrections = [];
-    return out;
+    return out.map((m) => m.content);
   };
 
   private async run(): Promise<void> {
@@ -353,7 +355,7 @@ export class SessionRunner {
       if (this.corrections.length) {
         const pending = this.corrections;
         this.corrections = [];
-        for (const c of pending) s.messages.push({ role: 'user', content: c, ts: Date.now() });
+        for (const c of pending) s.messages.push({ role: 'user', content: c.content, ts: Date.now() });
         void this.run();
       }
     }
@@ -365,6 +367,23 @@ export class SessionRunner {
     if (first?.role === 'system') first.content = prompt;
     else this.session.messages.unshift({ role: 'system', content: prompt });
   }
+}
+
+interface QueuedMessage {
+  content: string;
+  access?: CouncilRunAccess;
+}
+
+const ACCESS_RANK: Record<CouncilRunAccess, number> = { read: 0, confirm: 1, auto: 2 };
+
+/**
+ * The access for several queued messages sent as one turn: the strictest one picked (read < confirm < auto).
+ * Messages without a pick (Settings decide) don't loosen an explicit pick; all without one → undefined (Settings).
+ */
+export function strictestAccess(list: Array<CouncilRunAccess | undefined>): CouncilRunAccess | undefined {
+  let out: CouncilRunAccess | undefined;
+  for (const a of list) if (a && Object.hasOwn(ACCESS_RANK, a) && (!out || ACCESS_RANK[a] < ACCESS_RANK[out])) out = a;
+  return out;
 }
 
 /** Recent user/assistant text so council members can follow up on earlier turns. */

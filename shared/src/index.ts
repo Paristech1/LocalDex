@@ -423,8 +423,13 @@ export interface CouncilWorktree {
   /** Where members work: the worktree root, or the matching subfolder when the project is inside a bigger repo. */
   cwd: string;
   branch: string;
-  /** Commit the copy started from. */
+  /**
+   * Commit the members' changes are measured from: the user's last commit, plus (on the copy's own branch) the
+   * uncommitted changes their folder had when the copy was made.
+   */
   base: string;
+  /** How many files with uncommitted changes from the user's folder were brought into the copy. */
+  imported?: number;
   /** The user's folder the changes are applied to. */
   projectDir: string;
   status: CouncilWorktreeStatus;
@@ -435,7 +440,7 @@ export interface CouncilWorktree {
   diff?: string;
   /** Why the last apply/discard failed, or what the user should do. */
   error?: string;
-  /** Uncommitted changes in the user's folder that the copy does not include (it starts from the last commit). */
+  /** Set when the user's uncommitted changes couldn't be brought into the copy (it then starts from the last commit). */
   note?: string;
 }
 

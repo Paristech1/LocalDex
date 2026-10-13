@@ -276,10 +276,15 @@ function EscalatePicker({ sessionId, onClose }: { sessionId: string; onClose: ()
   const [pattern, setPattern] = useState<EscalatePattern>('auto');
   const [member, setMember] = useState<MemberId | ''>('');
   const [note, setNote] = useState('');
-  const members = useStore((s) => s.settings?.council.members);
+  const councilSettings = useStore((s) => s.settings?.council);
+  const members = councilSettings?.members;
   const enabled = MEMBER_IDS.filter((m) => members?.[m]?.enabled !== false);
+  // Same per-hand-over access as the Council composer: starts from Settings → Council, never saved.
+  const fallback: CouncilRunAccess = councilSettings ? defaultRunAccess(councilSettings) : 'read';
+  const [access, setAccess] = useState<CouncilRunAccess>(fallback);
+  useEffect(() => setAccess(fallback), [fallback]);
   const go = () => {
-    send({ type: 'council_escalate', sessionId, pattern, ...(pattern === 'single' && member ? { member } : {}), ...(note.trim() ? { note: note.trim() } : {}) });
+    send({ type: 'council_escalate', sessionId, pattern, access, ...(pattern === 'single' && member ? { member } : {}), ...(note.trim() ? { note: note.trim() } : {}) });
     onClose();
   };
   return (
@@ -316,6 +321,7 @@ function EscalatePicker({ sessionId, onClose }: { sessionId: string; onClose: ()
             ))}
           </select>
         )}
+        <AccessPicker value={access} onChange={setAccess} />
         <input
           className={cx(inputCls, 'flex-1 min-w-[10rem] text-xs')}
           value={note}

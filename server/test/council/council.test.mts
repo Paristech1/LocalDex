@@ -1108,6 +1108,206 @@ updateSettings({ council: { ...getSettings().council, allowWrite: true } });
   updateSettings({ council: prev });
 }
 
+// 29. Review fixes: safe apply (ignored files, user's uncommitted changes), queued access, copies outside the folder,
+// failed copies, interrupted runs, orphaned copies, prototype keys, abort before spawn
+{
+  console.log('\n# review fixes');
+  const { applyRunChanges, discardRunChanges, discardSessionCopies } = await import(`${SRC}/council/orchestrator.ts`);
+  const { createWorktree, applyWorktree, discardWorktree, snapshotWorktree, worktreesDir, cleanupStaleWorktrees } = await import(`${SRC}/council/worktrees.ts`);
+  const { waitingCopyPaths } = await import(`${SRC}/council/recover.ts`);
+  const { SessionRunner, strictestAccess } = await import(`${SRC}/agent/runner.ts`);
+  const { getSession } = await import(`${SRC}/store.ts`);
+  const { SESSIONS_DIR } = await import(`${SRC}/config.ts`);
+  const sh = (cmd: string, cwd = DEMO) => execSync(cmd, { cwd, encoding: 'utf8' }).trim();
+  const real = (p: string) => fs.realpathSync(p);
+  const read = (f: string) => fs.readFileSync(path.join(DEMO, f), 'utf8');
+  const commit = (msg: string) => sh(`git add -A && git -c user.name=t -c user.email=t@t commit -qm "${msg}"`);
+  const headBefore = sh('git rev-parse HEAD');
+  const prev = getSettings().council;
+  const folders = getSettings().approvedFolders;
+  const base = { ...prev, builderWorktree: true, qaStep: false, checksGate: false, maxFixRounds: 0 };
+  const cleanDemo = () => { reset(); sh(`git reset -q --hard ${headBefore}`); sh('git clean -qfdx'); };
+  let cmds: string[] = [];
+  const off = bus.subscribe((ev: any) => { if (ev.type === 'approval_request') cmds.push(ev.command); });
+  updateSettings({ council: base });
+
+  // --- 1. An ignored file the copy would create is never overwritten or deleted.
+  cleanDemo();
+  fs.writeFileSync(`${DEMO}/.gitignore`, '.env\n');
+  commit('ignore .env');
+  fs.writeFileSync(`${DEMO}/.env`, 'USER_SETTING=mine\n');
+  let wt = createWorktree(DEMO, 'ignored-env');
+  fs.writeFileSync(path.join(wt.path, '.gitignore'), 'node_modules\n');
+  fs.writeFileSync(path.join(wt.path, '.env'), 'BUILDER_SETTING=theirs\n');
+  let res = applyWorktree(DEMO, wt);
+  check('apply: refused when the copy would create a file the user has (ignored .env)', !res.ok && res.status === 'conflict' && /\.env \(ignored by git\)/.test(res.error ?? '') && /Nothing was changed/.test(res.error ?? ''), res.error);
+  check('apply: the user\'s ignored .env and .gitignore are untouched', read('.env') === 'USER_SETTING=mine\n' && read('.gitignore') === '.env\n' && sh('git status --porcelain') === '', sh('git status --porcelain'));
+  discardWorktree(DEMO, wt);
+
+  // A failed three-way apply puts existing files back and only removes files that did not exist before.
+  cleanDemo();
+  wt = createWorktree(DEMO, 'restore');
+  fs.appendFileSync(path.join(wt.path, 'README.md'), 'copy line\n');
+  fs.mkdirSync(path.join(wt.path, 'lib/deep'), { recursive: true });
+  fs.writeFileSync(path.join(wt.path, 'lib/deep/new.ts'), 'export const x = 1;\n');
+  fs.writeFileSync(`${DEMO}/README.md`, 'totally different\n');
+  commit('user rewrote README');
+  fs.writeFileSync(`${DEMO}/.env`, 'KEEP=1\n');
+  res = applyWorktree(DEMO, wt);
+  check('apply: failed merge restores the folder exactly (old content back, new files and folders gone)', !res.ok && res.status === 'conflict' && read('README.md') === 'totally different\n' && !fs.existsSync(`${DEMO}/lib`) && read('.env') === 'KEEP=1\n' && sh('git status --porcelain') === '?? .env' && sh('git diff --cached --name-only') === '', `${res.error} | ${sh('git status --porcelain')}`);
+  discardWorktree(DEMO, wt);
+
+  // --- 3. The user's uncommitted changes go into the copy; apply carries only the builder's changes on top.
+  cleanDemo(); approvals = 0; cmds = [];
+  fs.writeFileSync(`${DEMO}/README.md`, '# Demo\nuser edit\n');
+  fs.writeFileSync(`${DEMO}/notes.txt`, 'my notes\n');
+  let run = await runCouncil(ctx(), { pattern: 'single', role: 'builder', member: 'codex', task: 'add a rate limiter', note: 'test' });
+  wt = run.worktree;
+  check('copy: includes the user\'s uncommitted edit and new file, without a warning', !!wt && fs.readFileSync(path.join(wt.path, 'README.md'), 'utf8') === '# Demo\nuser edit\n' && fs.existsSync(path.join(wt.path, 'notes.txt')) && wt.imported === 2 && !wt.note && run.steps[0].transcript.some((t: any) => /Brought your uncommitted changes \(2 files\)/.test(t.text ?? '')), JSON.stringify(wt && { imported: wt.imported, note: wt.note }));
+  check('copy: the base snapshot is on the council branch; the diff holds only the builder\'s file', !!wt && wt.base !== headBefore && sh(`git log -1 --format=%s ${wt.base}`) === 'LocalDex: your uncommitted changes' && same(wt.files, ['src/rateLimit.ts']) && !/user edit/.test(wt.diff ?? ''), JSON.stringify(wt?.files));
+  let after = applyRunChanges(run);
+  check('apply: succeeds with the user\'s uncommitted changes still there, and keeps them', after?.status === 'applied' && !after.error && read('README.md') === '# Demo\nuser edit\n' && read('notes.txt') === 'my notes\n' && fs.existsSync(`${DEMO}/src/rateLimit.ts`) && sh('git rev-parse HEAD') === headBefore, after?.error);
+
+  // The builder edits the same file on top of the user's (staged) edit: both end up in the folder, staging kept.
+  cleanDemo();
+  fs.writeFileSync(`${DEMO}/README.md`, '# Demo\nuser edit\n');
+  sh('git add README.md');
+  wt = createWorktree(DEMO, 'same-file');
+  fs.appendFileSync(path.join(wt.path, 'README.md'), 'builder edit\n');
+  res = applyWorktree(DEMO, wt);
+  check('apply: builder\'s edit on top of the user\'s edit to the same file keeps both', res.ok && read('README.md') === '# Demo\nuser edit\nbuilder edit\n' && sh('git diff --cached --name-only') === 'README.md' && sh('git show :README.md') === '# Demo\nuser edit', `${res.error} | ${read('README.md')}`);
+  discardWorktree(DEMO, wt);
+
+  // The user changes that file again after the copy was made: conflict, nothing touched.
+  cleanDemo();
+  fs.writeFileSync(`${DEMO}/README.md`, '# Demo\nuser edit\n');
+  wt = createWorktree(DEMO, 'changed-since');
+  fs.appendFileSync(path.join(wt.path, 'README.md'), 'builder edit\n');
+  fs.writeFileSync(path.join(wt.path, 'added.ts'), 'export {};\n');
+  fs.writeFileSync(`${DEMO}/README.md`, '# Demo\nuser edit, changed again\n');
+  res = applyWorktree(DEMO, wt);
+  check('apply: user changed the file after the copy was made → conflict, nothing touched', !res.ok && res.status === 'conflict' && /uncommitted changes to README\.md/.test(res.error ?? '') && read('README.md') === '# Demo\nuser edit, changed again\n' && !fs.existsSync(`${DEMO}/added.ts`), res.error);
+  discardWorktree(DEMO, wt);
+
+  // --- 4. No extra folders for members working in a copy; a copy of a subfolder project only applies inside it.
+  cleanDemo();
+  const other = fs.mkdtempSync(path.join(path.dirname(DEMO), 'other-'));
+  updateSettings({ approvedFolders: [DEMO, other] });
+  run = await runCouncil(ctx(), { pattern: 'single', role: 'builder', member: 'codex', task: 'add a rate limiter', note: 'test' });
+  const inCopy = JSON.parse(fs.readFileSync(path.join(CTL, 'codex.last.json'), 'utf8'));
+  check('copy: builder gets no other approved folders (no --add-dir)', run.worktree?.status === 'pending' && real(inCopy.cwd) === real(run.worktree.cwd) && !inCopy.argv.includes('--add-dir'), inCopy.argv.join(' '));
+  discardRunChanges(run);
+  updateSettings({ council: { ...base, builderWorktree: false } });
+  run = await runCouncil(ctx(), { pattern: 'single', role: 'builder', member: 'codex', task: 'add a rate limiter', note: 'test' });
+  const direct = JSON.parse(fs.readFileSync(path.join(CTL, 'codex.last.json'), 'utf8'));
+  check('no copy: other approved folders still passed (--add-dir)', !run.worktree && direct.argv.includes('--add-dir') && direct.argv.includes(other));
+  updateSettings({ council: base, approvedFolders: folders });
+
+  cleanDemo();
+  fs.mkdirSync(`${DEMO}/pkg`);
+  fs.writeFileSync(`${DEMO}/pkg/index.ts`, 'export {};\n');
+  commit('add pkg');
+  wt = createWorktree(`${DEMO}/pkg`, 'subfolder');
+  fs.writeFileSync(path.join(wt.cwd, 'inside.ts'), 'export const inside = 1;\n');
+  fs.appendFileSync(path.join(wt.path, 'README.md'), 'outside edit\n');
+  res = applyWorktree(`${DEMO}/pkg`, wt);
+  check('apply: refused when the copy changed files outside the project subfolder, listing them', real(wt.cwd) === real(path.join(wt.path, 'pkg')) && !res.ok && /outside your project folder/.test(res.error ?? '') && /README\.md/.test(res.error ?? '') && !/inside\.ts/.test(res.error ?? '') && !fs.existsSync(`${DEMO}/pkg/inside.ts`) && read('README.md') === '# Demo\n', res.error);
+  fs.writeFileSync(path.join(wt.path, 'README.md'), '# Demo\n');
+  res = applyWorktree(`${DEMO}/pkg`, wt);
+  check('apply: inside the subfolder only → applies', res.ok && fs.existsSync(`${DEMO}/pkg/inside.ts`), res.error);
+  discardWorktree(`${DEMO}/pkg`, wt);
+
+  // --- 5. A copy that can't be made always asks first, even with "Edits allowed".
+  cleanDemo(); approvals = 0; cmds = [];
+  const wtDir = worktreesDir();
+  const aside = `${wtDir}.aside`;
+  fs.renameSync(wtDir, aside);
+  fs.writeFileSync(wtDir, 'not a folder');
+  run = await runCouncil(ctx(), { pattern: 'single', role: 'builder', member: 'codex', task: 'add a rate limiter', note: 'test', access: 'auto' });
+  check('copy failed: asks even with "Edits allowed", says edits go straight into the folder', approvals === 1 && /couldn't be made/.test(cmds[0] ?? '') && /straight into your folder/.test(cmds[0] ?? '') && !run.worktree && run.steps[0].status === 'done' && fs.existsSync(`${DEMO}/src/rateLimit.ts`), cmds[0]?.slice(0, 160));
+  reset(); approvals = 0; denyNext = true;
+  run = await runCouncil(ctx(), { pattern: 'single', role: 'builder', member: 'codex', task: 'add a rate limiter', note: 'test', access: 'auto' });
+  denyNext = false;
+  check('copy failed: declining fails the step, nothing changes', approvals === 1 && run.steps[0].status === 'error' && /declined edits straight into your folder/.test(run.steps[0].error ?? '') && !fs.existsSync(`${DEMO}/src/rateLimit.ts`), run.steps[0].error);
+  fs.rmSync(wtDir);
+  fs.renameSync(aside, wtDir);
+  reset(); approvals = 0; cmds = [];
+  const plainDir = fs.mkdtempSync(path.join(path.dirname(DEMO), 'plain2-'));
+  updateSettings({ approvedFolders: [plainDir], council: { ...base, confirmWrites: false } });
+  run = await runCouncil(ctx(), { pattern: 'single', role: 'builder', member: 'codex', task: 'add a rate limiter', note: 'test' });
+  updateSettings({ approvedFolders: folders, council: base });
+  check('non-git folder: asks even with "ask before edits" off', approvals === 1 && /not a git repository/.test(cmds[0] ?? '') && fs.existsSync(path.join(plainDir, 'src/rateLimit.ts')), cmds[0]?.slice(0, 120));
+
+  // --- 6. Runs left "running" by a stopped server are cancelled on load; orphaned copies are cleaned up.
+  cleanDemo();
+  const iwt = createWorktree(DEMO, 'interrupted');
+  fs.writeFileSync(path.join(iwt.cwd, 'half.ts'), 'export const half = true;\n');
+  const sid = `s-intr-${Math.random().toString(36).slice(2, 8)}`;
+  const stale = { id: sid, title: 't', createdAt: Date.now(), updatedAt: Date.now(), model: null, messages: [], archive: [], workers: {}, plan: [], goal: null, usage: { promptTokens: 0, completionTokens: 0, lastPromptTokens: 0 }, compactions: 0, compactSummary: null,
+    councilRuns: [{ id: 'intr1', pattern: 'single', task: 'x', status: 'running', startedAt: Date.now(), steps: [{ id: 'intr1-1', role: 'builder', member: 'codex', access: 'write', status: 'running', startedAt: Date.now(), transcript: [] }], worktree: iwt }] };
+  fs.writeFileSync(path.join(SESSIONS_DIR, `${sid}.json`), JSON.stringify(stale));
+  const loaded: any = getSession(sid);
+  const ir = loaded.councilRuns[0];
+  const onDisk = JSON.parse(fs.readFileSync(path.join(SESSIONS_DIR, `${sid}.json`), 'utf8'));
+  check('startup: a run left running is cancelled with a note (and saved)', ir.status === 'cancelled' && ir.steps[0].status === 'cancelled' && /stopped while this council run/.test(ir.result ?? '') && onDisk.councilRuns[0].status === 'cancelled');
+  after = applyRunChanges(ir);
+  check('startup: its waiting changes can then be applied', after?.status === 'applied' && fs.existsSync(`${DEMO}/half.ts`), after?.error);
+
+  cleanDemo();
+  const orphan = createWorktree(DEMO, 'orphan');
+  const keptWt = createWorktree(DEMO, 'kept');
+  const owner: any = { id: 's-owner', councilRuns: [{ id: 'kept', status: 'done', steps: [], worktree: keptWt }] };
+  const waiting = waitingCopyPaths([owner]);
+  const removedN = cleanupStaleWorktrees(Date.now(), undefined, (rec: any) => !waiting.has(path.resolve(rec.path)));
+  check('startup: a waiting copy no session refers to is removed; referenced ones stay', removedN >= 1 && !fs.existsSync(orphan.path) && !sh(`git branch --list ${orphan.branch}`) && fs.existsSync(keptWt.path), `removed ${removedN}`);
+  const n = discardSessionCopies(owner);
+  check('session delete: its waiting copies are discarded', n === 1 && keptWt.status === 'discarded' && !fs.existsSync(keptWt.path) && !sh(`git branch --list ${keptWt.branch}`));
+
+  // --- 2. Messages queued during a run keep their access; several at once get the strictest.
+  check('access: strictest of queued messages', strictestAccess([undefined, 'auto']) === 'auto' && strictestAccess(['auto', 'confirm']) === 'confirm' && strictestAccess(['auto', undefined, 'read']) === 'read' && strictestAccess([undefined, undefined]) === undefined && strictestAccess(['constructor' as any]) === undefined);
+  cleanDemo(); approvals = 0;
+  updateSettings({ council: { ...base, builderWorktree: false } });
+  const qs: any = { id: 's-queue', title: 't', createdAt: Date.now(), updatedAt: Date.now(), model: null, messages: [], archive: [], workers: {}, plan: [], goal: null, usage: { promptTokens: 0, completionTokens: 0, lastPromptTokens: 0 }, compactions: 0, compactSummary: null, mode: 'council', councilRuns: [] };
+  const rq = new SessionRunner(qs);
+  const first = rq.handleUserMessage('/plan how should we structure the parser?', 'auto');
+  await rq.handleUserMessage('/frontend fix the typo in the navbar component', 'read');
+  await first;
+  for (let i = 0; i < 100 && !(qs.councilRuns.length === 2 && qs.councilRuns[1].status !== 'running'); i++) await new Promise((r) => setTimeout(r, 100));
+  let qr = qs.councilRuns[1];
+  check('queued follow-up keeps its own access ("Read only")', qs.councilRuns.length === 2 && qr.access === 'read' && qr.steps.length > 0 && qr.steps.every((x: any) => x.access === 'read') && approvals === 0, JSON.stringify(qr && { access: qr.access, steps: qr.steps.map((x: any) => x.access) }));
+  reset();
+  const second = rq.handleUserMessage('/plan how should we structure the parser?');
+  await rq.handleUserMessage('fix the typo in README', 'auto');
+  await rq.handleUserMessage('and keep it short');
+  await second;
+  for (let i = 0; i < 100 && !(qs.councilRuns.length === 4 && qs.councilRuns[3].status !== 'running'); i++) await new Promise((r) => setTimeout(r, 100));
+  qr = qs.councilRuns[3];
+  check('queued follow-ups joined: an explicit pick wins over "Settings"', qs.councilRuns.length === 4 && qr?.access === 'auto' && /fix the typo in README\n\nand keep it short/.test(qs.messages.filter((m: any) => m.role === 'user').at(-1)?.content ?? ''), qr?.access);
+  updateSettings({ council: base });
+
+  // --- 7. Prototype keys are not members or patterns.
+  const pc = parseCommand('/ask constructor fix the README typo')!;
+  const pa = parseCommand('/arena constructor toString add a rate limiter')!;
+  check('parse: "constructor" is not a member name', pc.member === undefined && pc.task === 'constructor fix the README typo' && pa.members === undefined && pa.task === 'constructor toString add a rate limiter', JSON.stringify([pc.member, pa.members]));
+  reset();
+  const es: any = { id: 's-proto', title: 't', createdAt: Date.now(), updatedAt: Date.now(), model: null, messages: [{ role: 'user', content: 'what does add() do?' }], archive: [], workers: {}, plan: [], goal: null, usage: { promptTokens: 0, completionTokens: 0, lastPromptTokens: 0 }, compactions: 0, compactSummary: null, mode: 'solo', councilRuns: [] };
+  updateSettings({ council: { ...base, roles: { ...base.roles, quick: ['gemini'] } } });
+  await new SessionRunner(es).escalate({ pattern: 'constructor' as any });
+  updateSettings({ council: base });
+  check('escalate: an unknown pattern like "constructor" falls back to auto', es.councilRuns.length === 1 && es.councilRuns[0].pattern !== ('constructor' as any) && es.messages.some((m: any) => m.content === '[Handed to council: auto]'), es.councilRuns[0]?.pattern);
+
+  // --- 9. A Stop that came before the member started: it is never spawned.
+  reset();
+  fs.rmSync(path.join(CTL, 'gemini.last.json'), { force: true });
+  const stopped = new AbortController(); stopped.abort();
+  run = await runCouncil(ctx(stopped.signal), { pattern: 'single', role: 'researcher', member: 'gemini', task: 'What does src/math.ts do?', note: 'test' });
+  check('stop before start: step cancelled, member never spawned', run.status === 'cancelled' && run.steps[0]?.status === 'cancelled' && !fs.existsSync(path.join(CTL, 'gemini.last.json')), run.steps.map((s: any) => `${s.member}:${s.status}`).join(' '));
+
+  off();
+  cleanDemo();
+  updateSettings({ council: prev, approvedFolders: folders });
+}
+
 console.log(`\n${pass} passed, ${fail} failed. events: ${JSON.stringify(events)}`);
 reset();
 process.exit(fail ? 1 : 0);
