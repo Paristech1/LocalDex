@@ -7,7 +7,7 @@ exports.record = (name, data) => { try { fs.mkdirSync(CTL, { recursive: true });
 exports.out = (o) => process.stdout.write(JSON.stringify(o) + '\n');
 exports.sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 exports.readStdin = () => new Promise((r) => { let d = ''; if (process.stdin.isTTY) return r(''); process.stdin.setEncoding('utf8'); process.stdin.on('data', (c) => (d += c)); process.stdin.on('end', () => r(d)); });
-exports.role = (text) => (/You are the PLANNER/.test(text) ? 'planner' : /You are the BUILDER/.test(text) ? 'builder' : /You are the REVIEWER/.test(text) ? 'reviewer' : /You are the JUDGE/.test(text) ? 'judge' : /independent advisers/.test(text) ? 'voter' : /RESEARCHER/.test(text) ? 'researcher' : 'quick');
+exports.role = (text) => (/You are the PLANNER/.test(text) ? 'planner' : /You are the BUILDER/.test(text) ? 'builder' : /You are the REVIEWER/.test(text) ? 'reviewer' : /You are the JUDGE/.test(text) ? 'judge' : /You are the VISION/.test(text) ? 'vision' : /independent advisers/.test(text) ? 'voter' : /RESEARCHER/.test(text) ? 'researcher' : 'quick');
 exports.answer = (role, who, prompt) => {
   const fixRound = /requested fixes/.test(prompt);
   switch (role) {
@@ -17,6 +17,7 @@ exports.answer = (role, who, prompt) => {
     case 'judge': return `**Agreement:** All advisers prefer **zod** for this codebase: it is already a transitive dependency and has the larger ecosystem.\n\n**Disagreement:** Gemini notes valibot's smaller bundle matters for the web client.\n\n**Recommendation:** Use zod on the server now; revisit valibot only if the web bundle size becomes a problem.`;
     case 'voter': return who === 'gemini' ? `Valibot is tree-shakeable and much smaller in the browser, but zod is fine on the server.\n\nBottom line: zod for the server, consider valibot for the web bundle.` : `Zod: mature, great TypeScript inference, huge ecosystem, already used by your MCP dependency.\n\nBottom line: zod.`;
     case 'researcher': return `\`src/math.ts\` exports a single \`add(a, b)\` function; nothing imports it yet. The README is a one-line description. (${who})`;
+    case 'vision': return `The screenshot shows the login form with the submit button cut off at narrow widths. (${who})`;
     default: return `Short answer from ${who}: \`add\` returns the sum of its two arguments.`;
   }
 };

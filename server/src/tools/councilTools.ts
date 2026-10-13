@@ -1,4 +1,5 @@
 import type { CouncilMemberRef, CouncilPattern, CouncilRole } from '@localdex/shared';
+import { domainBuilder, mentionsImage } from '../council/router.js';
 import { fail, ok, optStr, str, type ToolDef } from './types.js';
 
 const MEMBERS = ['auto', 'claude', 'codex', 'gemini', 'cursor'];
@@ -29,7 +30,9 @@ export const ask_member: ToolDef = {
     const member = (optStr(args.member) ?? 'auto').toLowerCase();
     if (!MEMBERS.includes(member)) return fail(`member must be one of: ${MEMBERS.join(', ')}`);
     const write = optStr(args.access) === 'write';
-    const role: CouncilRole = write ? 'builder' : /review|audit|check/i.test(task) ? 'reviewer' : /plan|design/i.test(task) ? 'planner' : 'researcher';
+    const role: CouncilRole = write
+      ? domainBuilder(task).role
+      : mentionsImage(task) ? 'vision' : /review|audit|check/i.test(task) ? 'reviewer' : /plan|design/i.test(task) ? 'planner' : 'researcher';
     const report = await ctx.council({ pattern: 'single', role, member: member === 'auto' ? undefined : (member as CouncilMemberRef), task, access: write ? 'write' : 'read' });
     return ok(report);
   },
@@ -58,6 +61,6 @@ export const council: ToolDef = {
     const pattern = str(args.pattern, 'pattern') as CouncilPattern;
     if (!PATTERNS.includes(pattern)) return fail(`pattern must be one of: ${PATTERNS.join(', ')}`);
     const task = str(args.task, 'task');
-    return ok(await ctx.council({ pattern, role: pattern === 'vote' ? 'researcher' : 'builder', task }));
+    return ok(await ctx.council({ pattern, role: pattern === 'vote' ? 'researcher' : domainBuilder(task).role, task }));
   },
 };

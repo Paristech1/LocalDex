@@ -1,5 +1,5 @@
 import type { CouncilMemberRef, CouncilPattern, CouncilRole, CouncilSettings, MemberId, MemberStatus } from '@localdex/shared';
-import { MEMBER_IDS } from '@localdex/shared';
+import { COUNCIL_ROLES, MEMBER_IDS, isBuilderRole } from '@localdex/shared';
 import { getSettings } from '../config.js';
 import { streamChat } from '../lmstudio.js';
 import { isLimited } from './registry.js';
@@ -32,7 +32,7 @@ export function parseCommand(text: string): Route | null {
     case 'ask': {
       const who = rest.match(/^(\w+)\s+([\s\S]+)$/);
       if (who && MEMBER_ALIASES[who[1].toLowerCase()]) {
-        return { pattern: 'single', role: 'builder', member: MEMBER_ALIASES[who[1].toLowerCase()], task: who[2].trim(), note: `/ask → ${MEMBER_ALIASES[who[1].toLowerCase()]}` };
+        return { pattern: 'single', role: domainBuilder(who[2]).role, member: MEMBER_ALIASES[who[1].toLowerCase()], task: who[2].trim(), note: `/ask → ${MEMBER_ALIASES[who[1].toLowerCase()]}` };
       }
       return { pattern: 'single', role: classify(rest).role, task: rest, note: '/ask → router picks the member' };
     }
@@ -41,9 +41,13 @@ export function parseCommand(text: string): Route | null {
     case 'pbr':
     case 'build':
     case 'team':
-      return { pattern: 'plan_build_review', role: 'builder', task: rest, note: `/${cmd} → plan → build → review` };
+      return { pattern: 'plan_build_review', role: domainBuilder(rest).role, task: rest, note: `/${cmd} → plan → build → review` };
     case 'second':
-      return { pattern: 'second_opinion', role: 'builder', task: rest, note: '/second → build + critique' };
+      return { pattern: 'second_opinion', role: domainBuilder(rest).role, task: rest, note: '/second → build + critique' };
+    case 'frontend':
+    case 'backend':
+    case 'vision':
+      return { pattern: 'single', role: cmd as CouncilRole, task: rest, note: `/${cmd}` };
     case 'plan':
     case 'review':
     case 'research':
@@ -64,17 +68,48 @@ const PLAN_RE = /\b(plan|design|architect(ure)?|approach for|strategy|spec|roadm
 const RESEARCH_RE = /\b(explain|how does|how do|what does|what is|where is|walk me through|summari[sz]e|understand|overview|map out|trace|why does)\b/i;
 const BIG_RE = /\b(feature|system|module|end[- ]to[- ]end|across|multiple|entire|whole|refactor|architecture|tests?|integration|migrat)/i;
 
+const FRONTEND_RE = /\b(ui|ux|components?|css|scss|tailwind|layouts?|pages?|styles?|styling|react|jsx|tsx|buttons?|modals?|dialogs?|responsive|navbar|sidebar|frontend|front-end)\b|\.(tsx|jsx|css|scss|vue|svelte)\b/gi;
+const BACKEND_RE = /\b(api|apis|endpoints?|route handlers?|databases?|db|sql|queries|postgres(ql)?|mysql|sqlite|server|queues?|auth middleware|middleware|migrations?|schema|backend|back-end|webhooks?|cron jobs?)\b/gi;
+const IMAGE_FILE_RE = /(?:^|[\s'"`(\[])((?:[\w.~-]*[\\/])*[\w.~-]*?[\w~-]\.(?:png|jpe?g|webp|gif))\b/gi;
+const IMAGE_WORD_RE = /\b(screenshots?|screen ?grabs?|mock-?ups?|design (image|file|comp|png|jpe?g)s?|wireframe images?)\b/i;
+
+/** Image files (paths or file names) mentioned in a request, in order, without duplicates. */
+export function findImageRefs(text: string): string[] {
+  const out: string[] = [];
+  for (const m of text.matchAll(IMAGE_FILE_RE)) {
+    const ref = m[1].trim();
+    if (ref && !out.includes(ref)) out.push(ref);
+  }
+  return out;
+}
+
+/** True when the request is about an image: an image file is named, or it talks about a screenshot/mockup. */
+export function mentionsImage(text: string): boolean {
+  return findImageRefs(text).length > 0 || IMAGE_WORD_RE.test(text);
+}
+
+/** Which builder should take a change: frontend or backend when the signals point one way, else the plain builder. */
+export function domainBuilder(task: string): { role: CouncilRole; why: string } {
+  const fe = new Set((task.match(FRONTEND_RE) ?? []).map((w) => w.toLowerCase())).size;
+  const be = new Set((task.match(BACKEND_RE) ?? []).map((w) => w.toLowerCase())).size;
+  if (fe && !be) return { role: 'frontend', why: 'UI work' };
+  if (be && !fe) return { role: 'backend', why: 'backend work' };
+  return { role: 'builder', why: fe && be ? 'mixed frontend and backend' : 'no clear domain' };
+}
+
 /** Keyword routing: instant, free, predictable. */
 export function classify(task: string, c: CouncilSettings = getSettings().council): Route {
   const t = task.trim();
   if (VOTE_RE.test(t)) return { pattern: 'vote', role: 'researcher', task: t, note: 'rules: a decision/comparison → council vote' };
+  if (mentionsImage(t)) return { pattern: 'single', role: 'vision', task: t, note: 'rules: refers to an image → vision' };
   if (REVIEW_RE.test(t)) return { pattern: 'single', role: 'reviewer', task: t, note: 'rules: review/audit → reviewer' };
   if (BUILD_RE.test(t) && !RESEARCH_RE.test(t.slice(0, 40))) {
     const big = t.length > 160 || BIG_RE.test(t);
     if (!c.allowWrite) return { pattern: 'single', role: 'planner', task: t, note: 'rules: change requested but council edits are off → planner proposes the change' };
+    const d = domainBuilder(t);
     return big
-      ? { pattern: 'plan_build_review', role: 'builder', task: t, note: 'rules: multi-part change → plan → build → review' }
-      : { pattern: 'single', role: 'builder', task: t, note: 'rules: small change → builder' };
+      ? { pattern: 'plan_build_review', role: d.role, task: t, note: `rules: multi-part change → plan → build (${d.role}: ${d.why}) → review` }
+      : { pattern: 'single', role: d.role, task: t, note: `rules: small change → ${d.role} (${d.why})` };
   }
   if (PLAN_RE.test(t)) return { pattern: 'single', role: 'planner', task: t, note: 'rules: planning/design → planner' };
   if (RESEARCH_RE.test(t)) {
@@ -104,19 +139,24 @@ export async function classifyWithLocal(task: string, signal: AbortSignal): Prom
         {
           role: 'system',
           content:
-            'You route coding requests to a council of AI agents. Reply with ONLY a JSON object: {"pattern": "single"|"plan_build_review"|"second_opinion"|"vote", "role": "planner"|"builder"|"reviewer"|"researcher"|"quick"}.\n' +
-            '- vote: a decision or comparison where independent opinions help.\n- plan_build_review: a multi-part code change.\n- single+builder: a small code change.\n- single+reviewer: review/audit existing code.\n- single+planner: design or plan without changing code.\n- single+researcher: questions about a codebase.\n- single+quick: short general question.',
+            'You route coding requests to a council of AI agents. Reply with ONLY a JSON object: {"pattern": "single"|"plan_build_review"|"second_opinion"|"vote", "role": "planner"|"builder"|"frontend"|"backend"|"reviewer"|"researcher"|"vision"|"quick"}.\n' +
+            '- vote: a decision or comparison where independent opinions help.\n- plan_build_review: a multi-part code change.\n- single+builder: a small code change (frontend: UI/CSS/components; backend: API/database/server; builder: mixed or unclear).\n- single+vision: the request refers to an image, screenshot or mockup.\n- single+reviewer: review/audit existing code.\n- single+planner: design or plan without changing code.\n- single+researcher: questions about a codebase.\n- single+quick: short general question.',
         },
         { role: 'user', content: task.slice(0, 4000) },
       ],
     });
     const j = JSON.parse((r.content.match(/\{[\s\S]*\}/) ?? ['{}'])[0]) as { pattern?: string; role?: string };
     const patterns: CouncilPattern[] = ['single', 'plan_build_review', 'second_opinion', 'vote'];
-    const roles: CouncilRole[] = ['planner', 'builder', 'reviewer', 'researcher', 'quick'];
+    const roles: CouncilRole[] = COUNCIL_ROLES;
     if (!patterns.includes(j.pattern as CouncilPattern) || !roles.includes(j.role as CouncilRole)) return { ...fallback, note: `${fallback.note} (local router gave an unusable answer)` };
     let pattern = j.pattern as CouncilPattern;
     let role = j.role as CouncilRole;
-    if (!getSettings().council.allowWrite && (pattern === 'plan_build_review' || pattern === 'second_opinion' || role === 'builder')) {
+    // Build patterns always run a builder; refine a plain builder by domain, and never let a read-only role "build".
+    if (pattern === 'plan_build_review' || pattern === 'second_opinion') {
+      if (!isBuilderRole(role)) role = 'builder';
+    }
+    if (role === 'builder') role = domainBuilder(task).role;
+    if (!getSettings().council.allowWrite && (pattern === 'plan_build_review' || pattern === 'second_opinion' || isBuilderRole(role))) {
       pattern = 'single';
       role = 'planner';
     }

@@ -93,6 +93,10 @@ function Welcome({ noFolders, council }: { noFolders: boolean; council?: boolean
           <span className="text-ink-400">reviewer only</span>
           <span className="font-mono text-ink-200">/vote …</span>
           <span className="text-ink-400">independent answers + a judge</span>
+          <span className="font-mono text-ink-200">/frontend, /backend …</span>
+          <span className="text-ink-400">the UI or backend builder</span>
+          <span className="font-mono text-ink-200">/vision …</span>
+          <span className="text-ink-400">look at a screenshot or mockup</span>
           <span className="font-mono text-ink-200">anything else</span>
           <span className="text-ink-400">the router picks</span>
         </div>

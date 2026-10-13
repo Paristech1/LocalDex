@@ -163,10 +163,12 @@ Install the CLIs you want (`npm i -g @anthropic-ai/claude-code @openai/codex @go
   - `/second …` builds, then gets a second opinion.
   - `/review …` sends it to the reviewer only.
   - `/vote …` collects independent answers, then a judge combines them.
+  - `/frontend …` and `/backend …` send a change to the UI or backend builder.
+  - `/vision …` asks a vision-capable member to look at a screenshot or mockup (name the image file; the member opens it itself).
   - Plain messages are routed automatically (keyword rules, or the local model if you pick that).
 - **Solo mode**: your local model leads. It can call `ask_member` and `council` itself when a task is too big for it, so the work tag-teams.
 
-**Routing and fallback.** Each role (planner, builder, reviewer, researcher, quick) has an ordered list of members. A member that is off, signed out, or at its usage limit is skipped. When a member hits a limit mid-run, the next one takes over, and the first one cools down until its reset time.
+**Routing and fallback.** Each role (planner, builder, frontend, backend, reviewer, researcher, vision, quick) has an ordered list of members. Changes with clear UI signals (CSS, components, layout…) go to the frontend builder, clear backend signals (API, SQL, migrations…) to the backend builder, anything mixed to the builder. Requests that name an image file or a screenshot/mockup go to vision (read-only). A member that is off, signed out, or at its usage limit is skipped. When a member hits a limit mid-run, the next one takes over, and the first one cools down until its reset time.
 
 **Guardrails**
 

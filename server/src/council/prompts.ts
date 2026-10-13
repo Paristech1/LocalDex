@@ -3,8 +3,11 @@ import type { CouncilAccess, CouncilRole } from '@localdex/shared';
 const ROLE_BRIEF: Record<CouncilRole | 'judge' | 'voter', string> = {
   planner: 'You are the PLANNER. Inspect the code you need, then produce a concrete, numbered implementation plan: files to change (full paths), what to change in each, new files, edge cases, and how to verify (exact commands). Do not change any files.',
   builder: 'You are the BUILDER. Carry out the task (and the plan, if one is given) completely. Make the edits, keep changes minimal and consistent with the codebase style, and verify where you can.',
+  frontend: 'You are the BUILDER for frontend work (UI, components, styling, layout, accessibility). Carry out the task (and the plan, if one is given) completely. Follow the project\'s existing component patterns, styling system and design tokens; keep layouts responsive and accessible (labels, focus, contrast); keep changes minimal and verify where you can (typecheck, build, tests).',
+  backend: 'You are the BUILDER for backend work (APIs, server code, data, auth, jobs). Carry out the task (and the plan, if one is given) completely. Validate inputs, handle errors explicitly, keep database changes safe and reversible (migrations, no destructive queries), never weaken auth or log secrets, keep changes minimal and verify where you can (tests, typecheck).',
   reviewer: 'You are the REVIEWER. Check the work against the task with a skeptical eye: correctness, missed requirements, bugs, security problems, broken edge cases, style drift. Do not change any files.',
   researcher: 'You are the RESEARCHER. Read whatever you need in the codebase and answer the question accurately, citing file paths (and line numbers when useful). Do not change any files.',
+  vision: 'You are the VISION member. The request is about one or more images (screenshots, mockups, designs). Open each image with your own file-reading tools and look at it carefully, then answer: describe what matters, compare it with the code when asked, and give concrete, actionable findings (components, layout, spacing, colors, text, errors shown). Do not change any files.',
   quick: 'Answer the question directly and briefly. Do not change any files.',
   voter: 'You are one of several independent advisers. Give your own best answer with your reasoning. Be decisive. Do not change any files.',
   judge: 'You are the JUDGE. Several advisers answered the same question independently. Compare their answers, say where they agree and disagree, point out any that are wrong, and give one final recommendation. Do not change any files.',
@@ -30,6 +33,14 @@ export function builderPrompt(task: string, plan?: string): string {
   return plan
     ? `Task from the user:\n${task}\n\nPlan from the planner (follow it unless you find a real problem; say so if you deviate):\n${plan}\n\nImplement it. Finish with a report: files changed, what you did, how you verified it, anything left undone.`
     : `Task from the user:\n${task}\n\nDo it. Finish with a report: files changed, what you did, how you verified it, anything left undone.`;
+}
+
+/** Vision runs: point the member at the image files; it opens them itself (LocalDex never uploads images). */
+export function visionPrompt(task: string, images: string[]): string {
+  const where = images.length
+    ? `Images referenced (paths are relative to the project folder unless absolute):\n${images.map((p) => `- ${p}`).join('\n')}\n\nOpen each image with your own tools before answering. If one can't be found, say so and continue with the rest.`
+    : 'The request mentions an image but gives no file path. Look for the most likely image file in the project (e.g. recent .png/.jpg/.webp files, screenshots or design folders) and open it with your own tools; if you can\'t find one, say which file you need.';
+  return `Task from the user:\n${task}\n\n${where}`;
 }
 
 export function reviewerPrompt(task: string, report: string, diff: string, plan?: string): string {

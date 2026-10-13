@@ -10,11 +10,12 @@ import type {
   MemberStatus,
   Session,
 } from '@localdex/shared';
+import { isBuilderRole } from '@localdex/shared';
 import { getSettings } from '../config.js';
 import { bus } from '../agent/bus.js';
 import { approvedFolders } from '../tools/permissions.js';
 import { MEMBERS, markLimited, memberStatuses, noteError } from './registry.js';
-import { availableMembers, modelFor, pickMember, unavailableReason, type Route } from './router.js';
+import { availableMembers, findImageRefs, modelFor, pickMember, unavailableReason, type Route } from './router.js';
 import {
   builderPrompt,
   critiquePrompt,
@@ -24,6 +25,7 @@ import {
   parseVerdict,
   plannerPrompt,
   reviewerPrompt,
+  visionPrompt,
   votePrompt,
 } from './prompts.js';
 
@@ -70,10 +72,10 @@ export async function runCouncil(ctx: CouncilContext, route: Route): Promise<Cou
         run.result = await single(ctx, run, route, statuses);
         break;
       case 'plan_build_review':
-        run.result = await planBuildReview(ctx, run, route.task, statuses);
+        run.result = await planBuildReview(ctx, run, route.task, statuses, buildRole(route.role));
         break;
       case 'second_opinion':
-        run.result = await secondOpinion(ctx, run, route.task, statuses);
+        run.result = await secondOpinion(ctx, run, route.task, statuses, buildRole(route.role));
         break;
       case 'vote':
         run.result = await vote(ctx, run, route.task, statuses);
@@ -95,17 +97,18 @@ export async function runCouncil(ctx: CouncilContext, route: Route): Promise<Cou
 
 async function single(ctx: CouncilContext, run: CouncilRun, route: Route, statuses: MemberStatus[]): Promise<string> {
   const access = accessFor(route.role);
+  const prompt = route.role === 'vision' ? visionPrompt(route.task, findImageRefs(askedPart(route.task))) : route.task;
   if (route.member) {
     const why = unavailableReason(route.member, statuses);
     if (why) return `${label(route.member)} can't take this: ${why}.`;
-    const step = await runStep(ctx, run, { role: route.role, member: route.member, access, prompt: route.task, note: 'requested' });
+    const step = await runStep(ctx, run, { role: route.role, member: route.member, access, prompt, note: 'requested' });
     return stepAnswer(step);
   }
-  const step = await runRole(ctx, run, route.role, access, route.task, statuses);
+  const step = await runRole(ctx, run, route.role, access, prompt, statuses);
   return step ? stepAnswer(step) : noMemberMessage(route.role, statuses);
 }
 
-async function planBuildReview(ctx: CouncilContext, run: CouncilRun, task: string, statuses: MemberStatus[]): Promise<string> {
+async function planBuildReview(ctx: CouncilContext, run: CouncilRun, task: string, statuses: MemberStatus[], builderRole: CouncilRole): Promise<string> {
   const c = getSettings().council;
   const cwd = approvedFolders()[0];
   const out: string[] = [];
@@ -115,9 +118,9 @@ async function planBuildReview(ctx: CouncilContext, run: CouncilRun, task: strin
   if (ctx.signal.aborted) return 'Cancelled.';
 
   const before = gitSnapshot(cwd);
-  let builder = await runRole(ctx, run, 'builder', accessFor('builder'), builderPrompt(task, planText || undefined), statuses);
+  let builder = await runRole(ctx, run, builderRole, accessFor(builderRole), builderPrompt(task, planText || undefined), statuses);
   if (!builder || builder.status !== 'done') {
-    return [`**The build step did not complete.** ${builder?.error ?? noMemberMessage('builder', statuses)}`, planText ? `### Plan (${label(plan!.member)})\n${planText}` : ''].filter(Boolean).join('\n\n');
+    return [`**The build step did not complete.** ${builder?.error ?? noMemberMessage(builderRole, statuses)}`, planText ? `### Plan (${label(plan!.member)})\n${planText}` : ''].filter(Boolean).join('\n\n');
   }
   if (ctx.signal.aborted) return 'Cancelled.';
 
@@ -130,7 +133,7 @@ async function planBuildReview(ctx: CouncilContext, run: CouncilRun, task: strin
     if (!review || review.status !== 'done') break;
     verdict = parseVerdict(review.output ?? '');
     if (verdict !== 'changes' || round === c.maxFixRounds || ctx.signal.aborted) break;
-    const fix = await runStep(ctx, run, { role: 'builder', member: builder.member, access: accessFor('builder'), prompt: fixPrompt(task, review.output ?? ''), note: `fix round ${round + 1}` });
+    const fix = await runStep(ctx, run, { role: builderRole, member: builder.member, access: accessFor(builderRole), prompt: fixPrompt(task, review.output ?? ''), note: `fix round ${round + 1}` });
     if (fix.status !== 'done') break;
     builder = fix;
     report = `${report}\n\nFix round ${round + 1}:\n${fix.output ?? ''}`;
@@ -144,11 +147,11 @@ async function planBuildReview(ctx: CouncilContext, run: CouncilRun, task: strin
   return out.join('\n\n');
 }
 
-async function secondOpinion(ctx: CouncilContext, run: CouncilRun, task: string, statuses: MemberStatus[]): Promise<string> {
+async function secondOpinion(ctx: CouncilContext, run: CouncilRun, task: string, statuses: MemberStatus[], builderRole: CouncilRole): Promise<string> {
   const cwd = approvedFolders()[0];
   const before = gitSnapshot(cwd);
-  const builder = await runRole(ctx, run, 'builder', accessFor('builder'), builderPrompt(task), statuses);
-  if (!builder || builder.status !== 'done') return `**The build step did not complete.** ${builder?.error ?? noMemberMessage('builder', statuses)}`;
+  const builder = await runRole(ctx, run, builderRole, accessFor(builderRole), builderPrompt(task), statuses);
+  if (!builder || builder.status !== 'done') return `**The build step did not complete.** ${builder?.error ?? noMemberMessage(builderRole, statuses)}`;
   const critic = await runRole(ctx, run, 'reviewer', 'read', critiquePrompt(task, builder.output ?? '', gitDiffSince(cwd, before)), statuses, [builder.member]);
   return [
     `**Built by ${label(builder.member)}**${critic?.status === 'done' ? ` · second opinion from ${label(critic.member)}` : ''}`,
@@ -186,7 +189,17 @@ async function vote(ctx: CouncilContext, run: CouncilRun, question: string, stat
 // ---------- steps ----------
 
 function accessFor(role: CouncilRole | 'judge' | 'voter'): CouncilAccess {
-  return role === 'builder' && getSettings().council.allowWrite ? 'write' : 'read';
+  return isBuilderRole(role) && getSettings().council.allowWrite ? 'write' : 'read';
+}
+
+/** The build step of plan_build_review / second_opinion runs the route's domain builder, or the plain builder. */
+function buildRole(role: CouncilRole): CouncilRole {
+  return isBuilderRole(role) ? role : 'builder';
+}
+
+/** The user's own request, without the conversation history Council mode appends (so old image names don't leak in). */
+function askedPart(task: string): string {
+  return task.split('\n\n---\nEarlier in this conversation')[0];
 }
 
 function stepAnswer(step: CouncilStep): string {
