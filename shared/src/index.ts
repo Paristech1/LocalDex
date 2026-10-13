@@ -215,6 +215,8 @@ export interface CouncilSettings {
    * so a cloned repo cannot add hooks, MCP servers or instructions to a member run.
    */
   trustProjectConfig: boolean;
+  /** Replace API keys, tokens, passwords and private keys with [REDACTED:<kind>] before anything goes to a cloud member. Default on. */
+  redactSecrets: boolean;
 }
 
 export type MemberBilling = 'plan' | 'api' | 'unknown';
@@ -268,6 +270,8 @@ export interface CouncilStep {
   transcript: CouncilTranscriptItem[];
   /** Why this member was picked (router note or fallback reason). */
   note?: string;
+  /** Secrets removed from the prompt before it was sent to this member. */
+  redactions?: number;
 }
 
 export interface CouncilRun {
@@ -397,6 +401,7 @@ export const DEFAULT_COUNCIL: CouncilSettings = {
   timeoutMinutes: 20,
   requirePlanBilling: true,
   trustProjectConfig: false,
+  redactSecrets: true,
 };
 
 export const DEFAULT_CAPABILITIES: Record<ToolName, boolean> = {

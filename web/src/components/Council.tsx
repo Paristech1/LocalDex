@@ -162,6 +162,11 @@ function StepRow({ step, now, defaultOpen }: { step: CouncilStep; now: number; d
           {step.access === 'write' ? 'edits' : 'read'}
         </span>
         {step.billing === 'api' && <span className="text-[10px] text-danger" title="This run was billed to an API key">API</span>}
+        {!!step.redactions && (
+          <span className="text-[10px] px-1 rounded bg-accent/15 text-accent whitespace-nowrap" title="Keys, tokens or passwords were replaced with [REDACTED] before this member saw the prompt">
+            {step.redactions} {step.redactions === 1 ? 'secret' : 'secrets'} removed
+          </span>
+        )}
         <span className="flex-1" />
         <span className="text-[10px] text-ink-400 whitespace-nowrap shrink-0">
           {elapsed ? dur(elapsed) : ''}
@@ -476,7 +481,11 @@ export function CouncilSettingsTab({ settings, patch }: TabProps) {
           <Toggle label="Ask me before each member that can edit files" checked={c.confirmWrites} onChange={(v) => setC({ confirmWrites: v })} />
         </div>
         <Toggle label="Subscription only (refuse members signed in with an API key)" checked={c.requirePlanBilling} onChange={(v) => setC({ requirePlanBilling: v })} />
+        <Toggle label="Remove secrets before sending to members" checked={c.redactSecrets !== false} onChange={(v) => setC({ redactSecrets: v })} />
       </div>
+      <p className="text-[11px] text-ink-400">
+        Removing secrets replaces API keys, tokens, passwords and private keys in prompts, chat history and diffs with [REDACTED] before they reach a cloud member. Members can still open files in the project folder themselves.
+      </p>
       <p className="text-[11px] text-ink-400">
         With edits off, every member is read-only: planners plan, reviewers review, and change requests come back as proposals. Members never get LocalDex's own tools; they use their vendor's tools inside the project folder. To point a member at a specific executable, set <span className="font-mono">council.members.&lt;name&gt;.command</span> in <span className="font-mono">~/.localdex/config.json</span>.
       </p>

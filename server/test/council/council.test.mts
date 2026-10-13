@@ -164,6 +164,83 @@ check('trust on: gemini gets --skip-trust and runs', gm.argv.includes('--skip-tr
 await runCouncil(ctx(), { pattern: 'single', role: 'researcher', member: 'cursor', task: 'What does src/math.ts do?', note: 'test' });
 check('trust on: cursor loads user + project settings', JSON.stringify(last('cursor').opts?.local?.settingSources) === '["user","project"]');
 updateSettings({ council: { ...getSettings().council, trustProjectConfig: false } }); delete process.env.GEMINI_CLI_TRUST_WORKSPACE;
+// 15. secret redaction before anything goes to a cloud member
+{
+  const { redactSecrets } = await import(`${SRC}/council/redact.ts`);
+  const positives: [string, string][] = [
+    ['anthropic', 'key sk-ant-api03-AbCdEfGhIjKlMnOpQrStUvWxYz0123456789_-abcd done'],
+    ['openai project', 'sk-proj-AbC123dEf456GhI789jKl012MnO345'],
+    ['openai', 'sk-1234567890abcdefghijABCDEFGHIJ'],
+    ['google', 'AIzaSyA1234567890abcdefghijklmnopqrstuv'],
+    ['github ghp', 'ghp_abcdefghijklmnopqrstuvwxyz0123456789'],
+    ['github pat', 'github_pat_11ABCDEFG0123456789_abcdefghijklmnopqrstuvwxyzABCDEFGHIJ'],
+    ['slack', 'xoxb-1234567890-abcdefghij'],
+    ['aws key id', 'AKIA' + 'IOSFODNN7ABCDEFG'],
+    ['aws secret', 'aws_secret_access_key = ' + 'wJalrXUtnFEMI/K7MDENG/' + 'bPxRfiCYzzzzzzzzzz'],
+    ['stripe', 'sk_' + 'live_4eC39HqLyjWDarjtT1zdp7dc'],
+    ['jwt', 'eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U'],
+    ['pem', '-----BEGIN RSA PRIVATE KEY-----\nMIIEowIBAAKCAQEA\n-----END RSA PRIVATE KEY-----'],
+    ['pem cut off in a diff', '+-----BEGIN PRIVATE KEY-----\n+MIIEowIBAAKCAQEA'],
+    ['bearer', 'Authorization: Bearer abcdef0123456789abcdef'],
+    ['url password', 'postgres://admin:s3cretPass@db.local/app'],
+    ['API_KEY=', 'API_KEY=abc123def456ghi789'],
+    ['PASSWORD=', 'DB_PASSWORD=hunter2hunter2'],
+    ['"apiKey": "…"', '"apiKey": "AbC123dEf456GhI789"'],
+    ["token: '…'", "token: 'abcd1234efgh5678'"],
+  ];
+  const missed = positives.filter(([, t]) => redactSecrets(t).count === 0 || /sk-ant-api03|hunter2|s3cretPass|MIIEow/.test(redactSecrets(t).text)).map(([n]) => n);
+  check('redact: known secret formats are replaced', missed.length === 0, missed.join(', '));
+  const keep = redactSecrets('API_KEY=abc123def456ghi789');
+  check('redact: keeps the name, marks the kind', keep.text === 'API_KEY=[REDACTED:api-key]' && keep.kinds[0] === 'api-key', keep.text);
+  const url = redactSecrets('postgres://admin:s3cretPass@db.local/app');
+  check('redact: URL keeps user and host', url.text === 'postgres://admin:[REDACTED:url-password]@db.local/app', url.text);
+  const negatives = [
+    'API_KEY=your-key-here', 'API_KEY=${API_KEY}', 'const apiKey = process.env.OPENAI_API_KEY', 'token: "xxx"', 'SECRET=short',
+    'const maxTokens = 1234567890123', 'password: "correcthorsebattery"', 'const token = getTokenFromStorage()', 'const secret = config.auth.secretValue',
+    'sk-ant-your-key-here', 'postgres://user:${PASS}@host', 'headers: { Authorization: `Bearer ${token}` }', 'the secret is out', 'inputTokens: 1234567890123',
+    'const secretName = "projects/123/secrets/abc"', 'risk-assessment-module-version-2', 'https://example.com/a?b=1', 'const API_KEY_ENV = "OPENAI_API_KEY"',
+    'export function add(a: number, b: number) {\n  return a + b;\n}',
+  ];
+  const fps = negatives.filter((t) => redactSecrets(t).count > 0);
+  check('redact: ordinary code and placeholders untouched', fps.length === 0, fps.join(' | '));
+  const twice = redactSecrets(redactSecrets('ANTHROPIC_API_KEY=sk-ant-api03-AbCdEfGhIjKlMnOpQrStUvWxYz0123456789').text);
+  check('redact: idempotent on already-redacted text', twice.count === 0);
+
+  const KEY = 'sk-ant-api03-ZyXwVuTsRqPoNmLkJiHgFeDcBa9876543210_-QQQQ';
+  const PEM = '-----BEGIN OPENSSH PRIVATE KEY-----\nb3BlbnNzaC1rZXktdjEAAAAABG5vbmU\n-----END OPENSSH PRIVATE KEY-----';
+  const task = `Why does login fail? My key is ${KEY} and the deploy key is\n${PEM}`;
+  const lastPrompt = (m: string) => { try { return JSON.parse(fs.readFileSync(path.join(CTL, `${m}.last.json`), 'utf8')).prompt as string; } catch { return ''; } };
+
+  reset();
+  run = await runCouncil(ctx(), { pattern: 'single', role: 'researcher', member: 'claude', task, note: 'test' });
+  let sent = lastPrompt('claude');
+  check('redact: cloud member gets the task without the key or PEM', !!sent && !sent.includes(KEY) && !sent.includes('b3BlbnNzaC1rZXkt') && sent.includes('[REDACTED:anthropic-key]') && sent.includes('[REDACTED:private-key]'), sent.slice(0, 120));
+  check('redact: step records 2 removals with a note', run.steps[0].redactions === 2 && run.steps[0].transcript.some((t: any) => t.kind === 'note' && /Removed 2 secrets before sending \(anthropic key, private key\)/.test(t.text)), JSON.stringify(run.steps[0].transcript.find((t: any) => t.kind === 'note')));
+
+  // The local model never leaves the machine, so it gets the task as written.
+  let localGot = '';
+  const prevModel = getSettings().model;
+  updateSettings({ model: 'stand-in-local-model' });
+  const localCtx = { ...ctx(), delegateLocal: async (_n: string, t: string) => { localGot = t; return 'local report'; } };
+  run = await runCouncil(localCtx, { pattern: 'single', role: 'quick', member: 'local', task, note: 'test' });
+  updateSettings({ model: prevModel });
+  check('redact: local member is not redacted', localGot.includes(KEY) && !run.steps[0]?.redactions, (run.result ?? '').slice(0, 90));
+
+  // Diffs handed to the reviewer are redacted too.
+  reset();
+  const { gitSnapshot, gitDiffSince } = await import(`${SRC}/council/orchestrator.ts`);
+  const snap = gitSnapshot(DEMO);
+  fs.writeFileSync(`${DEMO}/README.md`, `# Demo\nSTRIPE_KEY=${'sk_' + 'live_4eC39HqLyjWDarjtT1zdp7dc'}\n`);
+  const diff = gitDiffSince(DEMO, snap);
+  check('redact: git diff for reviewers is redacted', /\[REDACTED:stripe-key\]/.test(diff) && !diff.includes('4eC39HqLyjWDarjtT1zdp7dc'), diff.split('\n').filter((l: string) => l.startsWith('+')).join(' '));
+
+  reset();
+  updateSettings({ council: { ...getSettings().council, redactSecrets: false } });
+  run = await runCouncil(ctx(), { pattern: 'single', role: 'researcher', member: 'claude', task, note: 'test' });
+  sent = lastPrompt('claude');
+  check('redact: setting off sends the task as-is', sent.includes(KEY) && sent.includes('b3BlbnNzaC1rZXkt') && !run.steps[0].redactions);
+  updateSettings({ council: { ...getSettings().council, redactSecrets: true } });
+}
 
 console.log(`\n${pass} passed, ${fail} failed. events: ${JSON.stringify(events)}`);
 reset();

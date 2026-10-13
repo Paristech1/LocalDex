@@ -8,7 +8,7 @@ import { assessGoal } from './goal.js';
 import { runLoop } from './loop.js';
 import { goalContinuePrompt, mainSystemPrompt } from './prompts.js';
 import { WorkerManager } from './workers.js';
-import { runCouncil, runSummary, runVia, type CouncilContext } from '../council/orchestrator.js';
+import { redactIfEnabled, runCouncil, runSummary, runVia, type CouncilContext } from '../council/orchestrator.js';
 import { classify, classifyWithLocal, parseCommand, type Route } from '../council/router.js';
 import type { CouncilRequest } from '../tools/types.js';
 
@@ -324,7 +324,8 @@ function conversationContext(messages: ChatMessage[], maxChars = 6000): string {
     }
     if (parts.length >= 8) break;
   }
-  return parts.join('\n\n');
+  // Chat history rides along to cloud members, so keys pasted earlier in the chat are removed here too.
+  return redactIfEnabled(parts.join('\n\n'));
 }
 
 const runners = new Map<string, SessionRunner>();
