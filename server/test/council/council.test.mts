@@ -33,6 +33,8 @@ const reset = () => { execSync('git checkout -q -- . && git clean -qfd', { cwd: 
 // The QA step (section 22) changes plan → build → review step sequences; older sections check the flow without it.
 // (The demo project has no package.json, so the checks gate finds nothing to run there.)
 updateSettings({ council: { ...getSettings().council, qaStep: false } });
+// Builder worktrees (section 26) move edits into a separate copy; older sections check edits land in DEMO directly.
+updateSettings({ council: { ...getSettings().council, builderWorktree: false } });
 
 // 1. env stripping
 process.env.ANTHROPIC_API_KEY = 'sk-ant-should-not-leak'; process.env.OPENAI_API_KEY = 'sk-x'; process.env.GEMINI_API_KEY = 'g';
@@ -782,6 +784,137 @@ updateSettings({ council: { ...getSettings().council, allowWrite: true } });
   const plain: any = newSession();
   await runCouncil({ session: plain, signal: new AbortController().signal, persist: () => {}, delegateLocal: async () => '' }, { pattern: 'single', role: 'planner', member: 'claude', task: 'plan it', note: 'test' });
   check('continue: non-chat runs do not save sessions', !plain.memberSessions);
+}
+
+// 26. builder edits land in a separate copy (git worktree); the user applies or discards them
+{
+  console.log('\n# builder worktrees');
+  const { applyRunChanges, discardRunChanges } = await import(`${SRC}/council/orchestrator.ts`);
+  const { cleanupStaleWorktrees, listCouncilWorktrees, worktreesDir } = await import(`${SRC}/council/worktrees.ts`);
+  const sh = (cmd: string, cwd = DEMO) => execSync(cmd, { cwd, encoding: 'utf8' }).trim();
+  const real = (p: string) => fs.realpathSync(p);
+  const lastOf = (m: string) => JSON.parse(fs.readFileSync(path.join(CTL, `${m}.last.json`), 'utf8'));
+  const branchExists = (b: string) => sh(`git branch --list ${b}`) !== '';
+  let cmds: string[] = [];
+  const off = bus.subscribe((ev: any) => { if (ev.type === 'approval_request') cmds.push(ev.command); });
+  const headBefore = sh('git rev-parse HEAD');
+  const checksCwdFile = path.join(CTL, 'checks.cwd');
+  const base = { ...getSettings().council, builderWorktree: true, qaStep: false, checksGate: true, checkCommand: `pwd > '${checksCwdFile}'`, maxFixRounds: 1 };
+  updateSettings({ council: base });
+
+  // plan → build → review: the user's folder is untouched, everything happens in the copy.
+  reset(); approvals = 0; cmds = [];
+  let run = await runCouncil(ctx(), { pattern: 'plan_build_review', role: 'builder', task: 'Add rate limiting to the API', note: 'test' });
+  const wt = run.worktree;
+  console.log(runSummary(run));
+  check('worktree: pbr run left a pending copy with the builder\'s file', !!wt && wt.status === 'pending' && wt.files.includes('src/rateLimit.ts') && fs.existsSync(path.join(wt.cwd, 'src/rateLimit.ts')), JSON.stringify(wt && { status: wt.status, files: wt.files }));
+  check('worktree: user folder unchanged (no new file, clean status, same HEAD)', !fs.existsSync(`${DEMO}/src/rateLimit.ts`) && sh('git status --porcelain') === '' && sh('git rev-parse HEAD') === headBefore);
+  check('worktree: copy lives under the data folder on branch council/<runId>', !!wt && real(path.dirname(wt.path)) === real(worktreesDir()) && wt.branch === `council/${run.id}` && branchExists(wt.branch) && wt.base === headBefore);
+  check('worktree: planner ran in the project folder', real(lastOf('claude').cwd) === real(DEMO), lastOf('claude').cwd);
+  check('worktree: builder (cursor) worked in the copy', !!wt && real(lastOf('cursor').opts.local.cwd) === real(wt.cwd), lastOf('cursor').opts.local.cwd);
+  const cx = lastOf('codex');
+  check('worktree: reviewer (codex) ran in the copy (-C and cwd)', !!wt && real(cx.argv[cx.argv.indexOf('-C') + 1]) === real(wt.cwd) && real(cx.cwd) === real(wt.cwd), cx.argv[cx.argv.indexOf('-C') + 1]);
+  check('worktree: reviewer got the diff from the copy, new file included', /\+\+\+ b\/src\/rateLimit\.ts/.test(cx.prompt));
+  check('worktree: checks ran in the copy', fs.existsSync(checksCwdFile) && !!wt && real(fs.readFileSync(checksCwdFile, 'utf8').trim()) === real(wt.cwd), fs.existsSync(checksCwdFile) ? fs.readFileSync(checksCwdFile, 'utf8').trim() : 'no checks.cwd');
+  check('worktree: edit approval names the separate copy', cmds.some((c) => /separate copy of your project/.test(c) && !!wt && c.includes(wt.cwd)), cmds[0]?.slice(0, 120));
+  check('worktree: members were told they work in a copy', /separate copy \(git worktree\)/.test(lastOf('cursor').opts.systemPrompt ?? '') || /separate copy \(git worktree\)/.test(JSON.stringify(lastOf('cursor').opts)));
+  check('worktree: snapshot commit is on the council branch only, by LocalDex', !!wt && sh(`git log -1 --format=%an ${wt.branch}`) === 'LocalDex' && sh('git log -1 --format=%an HEAD') !== 'LocalDex');
+  check('worktree: result says changes are waiting', /Changes are waiting in a separate copy — review and apply them/.test(run.result ?? ''), (run.result ?? '').slice(-160));
+  check('worktree: run card data has diff stat and diff', !!wt && /rateLimit\.ts/.test(wt.diffStat) && /\+export/.test(wt.diff ?? ''));
+
+  // Apply: the file arrives as an uncommitted change; HEAD and the index stay as they were.
+  let after = applyRunChanges(run);
+  check('apply: status applied, file now in the folder', after?.status === 'applied' && !after.error && fs.existsSync(`${DEMO}/src/rateLimit.ts`) && fs.readFileSync(`${DEMO}/src/rateLimit.ts`, 'utf8') === fs.readFileSync(path.join(wt!.cwd, 'src/rateLimit.ts'), 'utf8'), after?.error);
+  check('apply: uncommitted (git status shows it, HEAD unchanged, nothing staged)', sh('git status --porcelain') === '?? src/rateLimit.ts' && sh('git rev-parse HEAD') === headBefore && sh('git diff --cached --name-only') === '', sh('git status --porcelain'));
+  after = applyRunChanges(run);
+  check('apply: a second apply is refused', after?.status === 'applied' && /already/.test(after.error ?? ''));
+  const appliedWt = { ...wt! };
+
+  // Discard: copy and branch are removed.
+  reset();
+  run = await runCouncil(ctx(), { pattern: 'plan_build_review', role: 'builder', task: 'Add rate limiting to the API', note: 'test' });
+  const wt2 = { ...run.worktree! };
+  after = discardRunChanges(run);
+  check('discard: copy and branch removed, folder untouched', after?.status === 'discarded' && !fs.existsSync(wt2.path) && !branchExists(wt2.branch) && !sh('git worktree list').includes(wt2.path) && sh('git status --porcelain') === '');
+
+  // Conflict: the user changed the same file meanwhile → refused, their file is left alone.
+  reset();
+  run = await runCouncil(ctx(), { pattern: 'plan_build_review', role: 'builder', task: 'Add rate limiting to the API', note: 'test' });
+  fs.mkdirSync(`${DEMO}/src`, { recursive: true });
+  fs.writeFileSync(`${DEMO}/src/rateLimit.ts`, '// my own version\n');
+  after = applyRunChanges(run);
+  check('conflict: apply refused with a clear status', after?.status === 'conflict' && /uncommitted changes to src\/rateLimit\.ts/.test(after.error ?? '') && fs.readFileSync(`${DEMO}/src/rateLimit.ts`, 'utf8') === '// my own version\n', after?.error);
+  // Once the user's change is gone and they committed something unrelated meanwhile, apply works.
+  fs.rmSync(`${DEMO}/src/rateLimit.ts`);
+  fs.writeFileSync(`${DEMO}/README.md`, '# Demo\nmore\n');
+  sh('git -c user.name=t -c user.email=t@t commit -qam "user change"');
+  after = applyRunChanges(run);
+  check('conflict: retry after the user cleaned up applies on top of their new commit', after?.status === 'applied' && fs.existsSync(`${DEMO}/src/rateLimit.ts`) && sh('git status --porcelain') === '?? src/rateLimit.ts' && /more/.test(fs.readFileSync(`${DEMO}/README.md`, 'utf8')), after?.error);
+  // A tracked file the user edited and the copy also edited.
+  reset(); sh(`git reset -q --hard ${headBefore}`);
+  run = await runCouncil(ctx(), { pattern: 'plan_build_review', role: 'builder', task: 'Add rate limiting to the API', note: 'test' });
+  fs.appendFileSync(path.join(run.worktree!.path, 'README.md'), 'copy edit\n');
+  fs.appendFileSync(`${DEMO}/README.md`, 'user edit\n');
+  after = applyRunChanges(run);
+  check('conflict: user edits to a file the copy changed are never overwritten', after?.status === 'conflict' && /README\.md/.test(after.error ?? '') && fs.readFileSync(`${DEMO}/README.md`, 'utf8') === '# Demo\nuser edit\n' && !fs.existsSync(`${DEMO}/src/rateLimit.ts`), after?.error);
+  discardRunChanges(run);
+
+  // Second opinion and single builder runs use the copy too; the critic reads the copy.
+  reset();
+  run = await runCouncil(ctx(), { pattern: 'second_opinion', role: 'builder', task: 'Add rate limiting', note: 'test' });
+  const so = lastOf('codex');
+  check('second opinion: builder in copy, critic reads the copy', run.worktree?.status === 'pending' && real(so.argv[so.argv.indexOf('-C') + 1]) === real(run.worktree.cwd) && !fs.existsSync(`${DEMO}/src/rateLimit.ts`), run.steps.map((s: any) => `${s.role}:${s.member}`).join(' '));
+  discardRunChanges(run);
+  reset();
+  run = await runCouncil(ctx(), { pattern: 'single', role: 'builder', member: 'codex', task: 'add a rate limiter', note: 'test' });
+  check('single builder: edits land in the copy', run.worktree?.status === 'pending' && real(lastOf('codex').cwd) === real(run.worktree.cwd) && !fs.existsSync(`${DEMO}/src/rateLimit.ts`) && /Changes are waiting/.test(run.result ?? ''));
+  discardRunChanges(run);
+
+  // Nothing changed → the copy is removed again.
+  reset();
+  run = await runCouncil(ctx(), { pattern: 'single', role: 'builder', member: 'gemini', task: 'add a rate limiter', note: 'test' });
+  check('no changes: copy removed, nothing waiting', !run.worktree && !fs.existsSync(path.join(worktreesDir(), run.id)) && !branchExists(`council/${run.id}`) && !/Changes are waiting/.test(run.result ?? ''));
+
+  // Local builder: no copy (it only works in approved folders), with a note.
+  reset();
+  const prevModel = getSettings().model;
+  updateSettings({ model: 'test-local-model' });
+  run = await runCouncil(ctx(), { pattern: 'single', role: 'builder', member: 'local', task: 'add a rate limiter', note: 'test' });
+  updateSettings({ model: prevModel });
+  check('local builder: no copy, edits the folder directly with a note', !run.worktree && run.steps[0]?.transcript.some((t: any) => /local model edits your folder directly/.test(t.text ?? '')));
+
+  // Declined edit: copy created for the prompt, then removed because nothing changed.
+  reset(); denyNext = true;
+  run = await runCouncil(ctx(), { pattern: 'single', role: 'builder', member: 'codex', task: 'add a rate limiter', note: 'test' });
+  denyNext = false;
+  check('declined edit: no copy left behind', run.steps[0].status === 'skipped' && !run.worktree && !branchExists(`council/${run.id}`));
+
+  // Not a git repo → edits go to the folder, with a note.
+  reset();
+  const plainDir = fs.mkdtempSync(path.join(path.dirname(DEMO), 'plain-'));
+  const folders = getSettings().approvedFolders;
+  updateSettings({ approvedFolders: [plainDir] });
+  run = await runCouncil(ctx(), { pattern: 'single', role: 'builder', member: 'codex', task: 'add a rate limiter', note: 'test' });
+  updateSettings({ approvedFolders: folders });
+  check('non-git folder: falls back to editing the folder, with a note', !run.worktree && fs.existsSync(path.join(plainDir, 'src/rateLimit.ts')) && run.steps[0].transcript.some((t: any) => /Not a git repository/.test(t.text ?? '')));
+
+  // Setting off: old behaviour, edits land in the folder.
+  reset(); updateSettings({ council: { ...base, builderWorktree: false } });
+  const branchesBefore = sh('git branch --list "council/*"');
+  run = await runCouncil(ctx(), { pattern: 'single', role: 'builder', member: 'codex', task: 'add a rate limiter', note: 'test' });
+  check('setting off: edits go straight to the folder, no copy', !run.worktree && fs.existsSync(`${DEMO}/src/rateLimit.ts`) && sh('git branch --list "council/*"') === branchesBefore && real(lastOf('codex').cwd) === real(DEMO));
+  updateSettings({ council: base });
+
+  // Startup cleanup: applied/discarded copies older than 7 days go, with their branches.
+  const nowList = listCouncilWorktrees();
+  check('cleanup: records list applied and discarded copies', nowList.some((r: any) => r.runId && r.status === 'applied') && nowList.some((r: any) => r.status === 'discarded'));
+  check('cleanup: nothing removed while recent', cleanupStaleWorktrees() === 0 && fs.existsSync(appliedWt.path));
+  const removed = cleanupStaleWorktrees(Date.now() + 8 * 24 * 3600_000);
+  check('cleanup: stale applied copy and its branch removed', removed >= 2 && !fs.existsSync(appliedWt.path) && !branchExists(appliedWt.branch) && !listCouncilWorktrees().some((r: any) => r.status === 'applied' || r.status === 'discarded'), `removed ${removed}`);
+
+  off();
+  sh(`git reset -q --hard ${headBefore}`);
+  updateSettings({ council: { ...base, builderWorktree: false, checkCommand: '' } });
 }
 
 console.log(`\n${pass} passed, ${fail} failed. events: ${JSON.stringify(events)}`);

@@ -7,6 +7,7 @@ import type {
   CouncilRole,
   CouncilRun,
   CouncilStep,
+  CouncilWorktree,
   MemberId,
   CouncilPeerRank,
   MemberSessionRef,
@@ -42,12 +43,15 @@ import { detectCheckCommand, runChecks, type CheckRun } from './checks.js';
 import { describeKinds, existingRedactions, redactSecrets } from './redact.js';
 import { recordBuildOutcome, recordPeerRanking, recordStep } from './stats.js';
 import { buildHandoff, handoffReason, withHandoff } from './handoff.js';
+import { applyWorktree, createWorktree, discardWorktree, recordWorktreeStatus, repoInfo, snapshotWorktree, worktreeDiff } from './worktrees.js';
 import { LETTERS, aggregateRanking, anonymize, parseRanking, rankingForJudge, rankingLine, shuffle, type PeerBallot } from './peer.js';
 
 const MAX_RUNS_KEPT = 30;
 const MAX_OUTPUT = 20_000;
 const MAX_TRANSCRIPT_ITEMS = 300;
 const MAX_DIFF = 40_000;
+/** Diff kept on the run for the "Changes waiting" box. */
+const MAX_UI_DIFF = 20_000;
 export const DROPPED_AFTER_GRACE = 'Dropped after the grace period (quorum reached)';
 
 export interface CouncilContext {
@@ -108,6 +112,7 @@ export async function runCouncil(ctx: CouncilContext, input: Route): Promise<Cou
   } finally {
     run.endedAt = Date.now();
     for (const s of run.steps) if (s.status === 'running' || s.status === 'queued') s.status = 'cancelled';
+    finishWorktree(run);
     ctx.persist();
   }
   return run;
@@ -191,7 +196,7 @@ async function planBuildReview(ctx: CouncilContext, run: CouncilRun, task: strin
   if (ctx.signal.aborted) return 'Cancelled.';
 
   // Each round: project checks → reviewer → QA. The first gate that fails sends the builder into a fix round.
-  const gate = checksGateFor(cwd, accessFor(builderRole));
+  const gate = checksGateFor(runCwd(run), accessFor(builderRole));
   let report = builder.output ?? '';
   let g: Gates = { checks: null, review: null, reviewOk: false, reviewMissing: false, qa: null, qaOk: false, qaMissing: false };
   let fixes = 0;
@@ -205,7 +210,7 @@ async function planBuildReview(ctx: CouncilContext, run: CouncilRun, task: strin
       why = 'checks failed';
     } else {
       const checksText = checksSummary(g.checks);
-      const diff = gitDiffSince(cwd, before);
+      const diff = runDiff(run, cwd, before);
       g.review = await runRole(ctx, run, 'reviewer', 'read', reviewerPrompt(task, report, diff, planText || undefined, checksText), statuses, [builder.member]);
       if (!g.review || g.review.status !== 'done') break;
       ({ ok: g.reviewOk, missing: g.reviewMissing } = await readVerdict(ctx, run, g.review, 'review'));
@@ -277,7 +282,7 @@ function checksGateFor(cwd: string, builderAccess: CouncilAccess): ChecksGate {
 async function runChecksStep(ctx: CouncilContext, run: CouncilRun, gate: ChecksGate, fixRound: number): Promise<CheckRun | null> {
   if (!gate.command || gate.declined || ctx.signal.aborted) return null;
   const sessionId = ctx.session.id;
-  const cwd = approvedFolders()[0];
+  const cwd = runCwd(run);
   const step: CouncilStep = {
     id: `${run.id}-${run.steps.length + 1}`,
     role: 'checks',
@@ -294,7 +299,7 @@ async function runChecksStep(ctx: CouncilContext, run: CouncilRun, gate: ChecksG
   try {
     if (getSettings().shellApproval !== 'never') {
       bus.emit({ type: 'agent_status', sessionId, agent: 'main', status: 'waiting', detail: "Approve running the project's checks?" });
-      const approved = await bus.requestApproval(sessionId, agent, `Council: run the project's checks before review?\n\n$ ${gate.command}`, cwd, ctx.signal).catch(() => false);
+      const approved = await bus.requestApproval(sessionId, agent, `Council: run the project's checks before review?${run.worktree?.status === 'pending' ? ` They run in the separate copy (${cwd}).` : ''}\n\n$ ${gate.command}`, cwd, ctx.signal).catch(() => false);
       if (!approved) {
         step.status = ctx.signal.aborted ? 'cancelled' : 'skipped';
         step.error = ctx.signal.aborted ? 'Cancelled.' : 'You declined running the checks, so they are skipped for this run.';
@@ -382,7 +387,7 @@ async function secondOpinion(ctx: CouncilContext, run: CouncilRun, task: string,
   const before = gitSnapshot(cwd);
   const builder = await runRole(ctx, run, builderRole, accessFor(builderRole), builderPrompt(task), statuses);
   if (!builder || builder.status !== 'done') return `**The build step did not complete.** ${builder?.error ?? noMemberMessage(builderRole, statuses)}`;
-  const critic = await runRole(ctx, run, 'reviewer', 'read', critiquePrompt(task, builder.output ?? '', gitDiffSince(cwd, before)), statuses, [builder.member]);
+  const critic = await runRole(ctx, run, 'reviewer', 'read', critiquePrompt(task, builder.output ?? '', runDiff(run, cwd, before)), statuses, [builder.member]);
   return [
     `**Built by ${label(builder.member)}**${critic?.status === 'done' ? ` · second opinion from ${label(critic.member)}` : ''}`,
     `### What changed\n${builder.output ?? ''}`,
@@ -551,6 +556,8 @@ async function runRole(
   let last: CouncilStep | null = null;
   // Written handoff from the last member that stopped after doing some of the work; kept until a later one has more.
   let carried: { from: CouncilMemberRef; text: string; reason: string } | null = null;
+  // The local model only works in approved folders, so it can't edit a run's separate copy.
+  if (access === 'write' && run.worktree?.status === 'pending') exclude.push('local');
   for (let attempt = 0; attempt < 4 && !ctx.signal.aborted; attempt++) {
     const pick = pickMember(role, statuses, [...exclude, ...avoid]) ?? (avoid.length ? pickMember(role, statuses, exclude) : null);
     if (!pick) break;
@@ -575,7 +582,7 @@ async function runRole(
     // Only hand off for problems another member can fix; a real error in the task itself is reported.
     const handoff = step.status === 'limited' || /not signed in|not installed|not found|API key|subscription-only/i.test(step.error ?? '');
     if (!handoff) return step;
-    const text = buildHandoff(step, run, approvedFolders()[0]);
+    const text = buildHandoff(step, run, runCwd(run));
     if (text) carried = { from: step.member, text, reason: handoffReason(step) };
     exclude.push(pick.member);
   }
@@ -630,10 +637,17 @@ async function runStep(ctx: CouncilContext, run: CouncilRun, spec: StepSpec): Pr
   };
 
   try {
-    const cwd = approvedFolders()[0];
-    const instructions = memberInstructions(spec.role, spec.access, cwd);
+    prepareWorkspace(run, spec, pushItem);
+    const cwd = runCwd(run);
+    const wt = run.worktree?.status === 'pending' ? run.worktree : undefined;
+    const instructions = memberInstructions(spec.role, spec.access, cwd) + (wt ? `\n\n${worktreeInstructions(wt)}` : '');
 
     if (spec.member === 'local') {
+      if (wt && spec.access === 'write') {
+        step.status = 'error';
+        step.error = "The local model only works in your approved folders, so it can't edit this run's separate copy.";
+        return step;
+      }
       const report = await ctx.delegateLocal(`council-${spec.role}`, `${instructions}\n\n${spec.prompt}`);
       step.output = report.slice(0, MAX_OUTPUT);
       step.status = ctx.signal.aborted ? 'cancelled' : /^\[worker error\]/.test(report) ? 'error' : 'done';
@@ -658,7 +672,7 @@ async function runStep(ctx: CouncilContext, run: CouncilRun, spec: StepSpec): Pr
     if (spec.access === 'write' && (c.confirmWrites || risky)) {
       bus.emit({ type: 'agent_status', sessionId, agent: 'main', status: 'waiting', detail: `Approve ${label(spec.member)} editing files?` });
       const approved = await bus
-        .requestApproval(sessionId, agent, `Council: let ${label(spec.member)} (${spec.role}) edit files in ${cwd}?${spec.handoff ? ` It continues ${label(spec.handoff.from)}'s unfinished work.` : ''}\n\n${spec.prompt.slice(0, 600)}${spec.prompt.length > 600 ? '…' : ''}`, cwd, ctx.signal)
+        .requestApproval(sessionId, agent, `Council: let ${label(spec.member)} (${spec.role}) edit files ${wt ? `in a separate copy of your project (${cwd})? Nothing in ${wt.projectDir} changes until you apply the result.` : `in ${cwd}?`}${spec.handoff ? ` It continues ${label(spec.handoff.from)}'s unfinished work.` : ''}\n\n${spec.prompt.slice(0, 600)}${spec.prompt.length > 600 ? '…' : ''}`, cwd, ctx.signal)
         .catch(() => false);
       if (!approved) {
         step.status = ctx.signal.aborted ? 'cancelled' : 'skipped';
@@ -784,6 +798,8 @@ async function runStep(ctx: CouncilContext, run: CouncilRun, spec: StepSpec): Pr
     return step;
   } finally {
     step.endedAt = Date.now();
+    // Snapshot the copy after each build step, on its own council branch, so diffs and apply are exact.
+    if (spec.access === 'write' && run.worktree?.status === 'pending') snapshotWorktree(run.worktree, `LocalDex: ${spec.role} step ${step.id} (${label(spec.member)})`);
     recordStep(step, run);
     bus.emit({ type: 'turn_end', sessionId, agent });
     bus.emit({ type: 'agent_status', sessionId, agent, status: step.status === 'error' || step.status === 'limited' ? 'error' : 'idle', detail: step.error?.slice(0, 120) });
@@ -814,6 +830,101 @@ function redactForCloud(text: string, step: CouncilStep): string {
 /** Redact text bound for council members when the setting is on (default). */
 export function redactIfEnabled(text: string): string {
   return getSettings().council.redactSecrets !== false ? redactSecrets(text).text : text;
+}
+
+// ---------- separate copy (git worktree) for builder edits ----------
+
+/** Where this run's members work: its separate copy while the changes are waiting, otherwise the project folder. */
+function runCwd(run: CouncilRun): string {
+  return run.worktree?.status === 'pending' ? run.worktree.cwd : approvedFolders()[0];
+}
+
+/**
+ * Before the run's first edit step: make a separate copy for the builders when the setting is on and the folder is
+ * a git repo with a commit. The local model is never moved into a copy (it only works in approved folders), and
+ * when no copy can be made the member edits the folder directly, with a note on the step.
+ */
+function prepareWorkspace(run: CouncilRun, spec: StepSpec, note: (item: CouncilStep['transcript'][number]) => void): void {
+  if (spec.access !== 'write' || run.worktree || getSettings().council.builderWorktree === false) return;
+  const dir = approvedFolders()[0];
+  if (spec.member === 'local') {
+    note({ kind: 'note', text: "The local model edits your folder directly (LocalDex's own folder permissions apply)." });
+    return;
+  }
+  if (!repoInfo(dir)) {
+    note({ kind: 'note', text: 'Not a git repository with a commit, so this member edits your folder directly instead of a separate copy.' });
+    return;
+  }
+  try {
+    run.worktree = createWorktree(dir, run.id);
+    note({ kind: 'note', text: `Working in a separate copy: ${run.worktree.cwd} (branch ${run.worktree.branch}). Your folder stays unchanged until you apply.` });
+    if (run.worktree.note) note({ kind: 'note', text: run.worktree.note });
+  } catch (e) {
+    note({ kind: 'note', text: `Couldn't make a separate copy (${(e as Error).message}), so this member edits your folder directly.` });
+    bus.log('warn', `[council] worktree: ${(e as Error).message}`);
+  }
+}
+
+function worktreeInstructions(wt: CouncilWorktree): string {
+  return `Note: ${wt.cwd} is a separate copy (git worktree) of the user's project at ${wt.projectDir}. Work only in this copy; the user reviews your changes and applies them afterwards. Do not commit, switch branches or touch the original folder.`;
+}
+
+/** The changes reviewers see: from the run's copy, or from the project folder since the build started. */
+function runDiff(run: CouncilRun, cwd: string, before: GitSnap): string {
+  return run.worktree?.status === 'pending' ? worktreeDiff(run.worktree).diff : gitDiffSince(cwd, before);
+}
+
+/** End of run: record what changed in the copy, or remove the copy when nothing did. */
+function finishWorktree(run: CouncilRun): void {
+  const wt = run.worktree;
+  if (!wt || wt.status !== 'pending') return;
+  try {
+    const d = worktreeDiff(wt, MAX_UI_DIFF);
+    if (!d.files.length) {
+      discardWorktree(wt.projectDir, wt);
+      wt.status = 'discarded';
+      recordWorktreeStatus(wt);
+      run.worktree = undefined;
+      return;
+    }
+    Object.assign(wt, { files: d.files, diffStat: d.stat, diff: d.diff });
+    recordWorktreeStatus(wt);
+    const list = d.files.slice(0, 10).map((f) => `\`${f}\``).join(', ') + (d.files.length > 10 ? `, +${d.files.length - 10} more` : '');
+    run.result = `${run.result ?? ''}\n\n**Changes are waiting in a separate copy — review and apply them.** Nothing in your folder has changed yet. ${d.files.length} file${d.files.length === 1 ? '' : 's'}: ${list}. Open the run in the Council panel to see the diff, then choose Apply to my folder or Discard.`.trim();
+  } catch (e) {
+    wt.error = `Couldn't read the changes: ${(e as Error).message}`;
+  }
+}
+
+/** Apply a finished run's waiting changes to the project folder as uncommitted changes. Updates run.worktree. */
+export function applyRunChanges(run: CouncilRun): CouncilWorktree | undefined {
+  const wt = run.worktree;
+  if (!wt) return undefined;
+  if (!approvedFolders().includes(wt.projectDir)) {
+    wt.error = `${wt.projectDir} is no longer an approved folder. Add it in Settings → Workspace to apply these changes.`;
+    return wt;
+  }
+  const r = applyWorktree(wt.projectDir, wt);
+  wt.status = r.ok ? 'applied' : r.status;
+  wt.error = r.ok ? undefined : r.error;
+  if (r.ok && r.files.length) wt.files = r.files;
+  recordWorktreeStatus(wt);
+  return wt;
+}
+
+/** Throw a run's waiting changes away: removes its copy and branch. */
+export function discardRunChanges(run: CouncilRun): CouncilWorktree | undefined {
+  const wt = run.worktree;
+  if (!wt) return undefined;
+  if (wt.status === 'applied') {
+    wt.error = 'These changes are already in your folder; undo them there instead.';
+    return wt;
+  }
+  const r = discardWorktree(wt.projectDir, wt);
+  wt.status = 'discarded';
+  wt.error = r.ok ? undefined : r.error;
+  recordWorktreeStatus(wt);
+  return wt;
 }
 
 // ---------- git helpers (read-only) ----------

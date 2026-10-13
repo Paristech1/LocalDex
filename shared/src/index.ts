@@ -19,6 +19,8 @@ export type ChatMessage =
       ts?: number;
       /** Set when the text came from cloud council members rather than the local model, e.g. "claude → codex → gemini". */
       via?: string;
+      /** The council run this answer came from (for the "changes waiting" chip). */
+      councilRunId?: string;
     }
   | { role: 'tool'; tool_call_id: string; name?: string; content: string; ok?: boolean; ts?: number };
 
@@ -261,6 +263,11 @@ export interface CouncilSettings {
   qaStep: boolean;
   /** Council mode: a follow-up to the same member continues that member's own session instead of resending chat history. Default on. */
   continueSessions: boolean;
+  /**
+   * Builders edit a separate copy of the project (a git worktree under LocalDex's data folder) instead of your folder.
+   * You review the diff and apply or discard it. Needs a git repo with at least one commit; otherwise edits go to the folder.
+   */
+  builderWorktree: boolean;
 }
 
 /** How risky a request looks, from explainable keyword rules. */
@@ -358,6 +365,33 @@ export interface CouncilRun {
   result?: string;
   /** Vote runs with peer review: aggregate blind ranking of the answers, best first. */
   peerRanking?: CouncilPeerRank[];
+  /** Builder edits went to a separate copy (git worktree); the user applies or discards them. */
+  worktree?: CouncilWorktree;
+}
+
+export type CouncilWorktreeStatus = 'pending' | 'applied' | 'discarded' | 'conflict';
+
+/** A separate copy of the project (git worktree on branch council/<runId>) where a run's builders edit files. */
+export interface CouncilWorktree {
+  /** Worktree root under LocalDex's data folder. */
+  path: string;
+  /** Where members work: the worktree root, or the matching subfolder when the project is inside a bigger repo. */
+  cwd: string;
+  branch: string;
+  /** Commit the copy started from. */
+  base: string;
+  /** The user's folder the changes are applied to. */
+  projectDir: string;
+  status: CouncilWorktreeStatus;
+  /** Changed files, relative to the repo root. */
+  files: string[];
+  diffStat: string;
+  /** Capped diff for the run card (secrets redacted when that setting is on). */
+  diff?: string;
+  /** Why the last apply/discard failed, or what the user should do. */
+  error?: string;
+  /** Uncommitted changes in the user's folder that the copy does not include (it starts from the last commit). */
+  note?: string;
 }
 
 /** One answer's place in a blind peer review (Borda count over every adviser's ranking). */
@@ -533,6 +567,7 @@ export const DEFAULT_COUNCIL: CouncilSettings = {
   checkTimeoutMinutes: 10,
   qaStep: true,
   continueSessions: true,
+  builderWorktree: true,
 };
 
 export const DEFAULT_CAPABILITIES: Record<ToolName, boolean> = {
@@ -652,5 +687,9 @@ export type ClientEvent =
   | { type: 'council_stats_reset' }
   /** Forget every member's own session for this LocalDex session; the next message starts fresh with chat history. */
   | { type: 'council_new_conversation'; sessionId: string }
+  /** Bring a run's waiting changes (its separate copy) into the project folder as uncommitted changes. */
+  | { type: 'council_apply'; sessionId: string; runId: string }
+  /** Throw a run's waiting changes away (removes its separate copy and branch). */
+  | { type: 'council_discard'; sessionId: string; runId: string }
   | { type: 'reset_worker'; sessionId: string; name: string }
   | { type: 'delete_worker'; sessionId: string; name: string };

@@ -3,6 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { getSettings } from '../../config.js';
 import { memberEnv, resolveBinary, runJsonl, runQuick } from '../proc.js';
+import { worktreesDir } from '../worktrees.js';
 import { RESUME_FAILED_RE, detectLimit, parseResetAt, promptWithInstructions, stringify, type MemberAdapter, type MemberResult, type MemberRunOptions } from '../types.js';
 import type { MemberBilling } from '@localdex/shared';
 
@@ -23,6 +24,15 @@ export function isUntrustedFolder(code: number | null, output: string): boolean 
 }
 
 function untrustedFolderMessage(cwd: string): string {
+  // Builders' separate copies live under one folder; trusting that parent once covers every future copy.
+  const copies = worktreesDir();
+  const rel = path.relative(copies, cwd);
+  if (rel && !rel.startsWith('..') && !path.isAbsolute(rel)) {
+    return (
+      `Gemini doesn't trust this folder yet: it is a separate copy LocalDex made for builder edits. Run \`gemini\` once in ${cwd} and choose Trust parent folder (covers every copy in ${copies}), ` +
+      'or turn on "Trust project config" in Settings → Council (lets a repo\'s own agent settings run).'
+    );
+  }
   return (
     `Gemini doesn't trust this folder yet. Open it once in Gemini (run \`gemini\` in ${cwd} and choose Trust), ` +
     'or turn on "Trust project config" in Settings → Council (lets a repo\'s own agent settings run).'
