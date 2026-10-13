@@ -5,6 +5,7 @@ import {
   type CouncilMemberRef,
   type CouncilMemberStats,
   type CouncilPattern,
+  type CouncilRisk,
   type CouncilRole,
   type CouncilRun,
   type CouncilSettings,
@@ -96,6 +97,7 @@ const STEP_ICON: Record<CouncilStep['status'], string> = { queued: '○', runnin
 
 export function CouncilRunCard({ run, defaultOpen, compact }: { run: CouncilRun; defaultOpen?: boolean; compact?: boolean }) {
   const [open, setOpen] = useState(!!defaultOpen);
+  const riskRouting = useStore((s) => s.settings?.council.riskRouting ?? true);
   const running = run.status === 'running';
   const now = useNow(running);
   const tokens = run.steps.reduce((n, s) => n + (s.usage ? s.usage.inputTokens + s.usage.outputTokens : 0), 0);
@@ -107,6 +109,7 @@ export function CouncilRunCard({ run, defaultOpen, compact }: { run: CouncilRun;
           <span className={cx('text-[11px]', running ? 'text-warn pulse' : run.status === 'done' ? 'text-accent-dim' : run.status === 'error' ? 'text-danger' : 'text-ink-400')}>
             {running ? 'running' : run.status}
           </span>
+          {run.risk && <RiskChip risk={run.risk} reasons={run.riskReasons ?? []} />}
           <span className="flex-1" />
           <span className="text-[11px] text-ink-400">
             {dur((run.endedAt ?? now) - run.startedAt)}
@@ -128,6 +131,9 @@ export function CouncilRunCard({ run, defaultOpen, compact }: { run: CouncilRun;
       {open && (
         <div className="border-t border-ink-700 px-3 py-2 space-y-2">
           {run.routeNote && <div className="text-[11px] text-ink-400">router: {run.routeNote}</div>}
+          {run.risk === 'high' && riskRouting && (
+            <div className="text-[11px] text-warn">High risk: planned and reviewed, built on the heavy model, and every edit needs your approval.</div>
+          )}
           {run.steps.map((s) => (
             <StepRow key={s.id} step={s} now={now} defaultOpen={s.status === 'running'} />
           ))}
@@ -135,6 +141,23 @@ export function CouncilRunCard({ run, defaultOpen, compact }: { run: CouncilRun;
         </div>
       )}
     </div>
+  );
+}
+
+const RISK_CLS: Record<CouncilRisk, string> = {
+  high: 'border-danger/40 bg-danger/10 text-danger',
+  normal: 'border-ink-600 text-ink-300',
+  low: 'border-ink-600 text-ink-400',
+};
+
+function RiskChip({ risk, reasons }: { risk: CouncilRisk; reasons: string[] }) {
+  return (
+    <span
+      className={cx('rounded border px-1.5 py-px text-[10px] leading-4 truncate max-w-[14rem]', RISK_CLS[risk])}
+      title={reasons.length ? `${risk} risk: ${reasons.join(', ')}` : `${risk} risk`}
+    >
+      {risk} risk{reasons.length ? ` · ${reasons.join(', ')}` : ''}
+    </span>
   );
 }
 
@@ -585,6 +608,7 @@ export function CouncilSettingsTab({ settings, patch }: TabProps) {
         <div className={cx(!c.allowWrite && 'opacity-40 pointer-events-none')}>
           <Toggle label="Ask me before each member that can edit files" checked={c.confirmWrites} onChange={(v) => setC({ confirmWrites: v })} />
         </div>
+        <Toggle label="Always plan and review risky changes" checked={c.riskRouting} onChange={(v) => setC({ riskRouting: v })} />
         <Toggle label="Subscription only (refuse members signed in with an API key)" checked={c.requirePlanBilling} onChange={(v) => setC({ requirePlanBilling: v })} />
         <Toggle label="Remove secrets before sending to members" checked={c.redactSecrets !== false} onChange={(v) => setC({ redactSecrets: v })} />
         <Toggle label="Suggest asking the council when the local model is stuck" checked={c.consultNudges} onChange={(v) => setC({ consultNudges: v })} />
@@ -593,7 +617,7 @@ export function CouncilSettingsTab({ settings, patch }: TabProps) {
         Removing secrets replaces API keys, tokens, passwords and private keys in prompts, chat history and diffs with [REDACTED] before they reach a cloud member. Members can still open files in the project folder themselves.
       </p>
       <p className="text-[11px] text-ink-400">
-        With edits off, every member is read-only: planners plan, reviewers review, and change requests come back as proposals. Members never get LocalDex's own tools; they use their vendor's tools inside the project folder. To point a member at a specific executable, set <span className="font-mono">council.members.&lt;name&gt;.command</span> in <span className="font-mono">~/.localdex/config.json</span>.
+        Risky changes are ones that touch auth, payments, secrets, database migrations, deploy config, git history, or delete data. With the risky-changes switch on they always go plan → build → review, the builder uses its heavy model, and you approve every edit. With edits off, every member is read-only: planners plan, reviewers review, and change requests come back as proposals. Members never get LocalDex's own tools; they use their vendor's tools inside the project folder. To point a member at a specific executable, set <span className="font-mono">council.members.&lt;name&gt;.command</span> in <span className="font-mono">~/.localdex/config.json</span>.
       </p>
       <details className="pt-1">
         <summary className="text-xs text-ink-300 cursor-pointer select-none">Advanced</summary>

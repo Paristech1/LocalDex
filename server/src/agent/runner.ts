@@ -9,7 +9,7 @@ import { runLoop } from './loop.js';
 import { goalContinuePrompt, mainSystemPrompt } from './prompts.js';
 import { WorkerManager } from './workers.js';
 import { redactIfEnabled, runCouncil, runSummary, runVia, type CouncilContext } from '../council/orchestrator.js';
-import { classify, classifyWithLocal, parseCommand, type Route } from '../council/router.js';
+import { classify, classifyWithLocal, parseCommand, withRisk, type Route } from '../council/router.js';
 import type { CouncilRequest } from '../tools/types.js';
 
 /** Orchestrates one session: main loop, corrections, workers, goal/loop autonomy, compaction. */
@@ -96,10 +96,12 @@ export class SessionRunner {
         if (c.defaultPattern === 'auto') route = c.routing === 'local' ? await classifyWithLocal(content, ac.signal) : classify(content);
         else route = { ...classify(content), pattern: c.defaultPattern, note: `default pattern: ${c.defaultPattern}` };
       }
+      // Rate risk on what was asked, before conversation context is appended (slash commands keep their pattern).
+      route = withRisk(route);
       const asked = route.task;
       const history = conversationContext(s.messages.slice(0, -1));
       if (history) route = { ...route, task: `${route.task}\n\n---\nEarlier in this conversation (for context):\n${history}` };
-      bus.log('info', `[council] ${route.note}`);
+      bus.log('info', `[council] ${route.note} · risk: ${route.risk}${route.riskReasons?.length ? ` (${route.riskReasons.join(', ')})` : ''}`);
 
       const run = await runCouncil(this.councilContext(ac.signal), route);
       const callId = `council-${run.id}`;

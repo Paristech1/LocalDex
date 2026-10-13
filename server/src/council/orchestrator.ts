@@ -14,7 +14,7 @@ import { getSettings } from '../config.js';
 import { bus } from '../agent/bus.js';
 import { approvedFolders } from '../tools/permissions.js';
 import { MEMBERS, markLimited, memberStatuses, noteError } from './registry.js';
-import { availableMembers, modelFor, pickMember, unavailableReason, type Route } from './router.js';
+import { availableMembers, modelFor, pickMember, unavailableReason, withRisk, type Route } from './router.js';
 import {
   builderPrompt,
   critiquePrompt,
@@ -46,7 +46,9 @@ export interface CouncilContext {
 const label = (m: CouncilMemberRef) => (m === 'local' ? 'Local' : MEMBERS[m].label);
 
 /** Run one routed council request end to end. Always resolves; problems end up in run.status/result. */
-export async function runCouncil(ctx: CouncilContext, route: Route): Promise<CouncilRun> {
+export async function runCouncil(ctx: CouncilContext, input: Route): Promise<CouncilRun> {
+  // Rate every run, whoever routed it; explicit patterns (slash commands, the lead agent) are never changed here.
+  const route = withRisk(input);
   const run: CouncilRun = {
     id: randomUUID().slice(0, 8),
     pattern: route.pattern,
@@ -54,6 +56,8 @@ export async function runCouncil(ctx: CouncilContext, route: Route): Promise<Cou
     status: 'running',
     startedAt: Date.now(),
     routeNote: route.note,
+    risk: route.risk,
+    riskReasons: route.riskReasons,
     steps: [],
   };
   const runs = (ctx.session.councilRuns ??= []);
@@ -111,6 +115,7 @@ async function planBuildReview(ctx: CouncilContext, run: CouncilRun, task: strin
   const c = getSettings().council;
   const cwd = approvedFolders()[0];
   const out: string[] = [];
+  const maxFixRounds = isRiskyRun(run) ? Math.max(1, c.maxFixRounds) : c.maxFixRounds;
 
   const plan = await runRole(ctx, run, 'planner', 'read', plannerPrompt(task), statuses);
   const planText = plan?.status === 'done' ? plan.output ?? '' : '';
@@ -126,12 +131,12 @@ async function planBuildReview(ctx: CouncilContext, run: CouncilRun, task: strin
   let report = builder.output ?? '';
   let review: CouncilStep | null = null;
   let verdict: 'approve' | 'changes' | 'unknown' = 'unknown';
-  for (let round = 0; round <= c.maxFixRounds; round++) {
+  for (let round = 0; round <= maxFixRounds; round++) {
     const diff = gitDiffSince(cwd, before);
     review = await runRole(ctx, run, 'reviewer', 'read', reviewerPrompt(task, report, diff, planText || undefined), statuses, [builder.member]);
     if (!review || review.status !== 'done') break;
     verdict = parseVerdict(review.output ?? '');
-    if (verdict !== 'changes' || round === c.maxFixRounds || ctx.signal.aborted) break;
+    if (verdict !== 'changes' || round === maxFixRounds || ctx.signal.aborted) break;
     const fix = await runStep(ctx, run, { role: 'builder', member: builder.member, access: accessFor('builder'), prompt: fixPrompt(task, review.output ?? ''), note: `fix round ${round + 1}` });
     if (fix.status !== 'done') break;
     builder = fix;
@@ -188,6 +193,11 @@ async function vote(ctx: CouncilContext, run: CouncilRun, question: string, stat
 
 // ---------- steps ----------
 
+/** High-risk run with risk routing on: heavy builder model, edits always confirmed, at least one fix round. */
+function isRiskyRun(run: CouncilRun): boolean {
+  return run.risk === 'high' && getSettings().council.riskRouting;
+}
+
 function accessFor(role: CouncilRole | 'judge' | 'voter'): CouncilAccess {
   return role === 'builder' && getSettings().council.allowWrite ? 'write' : 'read';
 }
@@ -243,16 +253,18 @@ interface StepSpec {
 async function runStep(ctx: CouncilContext, run: CouncilRun, spec: StepSpec): Promise<CouncilStep> {
   const c = getSettings().council;
   const sessionId = ctx.session.id;
+  const risky = isRiskyRun(run);
+  const heavyBuild = risky && spec.role === 'builder';
   const step: CouncilStep = {
     id: `${run.id}-${run.steps.length + 1}`,
     role: spec.role,
     member: spec.member,
-    model: modelFor(spec.member, spec.role),
+    model: modelFor(spec.member, spec.role, { heavy: heavyBuild }),
     access: spec.access,
     status: 'running',
     startedAt: Date.now(),
     transcript: [],
-    note: spec.note,
+    note: heavyBuild ? `${spec.note ? `${spec.note} · ` : ''}heavy model (high risk)` : spec.note,
   };
   run.steps.push(step);
   const agent: AgentId = `member:${step.id}`;
@@ -293,7 +305,12 @@ async function runStep(ctx: CouncilContext, run: CouncilRun, spec: StepSpec): Pr
     }
 
     // Human in the loop: a cloud agent that can edit files only starts after the user approves it.
-    if (spec.access === 'write' && c.confirmWrites) {
+    if (spec.access === 'write' && risky && !c.confirmWrites) {
+      const why = `High-risk change (${(run.riskReasons ?? []).join(', ') || 'risky'}): asking before edits even though "Ask me before each member that can edit files" is off.`;
+      pushItem({ kind: 'note', text: why });
+      bus.log('info', `[council] ${why}`);
+    }
+    if (spec.access === 'write' && (c.confirmWrites || risky)) {
       bus.emit({ type: 'agent_status', sessionId, agent: 'main', status: 'waiting', detail: `Approve ${label(spec.member)} editing files?` });
       const approved = await bus
         .requestApproval(sessionId, agent, `Council: let ${label(spec.member)} (${spec.role}) edit files in ${cwd}?\n\n${spec.prompt.slice(0, 600)}${spec.prompt.length > 600 ? '…' : ''}`, cwd, ctx.signal)
@@ -473,7 +490,7 @@ export function runVia(run: CouncilRun): string {
 export function runSummary(run: CouncilRun): string {
   const dur = (s: CouncilStep) => (s.startedAt && s.endedAt ? ` · ${Math.round((s.endedAt - s.startedAt) / 1000)}s` : '');
   return [
-    `pattern: ${run.pattern}${run.routeNote ? ` (${run.routeNote})` : ''}`,
+    `pattern: ${run.pattern}${run.routeNote ? ` (${run.routeNote})` : ''}${run.risk ? ` · risk: ${run.risk}${run.riskReasons?.length ? ` (${run.riskReasons.join(', ')})` : ''}` : ''}`,
     ...run.steps.map((s) => `${s.status === 'done' ? '✓' : s.status === 'limited' ? '⏳' : s.status === 'cancelled' ? '■' : '✗'} ${s.role} → ${label(s.member)}${s.model ? ` (${s.model})` : ''} [${s.access}]${dur(s)}${s.error ? ` — ${s.error.slice(0, 200)}` : ''}`),
   ].join('\n');
 }
