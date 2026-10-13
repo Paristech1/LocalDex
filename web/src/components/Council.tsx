@@ -482,6 +482,7 @@ export function CouncilSettingsTab({ settings, patch }: TabProps) {
         </div>
         <Toggle label="Subscription only (refuse members signed in with an API key)" checked={c.requirePlanBilling} onChange={(v) => setC({ requirePlanBilling: v })} />
         <Toggle label="Remove secrets before sending to members" checked={c.redactSecrets !== false} onChange={(v) => setC({ redactSecrets: v })} />
+        <Toggle label="Suggest asking the council when the local model is stuck" checked={c.consultNudges} onChange={(v) => setC({ consultNudges: v })} />
       </div>
       <p className="text-[11px] text-ink-400">
         Removing secrets replaces API keys, tokens, passwords and private keys in prompts, chat history and diffs with [REDACTED] before they reach a cloud member. Members can still open files in the project folder themselves.

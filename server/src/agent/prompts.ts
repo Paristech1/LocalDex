@@ -52,7 +52,18 @@ export function mainSystemPrompt(): string {
 function councilNote(): string {
   const names = enabledTools('main').map((t) => t.function.name);
   if (!names.includes('ask_member') && !names.includes('council')) return '';
-  return `Model council: stronger cloud models (Claude, Codex, Gemini, Cursor) are available on the user's subscriptions and work directly in the project folder. Use ask_member to hand one a hard task, a big change (access "write") or a code review; several ask_member calls in one turn run in parallel. Use council with "plan_build_review" for multi-part changes, "second_opinion" to get work checked, or "vote" for decisions. They use the user's plan limits, so do small, simple steps yourself.`;
+  return `Model council: stronger cloud models (Claude, Codex, Gemini, Cursor) run on the user's subscriptions and work directly in the project folder. Tools: ask_member (one member; several calls in one turn run in parallel; access "write" for big changes) and council ("plan_build_review" for multi-part changes, "second_opinion" to check work, "vote" for decisions).
+Ask a member when:
+- Two attempts to fix the same failure did not work.
+- Before a hard-to-reverse decision: data model, migration, auth, deleting data, public API.
+- A plan or diff should be reviewed before you call the work done.
+- You are unsure and being wrong is costly.
+- The task needs reading much more code than fits in your context.
+How to ask:
+- For reviews, prefer a member from a different vendor than the one that wrote the code.
+- Write a self-contained question: goal, file paths, what you tried, exact errors. The member can read the repo but not this chat.
+- Check the advice against the code before acting on it.
+Do small, simple steps yourself; members use the user's plan limits.`;
 }
 
 export function workerSystemPrompt(name: string): string {

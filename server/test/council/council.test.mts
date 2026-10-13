@@ -242,6 +242,48 @@ updateSettings({ council: { ...getSettings().council, trustProjectConfig: false 
   updateSettings({ council: { ...getSettings().council, redactSecrets: true } });
 }
 
+// 15. consult triggers: system prompt + Solo-mode nudges
+{
+  const { mainSystemPrompt } = await import(`${SRC}/agent/prompts.ts`);
+  const { ConsultNudger, consultEnabled, FAILURES_HINT } = await import(`${SRC}/agent/consultNudge.ts`);
+  const on = mainSystemPrompt();
+  check('consult: prompt lists triggers when council on', /Ask a member when:/.test(on) && /Two attempts to fix the same failure/.test(on) && /migration, auth, deleting data, public API/.test(on) && /different vendor/.test(on) && /not this chat/.test(on) && /plan limits/.test(on));
+  updateSettings({ council: { ...getSettings().council, enabled: false } });
+  const off = mainSystemPrompt();
+  check('consult: no triggers when council off', !/Ask a member when/.test(off) && !/ask_member/.test(off));
+  updateSettings({ council: { ...getSettings().council, enabled: true } });
+
+  check('consult: enabled only with council + ask_member + setting', consultEnabled({ councilAvailable: true, toolNames: ['ask_member'], setting: true })
+    && !consultEnabled({ councilAvailable: false, toolNames: ['ask_member'], setting: true })
+    && !consultEnabled({ councilAvailable: true, toolNames: ['council'], setting: true })
+    && !consultEnabled({ councilAvailable: true, toolNames: ['ask_member'], setting: false }));
+  check('consult: setting defaults to on', getSettings().council.consultNudges === true);
+
+  const sh = (command: string, ok: boolean) => ({ name: 'shell_run', args: JSON.stringify({ command }), ok });
+  const edit = { name: 'edit_file', args: '{}', ok: true };
+  let n = new ConsultNudger(true);
+  check('consult: first failure does not nudge', n.observe([sh('npm test', false)]) === null);
+  check('consult: same failure without edits does not nudge', n.observe([sh('npm  test', false)]) === null);
+  n.observe([edit]);
+  const hint = n.observe([sh('npm test', false)]);
+  check('consult: same command fails after an edit → nudge', !!hint && /ask_member/.test(hint) && /npm test/.test(hint), hint ?? '');
+  n.observe([edit]);
+  check('consult: repeat nudge fires once per run', n.observe([sh('npm test', false)]) === null);
+  check('consult: failures hint once per run', n.failuresHint().includes(FAILURES_HINT) && n.failuresHint() === '');
+
+  n = new ConsultNudger(true);
+  n.observe([sh('npm test', false)]); n.observe([edit]); n.observe([sh('npm test', true)]); n.observe([edit]);
+  check('consult: a pass in between resets tracking', n.observe([sh('npm test', false)]) === null);
+
+  n = new ConsultNudger(false);
+  n.observe([sh('npm test', false), edit]);
+  check('consult: disabled → never nudges', n.observe([sh('npm test', false)]) === null && n.failuresHint() === '');
+
+  n = new ConsultNudger(true);
+  n.observe([sh('npm test', false), edit, { name: 'ask_member', args: '{}', ok: true }]);
+  check('consult: no nudge after the model already asked', n.observe([sh('npm test', false)]) === null && n.failuresHint() === '');
+}
+
 console.log(`\n${pass} passed, ${fail} failed. events: ${JSON.stringify(events)}`);
 reset();
 process.exit(fail ? 1 : 0);

@@ -217,6 +217,8 @@ export interface CouncilSettings {
   trustProjectConfig: boolean;
   /** Replace API keys, tokens, passwords and private keys with [REDACTED:<kind>] before anything goes to a cloud member. Default on. */
   redactSecrets: boolean;
+  /** Solo mode: suggest asking a council member when the local model is stuck (repeated failures). Default on. */
+  consultNudges: boolean;
 }
 
 export type MemberBilling = 'plan' | 'api' | 'unknown';
@@ -402,6 +404,7 @@ export const DEFAULT_COUNCIL: CouncilSettings = {
   requirePlanBilling: true,
   trustProjectConfig: false,
   redactSecrets: true,
+  consultNudges: true,
 };
 
 export const DEFAULT_CAPABILITIES: Record<ToolName, boolean> = {

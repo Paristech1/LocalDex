@@ -11,7 +11,7 @@ export const ask_member: ToolDef = {
     function: {
       name: 'ask_member',
       description:
-        'Hand a task to a stronger cloud model on the user\'s council (Claude, Codex, Gemini or Cursor; they run on the user\'s subscriptions and work directly in the project folder). Use for hard problems, big changes, code review, or reading a large codebase. member "auto" picks the best available one. access "write" lets it edit files; "read" (default) is read-only. Returns the member\'s final report.',
+        'Hand a task to a stronger cloud model on the user\'s council (Claude, Codex, Gemini or Cursor; they run on the user\'s subscriptions and work directly in the project folder). Use for hard problems, big changes, code review, or reading a large codebase; also when two fixes for the same failure did not work, before hard-to-reverse decisions (data model, migration, auth, deleting data, public API), or to review a plan/diff before calling work done. The member cannot see this chat, so include the goal, paths, what you tried and exact errors. member "auto" picks the best available one. access "write" lets it edit files; "read" (default) is read-only. Returns the member\'s final report.',
       parameters: {
         type: 'object',
         properties: {
