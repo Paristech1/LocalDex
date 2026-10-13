@@ -1,0 +1,28 @@
+#!/usr/bin/env node
+// Stand-in for `codex exec --json`, for LocalDex tests only.
+const c = require('./_common.cjs'); const fs = require('fs'); const path = require('path');
+const a = process.argv.slice(2);
+(async () => {
+  if (a[0] === '--version') return console.log('codex-cli 0.162.1');
+  if (a[0] === 'login' && a[1] === 'status') return console.error(c.flag('codex_signed_out') ? 'Not logged in' : c.flag('codex_api') ? 'Logged in using an API key - sk-proj-***' : 'Logged in using ChatGPT');
+  const prompt = await c.readStdin();
+  const role = c.role(prompt);
+  const cwd = a[a.indexOf('-C') + 1];
+  const write = a[a.indexOf('-s') + 1] === 'workspace-write';
+  c.out({ type: 'thread.started', thread_id: 't1' });
+  c.out({ type: 'turn.started' });
+  await c.sleep(300);
+  if (c.flag('codex_limit')) { c.out({ type: 'turn.failed', error: { message: "You've hit your usage limit. Try again in 2 hours." } }); process.exit(1); }
+  c.out({ type: 'item.completed', item: { id: 'item_0', type: 'reasoning', text: '**Inspecting the repo layout**' } });
+  c.out({ type: 'item.started', item: { id: 'item_1', type: 'command_execution', command: 'bash -lc ls -R src', status: 'in_progress' } });
+  await c.sleep(400);
+  c.out({ type: 'item.completed', item: { id: 'item_1', type: 'command_execution', command: 'bash -lc ls -R src', aggregated_output: 'src:\nmath.ts\n', exit_code: 0, status: 'completed' } });
+  if (write && role === 'builder') {
+    fs.mkdirSync(path.join(cwd, 'src'), { recursive: true });
+    fs.writeFileSync(path.join(cwd, 'src/rateLimit.ts'), 'export function rateLimit(max = 60) {\n  const hits = new Map<string, number[]>();\n  return (ip: string) => {\n    const now = Date.now();\n    const list = (hits.get(ip) ?? []).filter((t) => now - t < 60_000);\n    list.push(now);\n    hits.set(ip, list);\n    return list.length <= max;\n  };\n}\n');
+    c.out({ type: 'item.completed', item: { id: 'item_2', type: 'file_change', changes: [{ path: 'src/rateLimit.ts', kind: 'add' }], status: 'completed' } });
+  }
+  await c.sleep(300);
+  c.out({ type: 'item.completed', item: { id: 'item_3', type: 'agent_message', text: c.answer(role, 'codex', prompt) } });
+  c.out({ type: 'turn.completed', usage: { input_tokens: 5400, cached_input_tokens: 3000, output_tokens: 610 } });
+})();
