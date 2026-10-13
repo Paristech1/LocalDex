@@ -25,6 +25,8 @@ export const Agent = {
         return {
           async *stream() {
             yield { type: 'system', subtype: 'init', agent_id: 'a1', run_id: 'r1', model: opts.model };
+            // cursor_limit: out of quota before doing anything; cursor_limit_midway: edits first, then hits the limit.
+            if (c.flag('cursor_limit')) { status = 'error'; return; }
             await c.sleep(300);
             yield { type: 'tool_call', agent_id: 'a1', run_id: 'r1', call_id: 'c1', name: 'read', status: 'running', args: { path: 'src/math.ts' } };
             await c.sleep(300);
@@ -36,7 +38,10 @@ export const Agent = {
               await c.sleep(300);
               yield { type: 'tool_call', agent_id: 'a1', run_id: 'r1', call_id: 'c2', name: 'edit', status: 'completed', result: 'wrote src/rateLimit.ts' };
             }
-            if (c.flag('cursor_limit')) { status = 'error'; return; }
+            if (c.flag('cursor_limit_midway')) {
+              yield { type: 'assistant', agent_id: 'a1', run_id: 'r1', message: { role: 'assistant', content: [{ type: 'text', text: 'Created src/rateLimit.ts. Next: wire it into src/server.ts.' }] } };
+              status = 'error'; return;
+            }
             yield { type: 'assistant', agent_id: 'a1', run_id: 'r1', message: { role: 'assistant', content: [{ type: 'text', text }] } };
             yield { type: 'usage', agent_id: 'a1', run_id: 'r1', usage: { inputTokens: 4200, outputTokens: 380 } };
             status = 'finished';

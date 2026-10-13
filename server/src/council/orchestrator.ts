@@ -30,6 +30,7 @@ import {
 } from './prompts.js';
 import { describeKinds, existingRedactions, redactSecrets } from './redact.js';
 import { recordBuildOutcome, recordStep } from './stats.js';
+import { buildHandoff, handoffReason, withHandoff } from './handoff.js';
 
 const MAX_RUNS_KEPT = 30;
 const MAX_OUTPUT = 20_000;
@@ -241,15 +242,32 @@ async function runRole(
 ): Promise<CouncilStep | null> {
   const exclude: CouncilMemberRef[] = [];
   let last: CouncilStep | null = null;
+  // Written handoff from the last member that stopped after doing some of the work; kept until a later one has more.
+  let carried: { from: CouncilMemberRef; text: string; reason: string } | null = null;
   for (let attempt = 0; attempt < 4 && !ctx.signal.aborted; attempt++) {
     const pick = pickMember(role, statuses, [...exclude, ...avoid]) ?? (avoid.length ? pickMember(role, statuses, exclude) : null);
     if (!pick) break;
-    const step = await runStep(ctx, run, { role, member: pick.member, access, prompt, note: attempt ? `${pick.note} (retry after ${label(last!.member)} failed)` : pick.note });
+    const note = !attempt
+      ? pick.note
+      : carried
+        ? `${pick.note} · continued from ${label(carried.from)} ${carried.reason}`
+        : `${pick.note} (retry after ${label(last!.member)} failed)`;
+    const step = await runStep(ctx, run, {
+      role,
+      member: pick.member,
+      access,
+      // Access is the role's as before: a read-only member gets the handoff but stays read-only.
+      prompt: carried ? withHandoff(prompt, carried.from, carried.text, access) : prompt,
+      note,
+      handoff: carried ? { from: carried.from, text: carried.text } : undefined,
+    });
     last = step;
     if (step.status === 'done' || step.status === 'cancelled') return step;
     // Only hand off for problems another member can fix; a real error in the task itself is reported.
     const handoff = step.status === 'limited' || /not signed in|not installed|not found|API key|subscription-only/i.test(step.error ?? '');
     if (!handoff) return step;
+    const text = buildHandoff(step, run, approvedFolders()[0]);
+    if (text) carried = { from: step.member, text, reason: handoffReason(step) };
     exclude.push(pick.member);
   }
   return last;
@@ -261,6 +279,7 @@ interface StepSpec {
   access: CouncilAccess;
   prompt: string;
   note?: string;
+  handoff?: CouncilStep['handoff'];
 }
 
 async function runStep(ctx: CouncilContext, run: CouncilRun, spec: StepSpec): Promise<CouncilStep> {
@@ -278,6 +297,7 @@ async function runStep(ctx: CouncilContext, run: CouncilRun, spec: StepSpec): Pr
     startedAt: Date.now(),
     transcript: [],
     note: heavyBuild ? `${spec.note ? `${spec.note} · ` : ''}heavy model (high risk)` : spec.note,
+    ...(spec.handoff ? { handoff: spec.handoff } : {}),
   };
   run.steps.push(step);
   const agent: AgentId = `member:${step.id}`;
@@ -326,7 +346,7 @@ async function runStep(ctx: CouncilContext, run: CouncilRun, spec: StepSpec): Pr
     if (spec.access === 'write' && (c.confirmWrites || risky)) {
       bus.emit({ type: 'agent_status', sessionId, agent: 'main', status: 'waiting', detail: `Approve ${label(spec.member)} editing files?` });
       const approved = await bus
-        .requestApproval(sessionId, agent, `Council: let ${label(spec.member)} (${spec.role}) edit files in ${cwd}?\n\n${spec.prompt.slice(0, 600)}${spec.prompt.length > 600 ? '…' : ''}`, cwd, ctx.signal)
+        .requestApproval(sessionId, agent, `Council: let ${label(spec.member)} (${spec.role}) edit files in ${cwd}?${spec.handoff ? ` It continues ${label(spec.handoff.from)}'s unfinished work.` : ''}\n\n${spec.prompt.slice(0, 600)}${spec.prompt.length > 600 ? '…' : ''}`, cwd, ctx.signal)
         .catch(() => false);
       if (!approved) {
         step.status = ctx.signal.aborted ? 'cancelled' : 'skipped';

@@ -432,6 +432,34 @@ run = await runCouncil(ctx(), { pattern: 'single', role: 'backend', member: 'cod
 check('edits off: backend builder is read-only too', run.steps[0].access === 'read' && approvals === 0);
 updateSettings({ council: { ...getSettings().council, allowWrite: true } });
 
+// 22. written handoff when a member hits its usage limit mid-run
+{
+  const codexPrompt = () => JSON.parse(fs.readFileSync(path.join(CTL, 'codex.last.json'), 'utf8')).prompt as string;
+  reset(); approvals = 0; flag('cursor_limit_midway', true);
+  run = await runCouncil(ctx(), { pattern: 'single', role: 'builder', task: 'Add rate limiting to the API', note: 'test' });
+  const [c1, c2] = run.steps;
+  let p = codexPrompt();
+  check('handoff: cursor limited mid-edit → codex continues', c1?.status === 'limited' && c2?.member === 'codex' && c2.status === 'done', run.steps.map((s: any) => `${s.member}:${s.status}`).join(' '));
+  check('handoff: codex prompt has the delimited handoff + continue instruction before the task', /===== Handoff from Cursor \(begin\) =====/.test(p) && /===== Handoff from Cursor \(end\) =====/.test(p) && /Continue from where they stopped/.test(p) && p.indexOf('Handoff from Cursor') < p.lastIndexOf('Add rate limiting to the API'));
+  check('handoff: includes changed file (git status), tool calls and limit message', /\?\? src\/rateLimit\.ts/.test(p) && /- read src\/math\.ts → ok/.test(p) && /- edit src\/rateLimit\.ts → ok/.test(p) && /Rate limit exceeded/.test(p) && /Next: wire it into src\/server\.ts/.test(p), `${p.length} chars`);
+  check('handoff: recorded on the step with a note', c2?.handoff?.from === 'cursor' && /Handoff|src\/rateLimit\.ts/.test(c2.handoff.text) && /continued from Cursor after its usage limit/.test(c2.note ?? ''), c2?.note);
+  check('handoff: codex still asked before editing', approvals === 2 && c2?.access === 'write', `${approvals} approvals`);
+
+  // Read-only next member: gets the handoff, stays read-only.
+  updateSettings({ council: { ...getSettings().council, allowWrite: false } });
+  reset(); approvals = 0; flag('cursor_limit_midway', true);
+  run = await runCouncil(ctx(), { pattern: 'single', role: 'builder', task: 'Add rate limiting to the API', note: 'test' });
+  p = codexPrompt();
+  check('handoff: read-only member gets the handoff but stays read-only', run.steps[1]?.member === 'codex' && run.steps[1].access === 'read' && approvals === 0 && /Handoff from Cursor/.test(p) && /You are read-only/.test(p) && !!run.steps[1].handoff, runSummary(run));
+  updateSettings({ council: { ...getSettings().council, allowWrite: true } });
+
+  // Limit before any work: plain retry, no handoff block.
+  reset(); approvals = 0; flag('cursor_limit', true);
+  run = await runCouncil(ctx(), { pattern: 'single', role: 'builder', task: 'Add rate limiting to the API', note: 'test' });
+  p = codexPrompt();
+  check('handoff: no partial work → no handoff block', run.steps[0]?.status === 'limited' && run.steps[0].transcript.every((t: any) => t.kind !== 'tool') && run.steps[1]?.member === 'codex' && !/Handoff from/.test(p) && !run.steps[1].handoff && /retry after Cursor failed/.test(run.steps[1].note ?? ''), run.steps[1]?.note);
+}
+
 console.log(`\n${pass} passed, ${fail} failed. events: ${JSON.stringify(events)}`);
 reset();
 process.exit(fail ? 1 : 0);
