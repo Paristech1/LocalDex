@@ -3,6 +3,8 @@ import { spawnSync } from 'node:child_process';
 import type {
   AgentId,
   CouncilAccess,
+  CouncilArena,
+  CouncilArenaEntry,
   CouncilMemberRef,
   CouncilRole,
   CouncilRun,
@@ -14,13 +16,14 @@ import type {
   MemberStatus,
   Session,
 } from '@localdex/shared';
-import { isBuilderRole, quorumLabel } from '@localdex/shared';
+import { MEMBER_IDS, isBuilderRole, quorumLabel } from '@localdex/shared';
 import { getSettings } from '../config.js';
 import { bus } from '../agent/bus.js';
 import { approvedFolders } from '../tools/permissions.js';
 import { MEMBERS, markLimited, memberStatuses, noteError } from './registry.js';
 import { availableMembers, findImageRefs, modelFor, pickMember, unavailableReason, withRisk, type Route } from './router.js';
 import {
+  arenaJudgePrompt,
   builderPrompt,
   checksFixPrompt,
   checksSummary,
@@ -28,6 +31,7 @@ import {
   fixPrompt,
   judgePrompt,
   memberInstructions,
+  parseArenaPick,
   parseQaVerdict,
   parseVerdict,
   peerReviewPrompt,
@@ -106,6 +110,9 @@ export async function runCouncil(ctx: CouncilContext, input: Route): Promise<Cou
       case 'vote':
         run.result = await vote(ctx, run, route.task, statuses);
         break;
+      case 'arena':
+        run.result = await arena(ctx, run, route, statuses);
+        break;
     }
     run.status = ctx.signal.aborted ? 'cancelled' : run.steps.some((s) => s.status === 'done') ? 'done' : 'error';
   } catch (e) {
@@ -115,6 +122,7 @@ export async function runCouncil(ctx: CouncilContext, input: Route): Promise<Cou
     run.endedAt = Date.now();
     for (const s of run.steps) if (s.status === 'running' || s.status === 'queued') s.status = 'cancelled';
     finishWorktree(run);
+    finishArena(run);
     ctx.persist();
   }
   return run;
@@ -281,10 +289,11 @@ function checksGateFor(cwd: string, builderAccess: CouncilAccess): ChecksGate {
  * Run the project's checks as their own step (member 'local'). Commands run on the user's machine,
  * so the user approves each run unless shell approval is set to "never". Returns null when nothing ran.
  */
-async function runChecksStep(ctx: CouncilContext, run: CouncilRun, gate: ChecksGate, fixRound: number): Promise<CheckRun | null> {
+async function runChecksStep(ctx: CouncilContext, run: CouncilRun, gate: ChecksGate, fixRound: number, copy?: { wt: CouncilWorktree; who: CouncilMemberRef }): Promise<CheckRun | null> {
   if (!gate.command || gate.declined || ctx.signal.aborted) return null;
   const sessionId = ctx.session.id;
-  const cwd = runCwd(run);
+  const cwd = copy ? copy.wt.cwd : runCwd(run);
+  const inCopy = !!copy || run.worktree?.status === 'pending';
   const step: CouncilStep = {
     id: `${run.id}-${run.steps.length + 1}`,
     role: 'checks',
@@ -293,7 +302,7 @@ async function runChecksStep(ctx: CouncilContext, run: CouncilRun, gate: ChecksG
     status: 'running',
     startedAt: Date.now(),
     transcript: [],
-    note: `${gate.source === 'settings' ? 'your check command' : 'detected'}: ${gate.command}${fixRound ? ` · after fix round ${fixRound}` : ''}`,
+    note: `${gate.source === 'settings' ? 'your check command' : 'detected'}: ${gate.command}${fixRound ? ` · after fix round ${fixRound}` : ''}${copy ? ` · in ${label(copy.who)}'s copy` : ''}`,
   };
   run.steps.push(step);
   const agent: AgentId = `member:${step.id}`;
@@ -301,7 +310,7 @@ async function runChecksStep(ctx: CouncilContext, run: CouncilRun, gate: ChecksG
   try {
     if (getSettings().shellApproval !== 'never') {
       bus.emit({ type: 'agent_status', sessionId, agent: 'main', status: 'waiting', detail: "Approve running the project's checks?" });
-      const approved = await bus.requestApproval(sessionId, agent, `Council: run the project's checks before review?${run.worktree?.status === 'pending' ? ` They run in the separate copy (${cwd}).` : ''}\n\n$ ${gate.command}`, cwd, ctx.signal).catch(() => false);
+      const approved = await bus.requestApproval(sessionId, agent, `Council: run the project's checks${copy ? ` on ${label(copy.who)}'s version` : ' before review'}?${inCopy ? ` They run in the separate copy (${cwd}).` : ''}\n\n$ ${gate.command}`, cwd, ctx.signal).catch(() => false);
       if (!approved) {
         step.status = ctx.signal.aborted ? 'cancelled' : 'skipped';
         step.error = ctx.signal.aborted ? 'Cancelled.' : 'You declined running the checks, so they are skipped for this run.';
@@ -503,6 +512,154 @@ async function collectVotes(ctx: CouncilContext, run: CouncilRun, voters: Member
   }
 }
 
+// ---------- arena: two builders race on the same task, each in its own copy ----------
+
+const ARENA_LETTERS = ['A', 'B'];
+const MAX_ARENA_SUMMARY = 4_000;
+
+/**
+ * Pick the two contestants: the ones the user named, filled up by the builder role's order. Only cloud members
+ * (the local model can't work in a separate copy). Returns an error message when fewer than two can build.
+ */
+function arenaContestants(role: CouncilRole, statuses: MemberStatus[], named: CouncilMemberRef[] = []): MemberId[] | string {
+  const out: MemberId[] = [];
+  for (const ref of named) {
+    if (ref === 'local') return "The local model can't race in the arena: it only works in your approved folders, not in a separate copy. Name two cloud members, e.g. /arena claude codex <task>.";
+    if (out.includes(ref)) return `${label(ref)} can't race against itself. Name two different members.`;
+    const why = unavailableReason(ref, statuses);
+    if (why) return `${label(ref)} can't race: ${why}.`;
+    out.push(ref);
+  }
+  while (out.length < 2) {
+    const pick = pickMember(role, statuses, ['local', ...out]);
+    if (!pick || pick.member === 'local') break;
+    out.push(pick.member);
+  }
+  if (out.length < 2) {
+    const lines = MEMBER_IDS.map((m) => `- ${label(m)}: ${unavailableReason(m, statuses) ?? 'available'}`).join('\n');
+    return `The arena needs two cloud members that can build, and only ${out.length ? `${label(out[0])} is` : 'none are'} available.\n${lines}\n\nCheck Settings → Council.`;
+  }
+  return out;
+}
+
+async function arena(ctx: CouncilContext, run: CouncilRun, route: Route, statuses: MemberStatus[]): Promise<string> {
+  const role = buildRole(route.role);
+  if (accessFor(run, role) !== 'write') {
+    throw new Error(`The arena needs file edits, and ${run.access === 'read' ? 'this message is set to "Read only"' : 'council edits are off in Settings → Council'}. Pick "Ask before edits" or "Edits allowed" and try again.`);
+  }
+  const picked = arenaContestants(role, statuses, route.members);
+  if (typeof picked === 'string') throw new Error(picked);
+  const dir = approvedFolders()[0];
+  if (!repoInfo(dir)) throw new Error(`The arena works in separate copies (git worktrees), so ${dir} must be a git repository with at least one commit.`);
+
+  // One copy per contestant, on branches council/<runId>-<member>.
+  const entries: CouncilArenaEntry[] = [];
+  try {
+    for (const member of picked) entries.push({ member, worktree: createWorktree(dir, run.id, member), status: 'queued' });
+  } catch (e) {
+    for (const x of entries) discardWorktree(dir, x.worktree);
+    throw new Error(`Couldn't make the separate copies: ${(e as Error).message}`);
+  }
+  const state: CouncilArena = (run.arena = { entries });
+  ctx.persist();
+  const [a, b] = entries;
+  const prompt = builderPrompt(route.task);
+
+  // One approval covers both copies; the same rules as any edit step decide whether to ask.
+  if (confirmsEdits(run) || isRiskyRun(run)) {
+    const sessionId = ctx.session.id;
+    bus.emit({ type: 'agent_status', sessionId, agent: 'main', status: 'waiting', detail: `Approve ${label(a.member)} and ${label(b.member)} editing files?` });
+    const ok = await bus
+      .requestApproval(
+        sessionId,
+        'main',
+        `Council arena: let ${label(a.member)} and ${label(b.member)} (${role}) each edit files in their own separate copy of your project?${isRiskyRun(run) ? ` High-risk change (${(run.riskReasons ?? []).join(', ')}).` : ''}\n- ${label(a.member)}: ${a.worktree.cwd}\n- ${label(b.member)}: ${b.worktree.cwd}\nNothing in ${dir} changes until you keep one.\n\n${prompt.slice(0, 600)}${prompt.length > 600 ? '…' : ''}`,
+        dir,
+        ctx.signal,
+      )
+      .catch(() => false);
+    if (!ok) {
+      for (const x of entries) {
+        x.status = ctx.signal.aborted ? 'cancelled' : 'skipped';
+        x.error = ctx.signal.aborted ? 'Cancelled.' : 'You declined file edits.';
+      }
+      if (ctx.signal.aborted) return 'Cancelled.';
+      throw new Error('You declined file edits, so neither member ran.');
+    }
+  }
+
+  // Both build at once. Each step listens to the run's signal, so a Stop cancels both; no fallback, a failed contestant just loses.
+  for (const x of entries) x.status = 'running';
+  ctx.persist();
+  const steps = await Promise.all(
+    entries.map(async (x) => {
+      const step = await runStep(ctx, run, { role, member: x.member, access: 'write', prompt, note: `arena · ${x.worktree.branch}`, worktree: x.worktree, preApproved: true });
+      x.stepId = step.id;
+      x.status = step.status;
+      x.summary = (step.output ?? '').slice(0, MAX_ARENA_SUMMARY);
+      if (step.error) x.error = step.error;
+      ctx.persist();
+      return step;
+    }),
+  );
+  if (ctx.signal.aborted) return 'Cancelled.';
+
+  // What each copy holds now (redacted diff), then the project's checks in each copy that changed something.
+  const diffs = entries.map((x) => worktreeDiff(x.worktree));
+  const finished = entries.map((x, i) => ({ x, d: diffs[i] })).filter(({ x, d }) => x.status === 'done' && d.files.length > 0);
+  const gate = checksGateFor(a.worktree.cwd, 'write');
+  for (const { x } of finished) {
+    const res = await runChecksStep(ctx, run, gate, 0, { wt: x.worktree, who: x.member });
+    if (res) x.checks = { command: res.command, ok: res.ok, detail: res.ok ? 'passed' : res.timedOut ? 'timed out' : `failed (exit ${res.code ?? 'killed'})` };
+    if (ctx.signal.aborted) return 'Cancelled.';
+  }
+
+  // Judge: a member that didn't race (a third cloud member first, else the local model); none free → no judging.
+  if (finished.length === 2) {
+    const judge = (pickMember('reviewer', statuses, ['local', ...picked]) ?? pickMember('reviewer', statuses, picked))?.member;
+    if (judge) {
+      state.judge = judge;
+      const judgePrompt = arenaJudgePrompt(
+        route.task,
+        finished.map(({ x, d }, k) => ({
+          letter: ARENA_LETTERS[k],
+          report: redactIfEnabled(x.summary ?? ''),
+          diff: d.diff,
+          checks: x.checks ? `Project checks in this copy: \`${x.checks.command}\` ${x.checks.detail}` : undefined,
+        })),
+      );
+      const j = await runStep(ctx, run, { role: 'judge', member: judge, access: 'read', prompt: judgePrompt, note: 'arena judge (compares both diffs)' });
+      if (j.status === 'done') {
+        // Member output is data: only the letter and a short reason are taken from it.
+        const { letter, reason } = parseArenaPick(j.output ?? '', ARENA_LETTERS.slice(0, finished.length));
+        if (letter) {
+          state.pick = finished[ARENA_LETTERS.indexOf(letter)].x.member;
+          if (reason) state.reason = reason;
+        } else j.transcript.push({ kind: 'note', text: 'No usable PICK line, so there is no recommendation.' });
+      }
+    }
+  } else if (finished.length === 1) {
+    state.pick = finished[0].x.member;
+    state.reason = `Only ${label(finished[0].x.member)} finished with changes.`;
+  }
+
+  const verdict = state.pick
+    ? ` · ${state.judge ? `${label(state.judge)} recommends` : 'pick:'} ${label(state.pick)}${state.reason ? ` — ${state.reason}` : ''}`
+    : state.judge
+      ? ` · ${label(state.judge)} gave no clear pick`
+      : ' · no judge available';
+  const head = finished.length ? `**Arena: ${label(a.member)} vs ${label(b.member)}**${verdict}` : `**Arena: neither ${label(a.member)} nor ${label(b.member)} produced changes.**`;
+  return [
+    head,
+    ...entries.map((x, i) => {
+      const s = steps[i];
+      const n = diffs[i].files.length;
+      const what = s.status === 'done' ? x.summary || '(no report)' : `Did not finish (${s.status}): ${s.error ?? 'unknown error'}`;
+      return `### ${label(x.member)}${n ? ` · ${n} file${n === 1 ? '' : 's'}` : ' · no changes'}${x.checks ? ` · checks ${x.checks.detail}` : ''}\n${what}`;
+    }),
+  ].join('\n\n');
+}
+
 function clampInt(v: unknown, min: number, max: number, fallback: number): number {
   const n = Number.isFinite(Number(v)) ? Math.round(Number(v)) : fallback;
   return Math.max(min, Math.min(max, n));
@@ -608,6 +765,10 @@ interface StepSpec {
   /** Stops just this step (e.g. a vote straggler). Combined with ctx.signal; a string abort reason becomes the step's error. */
   signal?: AbortSignal;
   continuation?: Continuation;
+  /** Arena: this step's own separate copy (instead of the run's). */
+  worktree?: CouncilWorktree;
+  /** The caller already asked the user about these edits (arena asks once for both copies). */
+  preApproved?: boolean;
 }
 
 async function runStep(ctx: CouncilContext, run: CouncilRun, spec: StepSpec): Promise<CouncilStep> {
@@ -646,9 +807,9 @@ async function runStep(ctx: CouncilContext, run: CouncilRun, spec: StepSpec): Pr
   };
 
   try {
-    prepareWorkspace(run, spec, pushItem);
-    const cwd = runCwd(run);
-    const wt = run.worktree?.status === 'pending' ? run.worktree : undefined;
+    if (!spec.worktree) prepareWorkspace(run, spec, pushItem);
+    const wt = spec.worktree ?? (run.worktree?.status === 'pending' ? run.worktree : undefined);
+    const cwd = spec.worktree ? spec.worktree.cwd : runCwd(run);
     const instructions = memberInstructions(spec.role, spec.access, cwd) + (wt ? `\n\n${worktreeInstructions(wt)}` : '');
 
     if (spec.member === 'local') {
@@ -679,7 +840,7 @@ async function runStep(ctx: CouncilContext, run: CouncilRun, spec: StepSpec): Pr
       pushItem({ kind: 'note', text: why });
       bus.log('info', `[council] ${why}`);
     }
-    if (spec.access === 'write' && (confirm || risky)) {
+    if (spec.access === 'write' && (confirm || risky) && !spec.preApproved) {
       bus.emit({ type: 'agent_status', sessionId, agent: 'main', status: 'waiting', detail: `Approve ${label(spec.member)} editing files?` });
       const approved = await bus
         .requestApproval(sessionId, agent, `Council: let ${label(spec.member)} (${spec.role}) edit files ${wt ? `in a separate copy of your project (${cwd})? Nothing in ${wt.projectDir} changes until you apply the result.` : `in ${cwd}?`}${spec.handoff ? ` It continues ${label(spec.handoff.from)}'s unfinished work.` : ''}\n\n${spec.prompt.slice(0, 600)}${spec.prompt.length > 600 ? '…' : ''}`, cwd, ctx.signal)
@@ -809,7 +970,8 @@ async function runStep(ctx: CouncilContext, run: CouncilRun, spec: StepSpec): Pr
   } finally {
     step.endedAt = Date.now();
     // Snapshot the copy after each build step, on its own council branch, so diffs and apply are exact.
-    if (spec.access === 'write' && run.worktree?.status === 'pending') snapshotWorktree(run.worktree, `LocalDex: ${spec.role} step ${step.id} (${label(spec.member)})`);
+    const stepWt = spec.worktree ?? run.worktree;
+    if (spec.access === 'write' && stepWt?.status === 'pending') snapshotWorktree(stepWt, `LocalDex: ${spec.role} step ${step.id} (${label(spec.member)})`);
     recordStep(step, run);
     bus.emit({ type: 'turn_end', sessionId, agent });
     bus.emit({ type: 'agent_status', sessionId, agent, status: step.status === 'error' || step.status === 'limited' ? 'error' : 'idle', detail: step.error?.slice(0, 120) });
@@ -906,10 +1068,71 @@ function finishWorktree(run: CouncilRun): void {
   }
 }
 
+/** End of an arena run: record each copy's changes for the run card; copies with no changes are removed. */
+function finishArena(run: CouncilRun): void {
+  if (!run.arena) return;
+  let waiting = 0;
+  for (const x of run.arena.entries) {
+    const wt = x.worktree;
+    if (x.status === 'running' || x.status === 'queued') x.status = 'cancelled';
+    if (wt.status !== 'pending') continue;
+    try {
+      const d = worktreeDiff(wt, MAX_UI_DIFF);
+      if (!d.files.length) {
+        discardWorktree(wt.projectDir, wt);
+        wt.status = 'discarded';
+        recordWorktreeStatus(wt);
+        continue;
+      }
+      Object.assign(wt, { files: d.files, diffStat: d.stat, diff: d.diff });
+      recordWorktreeStatus(wt);
+      waiting++;
+    } catch (e) {
+      wt.error = `Couldn't read the changes: ${(e as Error).message}`;
+    }
+  }
+  if (waiting) {
+    run.result = `${run.result ?? ''}\n\n**${waiting === 2 ? 'Two versions are' : 'One version is'} waiting in separate copies — keep one.** Nothing in your folder has changed yet. Open the run in the Council panel to compare the diffs, then choose Keep this one or Discard both.`.trim();
+  }
+}
+
+/** Arena: apply one entry's copy to the folder; once it is in, the other copy is discarded. */
+export function applyArenaEntry(run: CouncilRun, member: MemberId): CouncilWorktree | undefined {
+  const entry = run.arena?.entries.find((x) => x.member === member);
+  if (!run.arena || !entry) return undefined;
+  if (run.arena.kept && run.arena.kept !== member) {
+    entry.worktree.error = `You already kept ${label(run.arena.kept)}'s version.`;
+    return entry.worktree;
+  }
+  const wt = applyCopy(entry.worktree);
+  if (wt.status === 'applied' && !wt.error) {
+    run.arena.kept = member;
+    for (const other of run.arena.entries) if (other !== entry && other.worktree.status !== 'discarded') discardCopy(other.worktree);
+  }
+  return wt;
+}
+
+/** Arena: discard one entry's copy, or, with no member, every copy not applied or discarded yet. */
+export function discardArena(run: CouncilRun, member?: MemberId): CouncilWorktree[] {
+  const out: CouncilWorktree[] = [];
+  for (const x of run.arena?.entries ?? []) {
+    if (member ? x.member !== member : x.worktree.status === 'applied' || x.worktree.status === 'discarded') continue;
+    out.push(discardCopy(x.worktree));
+  }
+  return out;
+}
+
 /** Apply a finished run's waiting changes to the project folder as uncommitted changes. Updates run.worktree. */
 export function applyRunChanges(run: CouncilRun): CouncilWorktree | undefined {
-  const wt = run.worktree;
-  if (!wt) return undefined;
+  return run.worktree ? applyCopy(run.worktree) : undefined;
+}
+
+/** Throw a run's waiting changes away: removes its copy and branch. */
+export function discardRunChanges(run: CouncilRun): CouncilWorktree | undefined {
+  return run.worktree ? discardCopy(run.worktree) : undefined;
+}
+
+function applyCopy(wt: CouncilWorktree): CouncilWorktree {
   if (!approvedFolders().includes(wt.projectDir)) {
     wt.error = `${wt.projectDir} is no longer an approved folder. Add it in Settings → Workspace to apply these changes.`;
     return wt;
@@ -922,10 +1145,7 @@ export function applyRunChanges(run: CouncilRun): CouncilWorktree | undefined {
   return wt;
 }
 
-/** Throw a run's waiting changes away: removes its copy and branch. */
-export function discardRunChanges(run: CouncilRun): CouncilWorktree | undefined {
-  const wt = run.worktree;
-  if (!wt) return undefined;
+function discardCopy(wt: CouncilWorktree): CouncilWorktree {
   if (wt.status === 'applied') {
     wt.error = 'These changes are already in your folder; undo them there instead.';
     return wt;

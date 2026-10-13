@@ -195,7 +195,8 @@ export function quorumLabel(q: NonNullable<CouncilRun['quorum']>): string {
   return `Quorum ${q.needed}/${q.of}${q.dropped ? ` · ${q.dropped} dropped after ${q.graceSeconds}s` : ''}`;
 }
 
-export type CouncilPattern = 'single' | 'plan_build_review' | 'second_opinion' | 'vote';
+/** 'arena': two builders race on the same task, each in its own separate copy; the user keeps one. Opt-in (/arena) only. */
+export type CouncilPattern = 'single' | 'plan_build_review' | 'second_opinion' | 'vote' | 'arena';
 export type CouncilAccess = 'read' | 'write';
 /**
  * Per-message access override for one council run (never saved to settings).
@@ -384,6 +385,33 @@ export interface CouncilRun {
   access?: CouncilRunAccess;
   /** Started from a Solo chat with "Hand to council". */
   escalated?: boolean;
+  /** Arena runs: the two contestants' copies, the judge's pick and which one the user kept. */
+  arena?: CouncilArena;
+}
+
+/** One contestant in an arena run: its own separate copy and how its build went. */
+export interface CouncilArenaEntry {
+  member: MemberId;
+  worktree: CouncilWorktree;
+  /** The contestant's build step. */
+  stepId?: string;
+  status: CouncilStepStatus;
+  /** The builder's own report (capped). */
+  summary?: string;
+  error?: string;
+  /** The project's checks, run in this copy. */
+  checks?: { command: string; ok: boolean; detail: string };
+}
+
+export interface CouncilArena {
+  entries: CouncilArenaEntry[];
+  /** Who compared the two diffs (absent when nobody was free to judge). */
+  judge?: CouncilMemberRef;
+  /** The judge's recommendation and its short reason. */
+  pick?: MemberId;
+  reason?: string;
+  /** The entry the user applied to their folder. */
+  kept?: MemberId;
 }
 
 export type CouncilWorktreeStatus = 'pending' | 'applied' | 'discarded' | 'conflict';
@@ -707,9 +735,9 @@ export type ClientEvent =
   | { type: 'council_stats_reset' }
   /** Forget every member's own session for this LocalDex session; the next message starts fresh with chat history. */
   | { type: 'council_new_conversation'; sessionId: string }
-  /** Bring a run's waiting changes (its separate copy) into the project folder as uncommitted changes. */
-  | { type: 'council_apply'; sessionId: string; runId: string }
-  /** Throw a run's waiting changes away (removes its separate copy and branch). */
-  | { type: 'council_discard'; sessionId: string; runId: string }
+  /** Bring a run's waiting changes (its separate copy) into the project folder as uncommitted changes. Arena runs: `member` picks the entry to keep; the other copy is discarded. */
+  | { type: 'council_apply'; sessionId: string; runId: string; member?: MemberId }
+  /** Throw a run's waiting changes away (removes its separate copy and branch). Arena runs: `member` discards one entry, without it every copy goes. */
+  | { type: 'council_discard'; sessionId: string; runId: string; member?: MemberId }
   | { type: 'reset_worker'; sessionId: string; name: string }
   | { type: 'delete_worker'; sessionId: string; name: string };

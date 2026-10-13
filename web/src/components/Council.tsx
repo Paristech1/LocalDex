@@ -39,6 +39,7 @@ const PATTERN_LABEL: Record<CouncilPattern, string> = {
   plan_build_review: 'Plan → Build → Review',
   second_opinion: 'Build + second opinion',
   vote: 'Council vote',
+  arena: 'Arena',
 };
 
 const ROLE_HINT: Record<CouncilRole, string> = {
@@ -164,6 +165,11 @@ export function CouncilRunCard({ run, defaultOpen, compact }: { run: CouncilRun;
           <WorktreeBox run={run} worktree={run.worktree} />
         </div>
       )}
+      {run.arena && (
+        <div className="px-3 pb-2">
+          <ArenaBox run={run} arena={run.arena} />
+        </div>
+      )}
       {open && (
         <div className="border-t border-ink-700 px-3 py-2 space-y-2">
           {run.routeNote && <div className="text-[11px] text-ink-400">router: {run.routeNote}</div>}
@@ -193,7 +199,6 @@ const WT_LABEL: Record<CouncilWorktree['status'], string> = {
 /** Builder edits that went to a separate copy (git worktree): file list, diff, Apply / Discard. */
 function WorktreeBox({ run, worktree: wt }: { run: CouncilRun; worktree: CouncilWorktree }) {
   const sessionId = useStore((s) => s.session?.id);
-  const [showDiff, setShowDiff] = useState(false);
   const [busy, setBusy] = useState<'apply' | 'discard' | null>(null);
   useEffect(() => setBusy(null), [wt.status, wt.error]);
   const open = wt.status === 'pending' || wt.status === 'conflict';
@@ -231,22 +236,7 @@ function WorktreeBox({ run, worktree: wt }: { run: CouncilRun; worktree: Council
           ))}
         </ul>
       )}
-      {wt.status !== 'discarded' && wt.diffStat && (
-        <div>
-          <button type="button" className="text-[11px] text-ink-400 hover:text-ink-200" onClick={() => setShowDiff((d) => !d)}>
-            {showDiff ? '▾' : '▸'} {wt.diffStat.trim().split('\n').at(-1)?.trim() || 'diff'}
-          </button>
-          {showDiff && (
-            <pre className="mt-1 max-h-80 overflow-auto rounded border border-ink-800 bg-ink-950 px-2 py-1.5 font-mono text-[11px] leading-4 text-ink-200 whitespace-pre">
-              {(wt.diff || wt.diffStat).split('\n').map((l, i) => (
-                <div key={i} className={cx(l.startsWith('+') && !l.startsWith('+++') ? 'text-accent' : l.startsWith('-') && !l.startsWith('---') ? 'text-danger' : l.startsWith('@@') ? 'text-[#7cc0f2]' : '')}>
-                  {l || ' '}
-                </div>
-              ))}
-            </pre>
-          )}
-        </div>
-      )}
+      {wt.status !== 'discarded' && wt.diffStat && <DiffToggle wt={wt} />}
       {open && (
         <div className="flex items-center gap-2 pt-0.5">
           <Button size="sm" variant="primary" disabled={!!busy || !sessionId} onClick={() => act('apply')} title={`Copy these changes into ${wt.projectDir} as uncommitted changes`}>
@@ -261,15 +251,155 @@ function WorktreeBox({ run, worktree: wt }: { run: CouncilRun; worktree: Council
   );
 }
 
+/** Expandable diff of a separate copy: the stat's last line as the toggle, colored lines inside. */
+function DiffToggle({ wt }: { wt: CouncilWorktree }) {
+  const [show, setShow] = useState(false);
+  return (
+    <div className="min-w-0">
+      <button type="button" className="text-[11px] text-ink-400 hover:text-ink-200 text-left" onClick={() => setShow((d) => !d)}>
+        {show ? '▾' : '▸'} {wt.diffStat.trim().split('\n').at(-1)?.trim() || 'diff'}
+      </button>
+      {show && (
+        <pre className="mt-1 max-h-80 overflow-auto rounded border border-ink-800 bg-ink-950 px-2 py-1.5 font-mono text-[11px] leading-4 text-ink-200 whitespace-pre">
+          {(wt.diff || wt.diffStat).split('\n').map((l, i) => (
+            <div key={i} className={cx(l.startsWith('+') && !l.startsWith('+++') ? 'text-accent' : l.startsWith('-') && !l.startsWith('---') ? 'text-danger' : l.startsWith('@@') ? 'text-[#7cc0f2]' : '')}>
+              {l || ' '}
+            </div>
+          ))}
+        </pre>
+      )}
+    </div>
+  );
+}
+
+// ---------- arena: two versions side by side, keep one ----------
+
+/** Two builders' versions next to each other (stacked when narrow), the judge's pick, Keep this one / Discard both. */
+function ArenaBox({ run, arena }: { run: CouncilRun; arena: NonNullable<CouncilRun['arena']> }) {
+  const sessionId = useStore((s) => s.session?.id);
+  const [busy, setBusy] = useState<string | null>(null);
+  const statusKey = arena.entries.map((x) => `${x.worktree.status}:${x.worktree.error ?? ''}`).join('|');
+  useEffect(() => setBusy(null), [statusKey, arena.kept]);
+  const running = run.status === 'running';
+  const waiting = arena.entries.filter((x) => x.worktree.status === 'pending' || x.worktree.status === 'conflict');
+  const act = (kind: 'apply' | 'discard', member?: MemberId) => {
+    if (!sessionId) return;
+    setBusy(member ? `${kind}:${member}` : kind);
+    send({ type: kind === 'apply' ? 'council_apply' : 'council_discard', sessionId, runId: run.id, ...(member ? { member } : {}) });
+  };
+  const outcome = arena.kept
+    ? `Kept ${MEMBER_META[arena.kept].label}'s version: it is in ${arena.entries[0]?.worktree.projectDir ?? 'your folder'} as uncommitted changes. The other copy was removed.`
+    : !running && !waiting.length && arena.entries.some((x) => x.worktree.files.length)
+      ? 'Both versions were discarded. Nothing in your folder changed.'
+      : '';
+  return (
+    <div className="rounded-md border border-ink-600 bg-ink-950/50 px-2.5 py-2 space-y-2">
+      <div className="flex items-center gap-2 text-xs">
+        <span className="font-medium text-ink-100">Arena</span>
+        <span className="text-[11px] text-ink-400 truncate">
+          {running ? 'Two builders are racing in separate copies…' : waiting.length ? 'Compare both versions, then keep one. Nothing in your folder has changed yet.' : ''}
+        </span>
+      </div>
+      {arena.pick && (
+        <div className="text-[11px] text-ink-300">
+          <span className="text-accent">★ {arena.judge ? `${MEMBER_META[arena.judge].label} recommends` : 'Pick:'} {MEMBER_META[arena.pick].label}</span>
+          {arena.reason && <span className="text-ink-400"> — {arena.reason}</span>}
+        </div>
+      )}
+      {!running && !arena.pick && arena.judge && <div className="text-[11px] text-ink-400">{MEMBER_META[arena.judge].label} compared both but gave no clear pick.</div>}
+      {outcome && <div className="text-[11px] text-accent">{outcome}</div>}
+      <div className="grid gap-2 grid-cols-[repeat(auto-fit,minmax(13rem,1fr))]">
+        {arena.entries.map((x) => (
+          <ArenaEntryCard key={x.member} entry={x} picked={arena.pick === x.member} kept={arena.kept === x.member} canKeep={!running && !arena.kept && (x.worktree.status === 'pending' || x.worktree.status === 'conflict')} busy={busy} onKeep={() => act('apply', x.member)} />
+        ))}
+      </div>
+      {!running && waiting.length > 0 && !arena.kept && (
+        <div className="flex items-center gap-2">
+          <Button size="sm" variant="danger" disabled={!!busy || !sessionId} onClick={() => act('discard')} title="Remove both separate copies and their branches">
+            {busy === 'discard' ? 'Discarding…' : waiting.length === 2 ? 'Discard both' : 'Discard'}
+          </Button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function ArenaEntryCard({ entry: x, picked, kept, canKeep, busy, onKeep }: { entry: NonNullable<CouncilRun['arena']>['entries'][number]; picked: boolean; kept: boolean; canKeep: boolean; busy: string | null; onKeep: () => void }) {
+  const wt = x.worktree;
+  const [showReport, setShowReport] = useState(false);
+  const state =
+    x.status === 'running' ? 'building…' : x.status === 'queued' ? 'waiting' : x.status !== 'done' ? x.status : wt.status === 'applied' ? 'kept' : wt.status === 'discarded' ? (wt.files.length ? 'discarded' : 'no changes') : wt.status === 'conflict' ? "couldn't apply" : 'ready';
+  return (
+    <div className={cx('min-w-0 rounded-md border px-2 py-1.5 space-y-1.5', kept ? 'border-accent/60 bg-accent/5' : picked ? 'border-accent/40' : 'border-ink-700')}>
+      <div className="flex items-center gap-1.5">
+        <VendorBadge member={x.member} dim={wt.status === 'discarded'} />
+        {picked && <span className="text-[10px] text-accent" title="The judge's recommendation">★ pick</span>}
+        <span className="flex-1" />
+        <span className={cx('text-[11px]', x.status === 'running' ? 'text-warn pulse' : kept ? 'text-accent' : x.status === 'done' && wt.status !== 'discarded' ? 'text-ink-300' : 'text-ink-400')}>{state}</span>
+      </div>
+      {wt.status !== 'discarded' && wt.files.length > 0 && (
+        <div className="text-[11px] text-ink-400">
+          {wt.files.length} file{wt.files.length === 1 ? '' : 's'}
+          <ul className="font-mono text-ink-200 max-h-24 overflow-y-auto">
+            {wt.files.map((f) => (
+              <li key={f} className="truncate" title={f}>
+                {f}
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+      {wt.status !== 'discarded' && wt.diffStat && <DiffToggle wt={wt} />}
+      {x.checks && (
+        <div className={cx('text-[11px]', x.checks.ok ? 'text-accent-dim' : 'text-danger')} title={x.checks.command}>
+          Checks {x.checks.detail}
+        </div>
+      )}
+      {x.error && x.status !== 'done' && <div className="text-[11px] text-danger break-words">{x.error}</div>}
+      {wt.error && <div className="text-[11px] text-danger whitespace-pre-wrap break-words">{wt.error}</div>}
+      {x.summary && (
+        <div>
+          <button type="button" className="text-[11px] text-ink-400 hover:text-ink-200" onClick={() => setShowReport((r) => !r)}>
+            {showReport ? '▾' : '▸'} Builder's report
+          </button>
+          {showReport && (
+            <div className="mt-1 max-h-60 overflow-y-auto text-xs">
+              <Markdown text={x.summary} />
+            </div>
+          )}
+        </div>
+      )}
+      {canKeep && (
+        <Button size="sm" variant={picked ? 'primary' : 'default'} disabled={!!busy} onClick={onKeep} title={`Copy ${MEMBER_META[x.member].label}'s changes into ${wt.projectDir} as uncommitted changes and remove the other copy`}>
+          {busy === `apply:${x.member}` ? 'Keeping…' : wt.status === 'conflict' ? 'Try again' : 'Keep this one'}
+        </Button>
+      )}
+    </div>
+  );
+}
+
 /** Small chip on a council answer in the chat: changes waiting / applied / discarded. */
 export function WorktreeChip({ runId }: { runId: string }) {
-  const wt = useStore((s) => s.session?.councilRuns?.find((r) => r.id === runId)?.worktree);
+  const run = useStore((s) => s.session?.councilRuns?.find((r) => r.id === runId));
+  if (run?.arena) return <ArenaChip arena={run.arena} />;
+  const wt = run?.worktree;
   if (!wt) return null;
   const cls =
     wt.status === 'applied' ? 'border-accent/40 text-accent' : wt.status === 'conflict' ? 'border-danger/40 text-danger' : wt.status === 'discarded' ? 'border-ink-600 text-ink-400' : 'border-warn/40 text-warn';
   return (
     <span className={cx('inline-flex items-center gap-1 rounded border px-1.5 py-px text-[10px] mb-1', cls)} title="Open the run in the Council panel to review, apply or discard">
       {WT_LABEL[wt.status]} · {wt.files.length} file{wt.files.length === 1 ? '' : 's'}
+    </span>
+  );
+}
+
+function ArenaChip({ arena }: { arena: NonNullable<CouncilRun['arena']> }) {
+  const waiting = arena.entries.filter((x) => x.worktree.status === 'pending' || x.worktree.status === 'conflict').length;
+  const text = arena.kept ? `Arena · kept ${MEMBER_META[arena.kept].label}` : waiting ? `Arena · ${waiting === 2 ? 'two versions' : 'one version'} waiting` : 'Arena · nothing kept';
+  const cls = arena.kept ? 'border-accent/40 text-accent' : waiting ? 'border-warn/40 text-warn' : 'border-ink-600 text-ink-400';
+  return (
+    <span className={cx('inline-flex items-center gap-1 rounded border px-1.5 py-px text-[10px] mb-1', cls)} title="Open the run in the Council panel to compare the versions and keep one">
+      {text}
     </span>
   );
 }

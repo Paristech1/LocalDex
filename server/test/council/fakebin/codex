@@ -16,6 +16,8 @@ const a = process.argv.slice(2);
   c.out({ type: 'thread.started', thread_id: resume || c.newId('codex') });
   c.out({ type: 'turn.started' });
   await c.sleep(300);
+  // Slow builder for the arena Stop test: records its pid, then stalls (dies on SIGTERM like a real CLI).
+  if (c.flag('codex_slow')) { fs.writeFileSync(path.join(process.env.FAKE_CTL || '.', 'codex.pid'), String(process.pid)); await c.sleep(15_000); }
   if (c.flag('codex_limit')) { c.out({ type: 'turn.failed', error: { message: "You've hit your usage limit. Try again in 2 hours." } }); process.exit(1); }
   c.out({ type: 'item.completed', item: { id: 'item_0', type: 'reasoning', text: '**Inspecting the repo layout**' } });
   c.out({ type: 'item.started', item: { id: 'item_1', type: 'command_execution', command: 'bash -lc ls -R src', status: 'in_progress' } });
