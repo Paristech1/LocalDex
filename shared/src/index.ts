@@ -290,6 +290,39 @@ export interface CouncilRun {
   result?: string;
 }
 
+/** Counters for one member (overall, or in one role). `runs` counts started steps; declined edits are `skipped` and not runs. */
+export interface CouncilStepCounts {
+  runs: number;
+  done: number;
+  errors: number;
+  limited: number;
+  cancelled: number;
+  skipped: number;
+  /** Sum of step wall time (includes any wait for edit approval). */
+  durationMs: number;
+  inputTokens: number;
+  outputTokens: number;
+}
+
+export interface CouncilMemberStats extends CouncilStepCounts {
+  byRole: Partial<Record<CouncilStep['role'], CouncilStepCounts>>;
+  /** Plan → build → review outcomes for builds this member made. */
+  builder: { approvedFirst: number; approvedAfterFixes: number; changesRequested: number };
+  /** Verdicts this member gave as a reviewer ('none' = no VERDICT line). */
+  reviewer: { approve: number; changes: number; none: number };
+  /** Vote participation: answers given and their total length in characters. */
+  voter: { answers: number; answerChars: number };
+  /** Blind peer ranking (filled by a later feature): sum of ranks and of field sizes; average rank = rankSum / count. */
+  peerRanking: { count: number; rankSum: number; ofSum: number };
+}
+
+export interface CouncilStats {
+  /** When counting started (first record after a reset). */
+  since: number;
+  updatedAt: number;
+  members: Partial<Record<CouncilMemberRef, CouncilMemberStats>>;
+}
+
 export interface SessionSummary {
   id: string;
   title: string;
@@ -488,6 +521,7 @@ export type ServerEvent =
   | { type: 'skills'; skills: SkillInfo[] }
   | { type: 'council_status'; members: MemberStatus[] }
   | { type: 'council_login'; member: MemberId; url?: string; done?: boolean; error?: string }
+  | { type: 'council_stats'; stats: CouncilStats }
   | { type: 'agent_status'; sessionId: string; agent: AgentId; status: AgentStatus; detail?: string }
   | { type: 'assistant_delta'; sessionId: string; agent: AgentId; delta: string }
   | { type: 'reasoning_delta'; sessionId: string; agent: AgentId; delta: string }
@@ -519,5 +553,6 @@ export type ClientEvent =
   | { type: 'set_mode'; sessionId: string; mode: SessionMode }
   | { type: 'council_refresh' }
   | { type: 'council_login'; member: MemberId }
+  | { type: 'council_stats_reset' }
   | { type: 'reset_worker'; sessionId: string; name: string }
   | { type: 'delete_worker'; sessionId: string; name: string };

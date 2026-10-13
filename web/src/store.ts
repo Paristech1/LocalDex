@@ -3,6 +3,7 @@ import type {
   AgentId,
   AgentStatus,
   ClientEvent,
+  CouncilStats,
   McpServerStatus,
   MemberId,
   MemberStatus,
@@ -56,6 +57,7 @@ export interface State {
   mcp: McpServerStatus[];
   skills: SkillInfo[];
   council: MemberStatus[];
+  councilStats: CouncilStats | null;
   councilLogin: { member: MemberId; url?: string; done?: boolean; error?: string } | null;
   error: string | null;
 }
@@ -74,6 +76,7 @@ let state: State = {
   mcp: [],
   skills: [],
   council: [],
+  councilStats: null,
   councilLogin: null,
   error: null,
 };
@@ -199,6 +202,9 @@ function handle(ev: ServerEvent): void {
       return;
     case 'council_status':
       set({ council: ev.members });
+      return;
+    case 'council_stats':
+      set({ councilStats: ev.stats });
       return;
     case 'council_login':
       set({ councilLogin: { member: ev.member, url: ev.url, done: ev.done, error: ev.error } });

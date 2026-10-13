@@ -27,6 +27,7 @@ import {
   votePrompt,
 } from './prompts.js';
 import { describeKinds, existingRedactions, redactSecrets } from './redact.js';
+import { recordBuildOutcome, recordStep } from './stats.js';
 
 const MAX_RUNS_KEPT = 30;
 const MAX_OUTPUT = 20_000;
@@ -137,6 +138,7 @@ async function planBuildReview(ctx: CouncilContext, run: CouncilRun, task: strin
     report = `${report}\n\nFix round ${round + 1}:\n${fix.output ?? ''}`;
   }
 
+  recordBuildOutcome(run, verdict);
   const v = verdict === 'approve' ? '✅ Approved' : verdict === 'changes' ? '⚠️ Changes still requested' : review?.status === 'done' ? 'Reviewed (no explicit verdict)' : '⚠️ Not reviewed';
   out.push(`**${v}**${review?.status === 'done' ? ` by ${label(review.member)}` : ''} · built by ${label(builder.member)}${plan?.status === 'done' ? ` · planned by ${label(plan.member)}` : ''}`);
   out.push(`### What changed\n${report || '(no report)'}`);
@@ -393,6 +395,7 @@ async function runStep(ctx: CouncilContext, run: CouncilRun, spec: StepSpec): Pr
     return step;
   } finally {
     step.endedAt = Date.now();
+    recordStep(step, run);
     bus.emit({ type: 'turn_end', sessionId, agent });
     bus.emit({ type: 'agent_status', sessionId, agent, status: step.status === 'error' || step.status === 'limited' ? 'error' : 'idle', detail: step.error?.slice(0, 120) });
     ctx.persist();

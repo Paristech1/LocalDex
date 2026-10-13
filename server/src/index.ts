@@ -9,6 +9,7 @@ import { WebSocketServer, WebSocket } from 'ws';
 import type { ClientEvent, ServerEvent } from '@localdex/shared';
 import { DATA_DIR, applyMcpToggles, expandHome, getSettings, stripCouncilCommands, updateSettings } from './config.js';
 import { MEMBERS, cachedStatuses, memberStatuses } from './council/registry.js';
+import { getStats, resetStats } from './council/stats.js';
 import { listModels } from './lmstudio.js';
 import { createSession, deleteSession, flushAll, getSession, listSessions, saveSession } from './store.js';
 import { bus } from './agent/bus.js';
@@ -160,6 +161,7 @@ wss.on('connection', (ws) => {
   send(ws, { type: 'skills', skills: listSkills() });
   const cached = cachedStatuses();
   if (cached.length) send(ws, { type: 'council_status', members: cached });
+  send(ws, { type: 'council_stats', stats: getStats() });
   void memberStatuses().catch(() => undefined);
   void refreshModels();
 
@@ -241,6 +243,9 @@ async function handle(ws: WebSocket, ev: ClientEvent): Promise<void> {
     }
     case 'council_refresh':
       void memberStatuses(true).catch((e) => send(ws, { type: 'error', message: `Council status check failed: ${(e as Error).message}` }));
+      return;
+    case 'council_stats_reset':
+      resetStats();
       return;
     case 'council_login': {
       // Only members with an official in-app sign-in (Cursor SDK). CLIs sign in from Terminal.
