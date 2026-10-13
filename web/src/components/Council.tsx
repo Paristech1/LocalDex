@@ -476,6 +476,7 @@ export function CouncilSettingsTab({ settings, patch }: TabProps) {
           <Toggle label="Ask me before each member that can edit files" checked={c.confirmWrites} onChange={(v) => setC({ confirmWrites: v })} />
         </div>
         <Toggle label="Subscription only (refuse members signed in with an API key)" checked={c.requirePlanBilling} onChange={(v) => setC({ requirePlanBilling: v })} />
+        <Toggle label="Suggest asking the council when the local model is stuck" checked={c.consultNudges} onChange={(v) => setC({ consultNudges: v })} />
       </div>
       <p className="text-[11px] text-ink-400">
         With edits off, every member is read-only: planners plan, reviewers review, and change requests come back as proposals. Members never get LocalDex's own tools; they use their vendor's tools inside the project folder. To point a member at a specific executable, set <span className="font-mono">council.members.&lt;name&gt;.command</span> in <span className="font-mono">~/.localdex/config.json</span>.

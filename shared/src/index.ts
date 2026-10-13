@@ -209,6 +209,8 @@ export interface CouncilSettings {
   timeoutMinutes: number;
   /** Subscription-only guard: refuse to run a member that is signed in with an API key. */
   requirePlanBilling: boolean;
+  /** Solo mode: suggest asking a council member when the local model is stuck (repeated failures). Default on. */
+  consultNudges: boolean;
 }
 
 export type MemberBilling = 'plan' | 'api' | 'unknown';
@@ -390,6 +392,7 @@ export const DEFAULT_COUNCIL: CouncilSettings = {
   maxFixRounds: 1,
   timeoutMinutes: 20,
   requirePlanBilling: true,
+  consultNudges: true,
 };
 
 export const DEFAULT_CAPABILITIES: Record<ToolName, boolean> = {

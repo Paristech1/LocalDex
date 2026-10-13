@@ -3,6 +3,8 @@ import { streamChat } from '../lmstudio.js';
 import { executeTool } from '../tools/index.js';
 import type { CouncilRequest, ToolContext } from '../tools/types.js';
 import { bus } from './bus.js';
+import { getSettings } from '../config.js';
+import { ConsultNudger, consultEnabled } from './consultNudge.js';
 
 export type StopReason = 'done' | 'max_steps' | 'aborted' | 'error';
 
@@ -54,6 +56,13 @@ export async function runLoop(p: LoopParams): Promise<LoopResult> {
   let lastText = '';
   let consecutiveFailures = 0;
   let nudges = 0;
+  const consult = new ConsultNudger(
+    consultEnabled({
+      councilAvailable: !!p.council,
+      toolNames: p.tools.map((t) => t.function.name),
+      setting: getSettings().council.consultNudges,
+    }),
+  );
 
   for (let step = 0; step < p.maxSteps; step++) {
     if (p.signal.aborted) return { text: lastText, steps: step, reason: 'aborted' };
@@ -154,14 +163,18 @@ export async function runLoop(p: LoopParams): Promise<LoopResult> {
     p.onPersist?.();
     if (p.signal.aborted) return { text: lastText, steps: step + 1, reason: 'aborted' };
 
+    const repeatHint = consult.observe(outcomes.map((o) => ({ name: o.call.function.name, args: o.call.function.arguments, ok: o.ok })));
     consecutiveFailures = allFailed ? consecutiveFailures + 1 : 0;
     if (consecutiveFailures >= MAX_CONSECUTIVE_FAILURES) {
       p.messages.push({
         role: 'user',
-        content: `[system] ${consecutiveFailures} tool calls in a row failed. Stop retrying the same thing: explain the problem to the user and ask how to proceed, or try a clearly different approach.`,
+        content: `[system] ${consecutiveFailures} tool calls in a row failed. Stop retrying the same thing: explain the problem to the user and ask how to proceed, or try a clearly different approach.${consult.failuresHint()}`,
         ts: Date.now(),
       });
       consecutiveFailures = 0;
+    } else if (repeatHint) {
+      bus.log('info', `[${agent}] suggested asking the council (same command failed after edits)`);
+      p.messages.push({ role: 'user', content: repeatHint, ts: Date.now() });
     }
   }
 
