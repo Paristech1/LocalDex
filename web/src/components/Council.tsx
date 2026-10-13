@@ -12,6 +12,7 @@ import {
   type CouncilRun,
   type CouncilSettings,
   type CouncilStep,
+  type CouncilWorktree,
   type MemberId,
   type MemberStatus,
   type Settings,
@@ -150,6 +151,11 @@ export function CouncilRunCard({ run, defaultOpen, compact }: { run: CouncilRun;
           {run.steps.length === 0 && running && <span className="text-[11px] text-ink-400 pulse">routing…</span>}
         </div>
       </button>
+      {run.worktree && !running && (
+        <div className="px-3 pb-2">
+          <WorktreeBox run={run} worktree={run.worktree} />
+        </div>
+      )}
       {open && (
         <div className="border-t border-ink-700 px-3 py-2 space-y-2">
           {run.routeNote && <div className="text-[11px] text-ink-400">router: {run.routeNote}</div>}
@@ -164,6 +170,99 @@ export function CouncilRunCard({ run, defaultOpen, compact }: { run: CouncilRun;
         </div>
       )}
     </div>
+  );
+}
+
+// ---------- changes waiting in a separate copy ----------
+
+const WT_LABEL: Record<CouncilWorktree['status'], string> = {
+  pending: 'Changes waiting',
+  applied: 'Changes applied',
+  discarded: 'Changes discarded',
+  conflict: "Couldn't apply",
+};
+
+/** Builder edits that went to a separate copy (git worktree): file list, diff, Apply / Discard. */
+function WorktreeBox({ run, worktree: wt }: { run: CouncilRun; worktree: CouncilWorktree }) {
+  const sessionId = useStore((s) => s.session?.id);
+  const [showDiff, setShowDiff] = useState(false);
+  const [busy, setBusy] = useState<'apply' | 'discard' | null>(null);
+  useEffect(() => setBusy(null), [wt.status, wt.error]);
+  const open = wt.status === 'pending' || wt.status === 'conflict';
+  const act = (kind: 'apply' | 'discard') => {
+    if (!sessionId) return;
+    setBusy(kind);
+    send({ type: kind === 'apply' ? 'council_apply' : 'council_discard', sessionId, runId: run.id });
+  };
+  const tone = wt.status === 'applied' ? 'border-accent/40' : wt.status === 'conflict' ? 'border-danger/40' : wt.status === 'discarded' ? 'border-ink-700' : 'border-warn/40';
+  return (
+    <div className={cx('rounded-md border bg-ink-950/50 px-2.5 py-2 space-y-1.5', tone)}>
+      <div className="flex items-center gap-2 text-xs">
+        <span className={cx('font-medium', wt.status === 'applied' ? 'text-accent' : wt.status === 'conflict' ? 'text-danger' : wt.status === 'discarded' ? 'text-ink-400' : 'text-warn')}>
+          {WT_LABEL[wt.status]}
+        </span>
+        <span className="text-[11px] text-ink-400">
+          {wt.files.length} file{wt.files.length === 1 ? '' : 's'}
+        </span>
+        <span className="flex-1" />
+        <span className="font-mono text-[10px] text-ink-500 truncate max-w-[12rem]" title={`Separate copy: ${wt.path}\nBranch: ${wt.branch}`}>
+          {wt.branch}
+        </span>
+      </div>
+      {wt.status === 'pending' && <div className="text-[11px] text-ink-300">The builder worked in a separate copy. Nothing in your folder has changed yet.</div>}
+      {wt.status === 'applied' && <div className="text-[11px] text-ink-300">Now in {wt.projectDir} as uncommitted changes. Review them in git, then commit.</div>}
+      {wt.status === 'discarded' && <div className="text-[11px] text-ink-400">The separate copy and its branch were removed.</div>}
+      {wt.error && <div className="text-[11px] text-danger whitespace-pre-wrap break-words">{wt.error}</div>}
+      {wt.note && open && <div className="text-[11px] text-warn">{wt.note}</div>}
+      {wt.status !== 'discarded' && wt.files.length > 0 && (
+        <ul className="font-mono text-[11px] text-ink-200 max-h-32 overflow-y-auto">
+          {wt.files.map((f) => (
+            <li key={f} className="truncate" title={f}>
+              {f}
+            </li>
+          ))}
+        </ul>
+      )}
+      {wt.status !== 'discarded' && wt.diffStat && (
+        <div>
+          <button type="button" className="text-[11px] text-ink-400 hover:text-ink-200" onClick={() => setShowDiff((d) => !d)}>
+            {showDiff ? '▾' : '▸'} {wt.diffStat.trim().split('\n').at(-1)?.trim() || 'diff'}
+          </button>
+          {showDiff && (
+            <pre className="mt-1 max-h-80 overflow-auto rounded border border-ink-800 bg-ink-950 px-2 py-1.5 font-mono text-[11px] leading-4 text-ink-200 whitespace-pre">
+              {(wt.diff || wt.diffStat).split('\n').map((l, i) => (
+                <div key={i} className={cx(l.startsWith('+') && !l.startsWith('+++') ? 'text-accent' : l.startsWith('-') && !l.startsWith('---') ? 'text-danger' : l.startsWith('@@') ? 'text-[#7cc0f2]' : '')}>
+                  {l || ' '}
+                </div>
+              ))}
+            </pre>
+          )}
+        </div>
+      )}
+      {open && (
+        <div className="flex items-center gap-2 pt-0.5">
+          <Button size="sm" variant="primary" disabled={!!busy || !sessionId} onClick={() => act('apply')} title={`Copy these changes into ${wt.projectDir} as uncommitted changes`}>
+            {busy === 'apply' ? 'Applying…' : wt.status === 'conflict' ? 'Try again' : 'Apply to my folder'}
+          </Button>
+          <Button size="sm" variant="danger" disabled={!!busy || !sessionId} onClick={() => act('discard')} title="Remove the separate copy and its branch">
+            {busy === 'discard' ? 'Discarding…' : 'Discard'}
+          </Button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** Small chip on a council answer in the chat: changes waiting / applied / discarded. */
+export function WorktreeChip({ runId }: { runId: string }) {
+  const wt = useStore((s) => s.session?.councilRuns?.find((r) => r.id === runId)?.worktree);
+  if (!wt) return null;
+  const cls =
+    wt.status === 'applied' ? 'border-accent/40 text-accent' : wt.status === 'conflict' ? 'border-danger/40 text-danger' : wt.status === 'discarded' ? 'border-ink-600 text-ink-400' : 'border-warn/40 text-warn';
+  return (
+    <span className={cx('inline-flex items-center gap-1 rounded border px-1.5 py-px text-[10px] mb-1', cls)} title="Open the run in the Council panel to review, apply or discard">
+      {WT_LABEL[wt.status]} · {wt.files.length} file{wt.files.length === 1 ? '' : 's'}
+    </span>
   );
 }
 
@@ -719,10 +818,16 @@ export function CouncilSettingsTab({ settings, patch }: TabProps) {
         <Toggle label="Remove secrets before sending to members" checked={c.redactSecrets !== false} onChange={(v) => setC({ redactSecrets: v })} />
         <Toggle label="Suggest asking the council when the local model is stuck" checked={c.consultNudges} onChange={(v) => setC({ consultNudges: v })} />
         <Toggle label="Continue a member's own session on follow-up messages" checked={c.continueSessions !== false} onChange={(v) => setC({ continueSessions: v })} />
+        <div className={cx(!c.allowWrite && 'opacity-40 pointer-events-none')}>
+          <Toggle label="Builders edit a separate copy; I apply the changes" checked={c.builderWorktree !== false} onChange={(v) => setC({ builderWorktree: v })} />
+        </div>
       </div>
       <p className="text-[11px] text-ink-400">
         Blind ranking adds one extra read-only run per adviser in each vote: every adviser sees all answers as Response A, B, C… without names, ranks them, and the judge gets the combined ranking.
         When you follow up with the same member in Council mode, it picks up its own earlier session (files it read, its reasoning) and gets only your new message instead of the pasted chat history. Plan → build → review and votes always start fresh.
+      </p>
+      <p className="text-[11px] text-ink-400">
+        With a separate copy, builders work in a git worktree of your project (made from your last commit, kept in LocalDex's data folder). Checks and reviewers run there too. When the run ends you see the diff and choose Apply to my folder (uncommitted changes, nothing is committed) or Discard. Folders that aren't git repos are edited directly. The local model always edits your folder directly.
       </p>
       <p className="text-[11px] text-ink-400">
         Removing secrets replaces API keys, tokens, passwords and private keys in prompts, chat history and diffs with [REDACTED] before they reach a cloud member. Members can still open files in the project folder themselves.

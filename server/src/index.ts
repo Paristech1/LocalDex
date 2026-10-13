@@ -10,6 +10,8 @@ import type { ClientEvent, ServerEvent } from '@localdex/shared';
 import { DATA_DIR, applyMcpToggles, expandHome, getSettings, stripCouncilCommands, updateSettings } from './config.js';
 import { MEMBERS, cachedStatuses, memberStatuses } from './council/registry.js';
 import { getStats, resetStats } from './council/stats.js';
+import { cleanupStaleWorktrees } from './council/worktrees.js';
+import { applyRunChanges, discardRunChanges } from './council/orchestrator.js';
 import { listModels } from './lmstudio.js';
 import { createSession, deleteSession, flushAll, getSession, listSessions, saveSession } from './store.js';
 import { bus } from './agent/bus.js';
@@ -110,6 +112,13 @@ const server = serve({ fetch: app.fetch, port: PORT, hostname: BIND_HOST }, () =
   console.log(`Data dir         →  ${DATA_DIR}`);
   console.log(`LM Studio        →  ${getSettings().baseUrl}`);
   void reloadMcp();
+  // Builder copies that were applied or discarded more than a week ago.
+  try {
+    const n = cleanupStaleWorktrees();
+    if (n) console.log(`Council          →  removed ${n} old separate cop${n === 1 ? 'y' : 'ies'}`);
+  } catch (e) {
+    console.warn(`Council: worktree cleanup failed: ${(e as Error).message}`);
+  }
 });
 
 // ---------- WebSocket ----------
@@ -250,6 +259,18 @@ async function handle(ws: WebSocket, ev: ClientEvent): Promise<void> {
     case 'council_new_conversation': {
       const s = getSession(ev.sessionId);
       if (s) runnerFor(s).clearMemberSessions();
+      return;
+    }
+    case 'council_apply':
+    case 'council_discard': {
+      const s = getSession(ev.sessionId);
+      const run = s?.councilRuns?.find((r) => r.id === ev.runId);
+      if (!s || !run?.worktree) return send(ws, { type: 'error', message: 'No waiting changes for that council run.' });
+      if (run.status === 'running') return send(ws, { type: 'error', sessionId: s.id, message: 'Wait for the council run to finish first.' });
+      const wt = ev.type === 'council_apply' ? applyRunChanges(run) : discardRunChanges(run);
+      saveSession(s);
+      bus.emit({ type: 'session', session: s });
+      if (wt?.error) bus.log('warn', `[council] ${wt.error}`);
       return;
     }
     case 'council_login': {

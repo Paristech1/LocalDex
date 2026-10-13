@@ -117,7 +117,7 @@ export class SessionRunner {
       const now = Date.now();
       s.messages.push({ role: 'assistant', content: null, tool_calls: [{ id: callId, type: 'function', function: { name: 'council', arguments: JSON.stringify({ pattern: run.pattern, task: asked }) } }], ts: now });
       s.messages.push({ role: 'tool', tool_call_id: callId, name: 'council', content: runSummary(run), ok: run.status === 'done', ts: now });
-      s.messages.push({ role: 'assistant', content: run.result ?? '(no result)', via: runVia(run), ts: now });
+      s.messages.push({ role: 'assistant', content: run.result ?? '(no result)', via: runVia(run), councilRunId: run.id, ts: now });
     } catch (e) {
       const msg = (e as Error).message;
       if (!ac.signal.aborted) {
