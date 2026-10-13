@@ -7,10 +7,11 @@ import type {
   CouncilRole,
   CouncilRun,
   CouncilStep,
+  MemberId,
   MemberStatus,
   Session,
 } from '@localdex/shared';
-import { isBuilderRole } from '@localdex/shared';
+import { isBuilderRole, quorumLabel } from '@localdex/shared';
 import { getSettings } from '../config.js';
 import { bus } from '../agent/bus.js';
 import { approvedFolders } from '../tools/permissions.js';
@@ -35,6 +36,7 @@ const MAX_RUNS_KEPT = 30;
 const MAX_OUTPUT = 20_000;
 const MAX_TRANSCRIPT_ITEMS = 300;
 const MAX_DIFF = 40_000;
+export const DROPPED_AFTER_GRACE = 'Dropped after the grace period (quorum reached)';
 
 export interface CouncilContext {
   session: Session;
@@ -175,7 +177,7 @@ async function vote(ctx: CouncilContext, run: CouncilRun, question: string, stat
   if (voters.length < 2) voters = Array.from(new Set([...voters, ...avail])).slice(0, 3);
   if (voters.length === 0) return noMemberMessage('researcher', statuses);
 
-  const steps = await Promise.all(voters.map((m) => runStep(ctx, run, { role: 'voter', member: m, access: 'read', prompt: votePrompt(question), note: 'vote' })));
+  const steps = await collectVotes(ctx, run, voters, votePrompt(question));
   const answers = steps.filter((s) => s.status === 'done' && s.output).map((s) => ({ member: label(s.member), text: s.output! }));
   if (ctx.signal.aborted) return 'Cancelled.';
   if (answers.length === 0) return `No adviser answered.\n\n${steps.map((s) => `- ${label(s.member)}: ${s.error ?? s.status}`).join('\n')}`;
@@ -192,6 +194,49 @@ async function vote(ctx: CouncilContext, run: CouncilRun, question: string, stat
     verdict ? `### Council verdict (${label(judge!)})\n${verdict}` : '### Council answers (no judge available)',
     ...answers.map((a) => `### ${a.member}\n${a.text}`),
   ].join('\n\n');
+}
+
+/**
+ * Vote stage 1: ask every voter in parallel. Once `voteQuorum` of them have answered, the others get
+ * `voteGraceSeconds` more; any still running then are stopped (only them) and marked cancelled.
+ * If quorum is never reached (errors, limits) everyone is awaited as usual. Returns the finished steps in voter order.
+ */
+async function collectVotes(ctx: CouncilContext, run: CouncilRun, voters: MemberId[], prompt: string): Promise<CouncilStep[]> {
+  const c = getSettings().council;
+  const needed = clampInt(c.voteQuorum, 1, voters.length, 2);
+  const graceSeconds = clampInt(c.voteGraceSeconds, 0, 600, 30);
+  const quorum = (run.quorum = { needed, of: voters.length, dropped: 0, graceSeconds });
+  const controllers = voters.map(() => new AbortController());
+  const finished = voters.map(() => false);
+  let answered = 0;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const dropStragglers = () => {
+    controllers.forEach((ac, i) => {
+      if (!finished[i]) ac.abort(DROPPED_AFTER_GRACE);
+    });
+  };
+  try {
+    const steps = await Promise.all(
+      voters.map(async (member, i) => {
+        const step = await runStep(ctx, run, { role: 'voter', member, access: 'read', prompt, note: 'vote', signal: controllers[i].signal });
+        finished[i] = true;
+        if (step.status === 'done' && step.output && ++answered === needed && finished.includes(false)) {
+          timer = setTimeout(dropStragglers, graceSeconds * 1000);
+        }
+        return step;
+      }),
+    );
+    // Counted from the outcome, so a voter that finished just as the timer fired is not reported as dropped.
+    quorum.dropped = steps.filter((s) => s.status === 'cancelled' && s.error === DROPPED_AFTER_GRACE).length;
+    return steps;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+function clampInt(v: unknown, min: number, max: number, fallback: number): number {
+  const n = Number.isFinite(Number(v)) ? Math.round(Number(v)) : fallback;
+  return Math.max(min, Math.min(max, n));
 }
 
 // ---------- steps ----------
@@ -261,6 +306,8 @@ interface StepSpec {
   access: CouncilAccess;
   prompt: string;
   note?: string;
+  /** Stops just this step (e.g. a vote straggler). Combined with ctx.signal; a string abort reason becomes the step's error. */
+  signal?: AbortSignal;
 }
 
 async function runStep(ctx: CouncilContext, run: CouncilRun, spec: StepSpec): Promise<CouncilStep> {
@@ -339,10 +386,12 @@ async function runStep(ctx: CouncilContext, run: CouncilRun, spec: StepSpec): Pr
     // Cloud members only: the prompt leaves this machine, so credentials in it are replaced first.
     const prompt = c.redactSecrets !== false ? redactForCloud(spec.prompt, step) : spec.prompt;
 
-    // Child controller so a mid-run billing surprise can stop just this member.
+    // Child controller so a mid-run billing surprise (or the step's own signal) can stop just this member.
     const ac = new AbortController();
     const onParentAbort = () => ac.abort();
     ctx.signal.addEventListener('abort', onParentAbort, { once: true });
+    spec.signal?.addEventListener('abort', onParentAbort, { once: true });
+    if (spec.signal?.aborted) ac.abort();
     let billingAbort = '';
 
     const res = await MEMBERS[spec.member].run({
@@ -395,6 +444,7 @@ async function runStep(ctx: CouncilContext, run: CouncilRun, spec: StepSpec): Pr
       },
     });
     ctx.signal.removeEventListener('abort', onParentAbort);
+    spec.signal?.removeEventListener('abort', onParentAbort);
 
     step.billing = step.billing ?? res.billing;
     if (res.model) step.model = res.model;
@@ -406,9 +456,10 @@ async function runStep(ctx: CouncilContext, run: CouncilRun, spec: StepSpec): Pr
     } else if (res.ok) {
       step.status = 'done';
       noteError(spec.member, undefined);
-    } else if (res.cancelled || ctx.signal.aborted) {
+    } else if (res.cancelled || ctx.signal.aborted || spec.signal?.aborted) {
       step.status = 'cancelled';
-      step.error = res.error;
+      step.error = stoppedReason(ctx, spec) ?? res.error;
+      if (step.error && step.error !== res.error) pushItem({ kind: 'note', text: step.error });
     } else if (res.limited) {
       step.status = 'limited';
       step.error = res.error;
@@ -420,8 +471,8 @@ async function runStep(ctx: CouncilContext, run: CouncilRun, spec: StepSpec): Pr
     }
     return step;
   } catch (e) {
-    step.status = ctx.signal.aborted ? 'cancelled' : 'error';
-    step.error = (e as Error).message;
+    step.status = ctx.signal.aborted || spec.signal?.aborted ? 'cancelled' : 'error';
+    step.error = (step.status === 'cancelled' && stoppedReason(ctx, spec)) || (e as Error).message;
     return step;
   } finally {
     step.endedAt = Date.now();
@@ -430,6 +481,12 @@ async function runStep(ctx: CouncilContext, run: CouncilRun, spec: StepSpec): Pr
     bus.emit({ type: 'agent_status', sessionId, agent, status: step.status === 'error' || step.status === 'limited' ? 'error' : 'idle', detail: step.error?.slice(0, 120) });
     ctx.persist();
   }
+}
+
+/** Why the step's own signal stopped it (e.g. dropped after the vote grace period); a user Stop wins. */
+function stoppedReason(ctx: CouncilContext, spec: StepSpec): string | undefined {
+  if (ctx.signal.aborted || !spec.signal?.aborted) return undefined;
+  return typeof spec.signal.reason === 'string' ? spec.signal.reason : undefined;
 }
 
 /**
@@ -503,7 +560,7 @@ export function runVia(run: CouncilRun): string {
 export function runSummary(run: CouncilRun): string {
   const dur = (s: CouncilStep) => (s.startedAt && s.endedAt ? ` · ${Math.round((s.endedAt - s.startedAt) / 1000)}s` : '');
   return [
-    `pattern: ${run.pattern}${run.routeNote ? ` (${run.routeNote})` : ''}${run.risk ? ` · risk: ${run.risk}${run.riskReasons?.length ? ` (${run.riskReasons.join(', ')})` : ''}` : ''}`,
+    `pattern: ${run.pattern}${run.routeNote ? ` (${run.routeNote})` : ''}${run.risk ? ` · risk: ${run.risk}${run.riskReasons?.length ? ` (${run.riskReasons.join(', ')})` : ''}` : ''}${run.quorum ? ` · ${quorumLabel(run.quorum)}` : ''}`,
     ...run.steps.map((s) => `${s.status === 'done' ? '✓' : s.status === 'limited' ? '⏳' : s.status === 'cancelled' ? '■' : '✗'} ${s.role} → ${label(s.member)}${s.model ? ` (${s.model})` : ''} [${s.access}]${dur(s)}${s.error ? ` — ${s.error.slice(0, 200)}` : ''}`),
   ].join('\n');
 }

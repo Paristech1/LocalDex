@@ -432,6 +432,55 @@ run = await runCouncil(ctx(), { pattern: 'single', role: 'backend', member: 'cod
 check('edits off: backend builder is read-only too', run.steps[0].access === 'read' && approvals === 0);
 updateSettings({ council: { ...getSettings().council, allowWrite: true } });
 
+// ---------- vote quorum + grace timer ----------
+{
+  const prev = getSettings().council;
+  updateSettings({ council: { ...prev, voteMembers: ['claude', 'codex', 'gemini'], judge: 'claude', voteQuorum: 2, voteGraceSeconds: 1 } });
+
+  // One slow adviser: dropped after the grace period, the others' answers are judged.
+  reset(); flag('gemini_slow', true);
+  const t0 = Date.now();
+  run = await runCouncil(ctx(), { pattern: 'vote', role: 'researcher', task: 'zod or valibot?', note: 'test' });
+  const took = Date.now() - t0;
+  const voters = run.steps.filter((s: any) => s.role === 'voter');
+  const g = voters.find((s: any) => s.member === 'gemini');
+  const answered = voters.filter((s: any) => s.status === 'done').map((s: any) => s.member).sort().join(',');
+  const judgeStep = run.steps.find((s: any) => s.role === 'judge');
+  const judgeIn = JSON.parse(fs.readFileSync(path.join(CTL, 'claude.last.json'), 'utf8')).prompt as string;
+  console.log(runSummary(run));
+  check('quorum: claude + codex answers used', answered === 'claude,codex', answered);
+  check('quorum: gemini cancelled with the grace note', g?.status === 'cancelled' && g?.error === 'Dropped after the grace period (quorum reached)', `${g?.status} ${g?.error}`);
+  check('quorum: run finished well under 15s', took < 10_000 && run.status === 'done', `${took}ms`);
+  check('quorum: judge ran with 2 answers', judgeStep?.status === 'done' && /Adviser 2/.test(judgeIn) && !/Adviser 3/.test(judgeIn) && !/tree-shakeable/.test(judgeIn));
+  const pid = Number(fs.readFileSync(path.join(CTL, 'gemini.pid'), 'utf8'));
+  let alive = true;
+  try { process.kill(pid, 0); } catch { alive = false; }
+  check('quorum: dropped gemini process was killed', pid > 0 && !alive, `pid ${pid}`);
+  check('quorum: run records 1 dropped, summary shows it', run.quorum?.needed === 2 && run.quorum?.of === 3 && run.quorum?.dropped === 1 && /Quorum 2\/3 · 1 dropped after 1s/.test(runSummary(run)));
+
+  // All fast: nothing dropped, all three answers judged.
+  reset();
+  run = await runCouncil(ctx(), { pattern: 'vote', role: 'researcher', task: 'zod or valibot?', note: 'test' });
+  const fastJudge = JSON.parse(fs.readFileSync(path.join(CTL, 'claude.last.json'), 'utf8')).prompt as string;
+  check('quorum: no drop when all advisers are fast', run.steps.filter((s: any) => s.role === 'voter' && s.status === 'done').length === 3 && run.quorum?.dropped === 0 && /Adviser 3/.test(fastJudge) && /Quorum 2\/3$/m.test(runSummary(run).split('\n')[0]));
+
+  // Fewer than quorum succeed (gemini limited, quorum 3): everyone is awaited, nothing dropped.
+  reset(); flag('gemini_limit', true);
+  updateSettings({ council: { ...getSettings().council, voteQuorum: 3 } });
+  run = await runCouncil(ctx(), { pattern: 'vote', role: 'researcher', task: 'zod or valibot?', note: 'test' });
+  check('quorum: not reached → no drops, others still answer', run.quorum?.dropped === 0 && run.steps.filter((s: any) => s.role === 'voter' && s.status === 'done').length === 2);
+
+  // User Stop still cancels every voter.
+  reset(); flag('gemini_slow', true);
+  updateSettings({ council: { ...getSettings().council, voteQuorum: 2, voteGraceSeconds: 600 } });
+  const stop = new AbortController();
+  setTimeout(() => stop.abort(), 800);
+  run = await runCouncil(ctx(stop.signal), { pattern: 'vote', role: 'researcher', task: 'zod or valibot?', note: 'test' });
+  check('quorum: Stop cancels the whole vote', run.status === 'cancelled' && run.steps.every((s: any) => s.status === 'cancelled' || s.status === 'done') && !run.steps.some((s: any) => s.role === 'judge'), run.steps.map((s: any) => `${s.member}:${s.status}`).join(' '));
+
+  updateSettings({ council: prev });
+}
+
 console.log(`\n${pass} passed, ${fail} failed. events: ${JSON.stringify(events)}`);
 reset();
 process.exit(fail ? 1 : 0);
