@@ -10,6 +10,8 @@ export interface Route {
   role: CouncilRole;
   /** Forced member for 'single' (from /ask <member>). */
   member?: CouncilMemberRef;
+  /** Arena: contestants the user named (/arena claude codex …); the rest are picked by the builder role's order. */
+  members?: CouncilMemberRef[];
   task: string;
   note: string;
   /** Risk rating from `assessRisk`; computed from the task when missing. */
@@ -112,6 +114,25 @@ export function parseCommand(text: string): Route | null {
     case 'build':
     case 'team':
       return { pattern: 'plan_build_review', role: domainBuilder(rest).role, task: rest, note: `/${cmd} → plan → build → review` };
+    case 'arena': {
+      // Up to two leading member names choose the contestants; the orchestrator checks they can build.
+      const members: CouncilMemberRef[] = [];
+      let task = rest;
+      while (members.length < 2) {
+        const who = task.match(/^(\w+)\s+([\s\S]+)$/);
+        const ref = who ? MEMBER_ALIASES[who[1].toLowerCase()] : undefined;
+        if (!who || !ref) break;
+        members.push(ref);
+        task = who[2].trim();
+      }
+      return {
+        pattern: 'arena',
+        role: domainBuilder(task).role,
+        task,
+        ...(members.length ? { members } : {}),
+        note: `/arena → ${members.length ? members.join(' vs ') : 'two builders'} race in separate copies`,
+      };
+    }
     case 'second':
       return { pattern: 'second_opinion', role: domainBuilder(rest).role, task: rest, note: '/second → build + critique' };
     case 'frontend':

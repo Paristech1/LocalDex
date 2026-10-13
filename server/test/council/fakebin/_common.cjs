@@ -18,7 +18,7 @@ exports.answer = (role, who, prompt) => {
     case 'reviewer': if (exports.flag('review_no_verdict')) return `The sliding window looks plausible, but I am unsure about the window size. (${who})`;
       return exports.flag('review_changes') && !fs.existsSync(path.join(CTL, 'reviewed_once')) ? (fs.writeFileSync(path.join(CTL, 'reviewed_once'), '1'), `VERDICT: CHANGES_REQUESTED\n- src/rateLimit.ts:8 — timestamps are never evicted, so the map grows forever. Drop entries older than the window on each call.`) : `VERDICT: APPROVE\nThe sliding window is correct and the test covers both sides of the limit. Minor: consider making the window configurable later. (${who})`;
     case 'qa': return exports.flag('qa_fail_once') && !fs.existsSync(path.join(CTL, 'qa_failed_once')) ? (fs.writeFileSync(path.join(CTL, 'qa_failed_once'), '1'), `1. \`rateLimit(0)\` lets every request through.\n   Repro: \`rateLimit(0)('1.2.3.4')\` → expected false, got true.\n\nQA: FAIL`) : `Tried max=0, max=1, bursts at the window edge and many IPs; nothing broke. (${who})\n\nQA: PASS`;
-    case 'judge': return `**Agreement:** All advisers prefer **zod** for this codebase: it is already a transitive dependency and has the larger ecosystem.\n\n**Disagreement:** Gemini notes valibot's smaller bundle matters for the web client.\n\n**Recommendation:** Use zod on the server now; revisit valibot only if the web bundle size becomes a problem.`;
+    case 'judge': if (/^ARENA:/m.test(prompt)) return exports.arenaAnswer(prompt); return `**Agreement:** All advisers prefer **zod** for this codebase: it is already a transitive dependency and has the larger ecosystem.\n\n**Disagreement:** Gemini notes valibot's smaller bundle matters for the web client.\n\n**Recommendation:** Use zod on the server now; revisit valibot only if the web bundle size becomes a problem.`;
     case 'voter': return who === 'gemini' ? `Valibot is tree-shakeable and much smaller in the browser, but zod is fine on the server. (gemini)\n\nBottom line: zod for the server, consider valibot for the web bundle.` : `Zod: mature, great TypeScript inference, huge ecosystem, already used by your MCP dependency.\n\nBottom line: zod.\n— ${who}`;
     case 'peer': return exports.peerAnswer(who, prompt);
     case 'researcher': return `\`src/math.ts\` exports a single \`add(a, b)\` function; nothing imports it yet. The README is a one-line description. (${who})`;
@@ -36,4 +36,11 @@ exports.peerAnswer = (who, prompt) => {
   const notes = letters.map((l) => `Response ${l}: ${zod(l) ? 'clear and decisive.' : 'hedges between two options.'}`).join('\n');
   if (exports.flag('peer_garbage')) return `${notes}\n\nThey are all fine, honestly.`;
   return who === 'codex' ? `${notes}\n\n**Final ranking** - ${order.map((l) => l.toLowerCase()).join(' , ')}` : `${notes}\n\nRANKING: ${order.join(' > ')}`;
+};
+// Arena judge: picks the version whose diff keeps per-IP timestamps (codex's), in the PICK/REASON format.
+exports.arenaAnswer = (prompt) => {
+  const letters = [...prompt.matchAll(/^===== Version ([A-Z]) \(begin\) =====$/gm)].map((m) => m[1]);
+  const body = (l) => (prompt.split(`===== Version ${l} (begin) =====`)[1] || '').split(`===== Version ${l} (end) =====`)[0];
+  const best = letters.find((l) => /new Map/.test(body(l))) || letters[0];
+  return `Version ${best} tracks hits per IP; the other always allows requests.\n\nPICK: ${best}\nREASON: Version ${best} actually limits requests per IP.`;
 };

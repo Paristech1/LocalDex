@@ -1015,6 +1015,99 @@ updateSettings({ council: { ...getSettings().council, allowWrite: true } });
   check('access: none given → Settings (confirm on) ask, no chip', ar.access === undefined && approvals === 1);
 }
 
+// 28. Arena: two builders race on the same task, each in its own copy; the user keeps one
+{
+  console.log('\n# arena');
+  const { applyArenaEntry, discardArena } = await import(`${SRC}/council/orchestrator.ts`);
+  const { worktreesDir } = await import(`${SRC}/council/worktrees.ts`);
+  const sh = (cmd: string, cwd = DEMO) => execSync(cmd, { cwd, encoding: 'utf8' }).trim();
+  const real = (p: string) => fs.realpathSync(p);
+  const lastOf = (m: string) => JSON.parse(fs.readFileSync(path.join(CTL, `${m}.last.json`), 'utf8'));
+  const branchExists = (b: string) => sh(`git branch --list ${b}`) !== '';
+  const headBefore = sh('git rev-parse HEAD');
+  const prev = getSettings().council;
+  const checksFile = path.join(CTL, 'arena-checks.cwd');
+  updateSettings({ council: { ...prev, builderWorktree: false, qaStep: false, checksGate: true, checkCommand: `pwd >> '${checksFile}'` } });
+  let cmds: string[] = [];
+  const off = bus.subscribe((ev: any) => { if (ev.type === 'approval_request') cmds.push(ev.command); });
+
+  // Parsing: opt-in through the command only.
+  const p1 = parseCommand('/arena add a rate limiter')!;
+  const p2 = parseCommand('/arena claude codex add a rate limiter')!;
+  const p3 = parseCommand('/arena gpt fix the README typo')!;
+  check('arena: /arena <task> parses, contestants left to the router', p1.pattern === 'arena' && p1.role === 'builder' && p1.task === 'add a rate limiter' && !p1.members, JSON.stringify(p1));
+  check('arena: /arena claude codex <task> names both contestants', p2.pattern === 'arena' && same(p2.members, ['claude', 'codex']) && p2.task === 'add a rate limiter', JSON.stringify(p2));
+  check('arena: one name picks one contestant (aliases work)', same(p3.members, ['codex']) && p3.task === 'fix the README typo');
+  check('arena: keyword routing never picks arena', ['race two builders on the rate limiter', 'add a rate limiter', 'compare two implementations of the parser'].every((t) => classify(t).pattern !== 'arena'));
+
+  // Full race: cursor vs codex (builder order), gemini judges.
+  reset(); approvals = 0; cmds = [];
+  let run = await runCouncil(ctx(), parseCommand('/arena add a rate limiter')!);
+  console.log(runSummary(run));
+  const [ea, eb] = run.arena?.entries ?? [];
+  check('arena: two contestants from the builder order', run.status === 'done' && ea?.member === 'cursor' && eb?.member === 'codex', JSON.stringify(run.arena?.entries.map((x: any) => `${x.member}:${x.status}`)));
+  check('arena: two copies on branches council/<runId>-<member>', !!ea && !!eb && ea.worktree.branch === `council/${run.id}-cursor` && eb.worktree.branch === `council/${run.id}-codex` && branchExists(ea.worktree.branch) && branchExists(eb.worktree.branch) && real(path.dirname(ea.worktree.path)) === real(worktreesDir()) && ea.worktree.base === headBefore);
+  check('arena: user folder untouched', !fs.existsSync(`${DEMO}/src/rateLimit.ts`) && sh('git status --porcelain') === '' && sh('git rev-parse HEAD') === headBefore);
+  check('arena: each contestant worked in its own copy', real(lastOf('cursor').opts.local.cwd) === real(ea.worktree.cwd) && real(lastOf('codex').cwd) === real(eb.worktree.cwd) && ea.worktree.cwd !== eb.worktree.cwd);
+  check('arena: each copy holds only its own builder\'s version', /\(cursor\)/.test(fs.readFileSync(path.join(ea.worktree.cwd, 'src/rateLimit.ts'), 'utf8')) && /new Map/.test(fs.readFileSync(path.join(eb.worktree.cwd, 'src/rateLimit.ts'), 'utf8')));
+  const builds = run.steps.filter((s: any) => s.role === 'builder');
+  check('arena: builders ran in parallel, both with write access', builds.length === 2 && builds.every((s: any) => s.access === 'write' && s.status === 'done') && builds[0].startedAt < builds[1].endedAt && builds[1].startedAt < builds[0].endedAt);
+  const editAsks = cmds.filter((c) => /edit files/.test(c));
+  check('arena: one edit approval names both copies (checks asked separately)', editAsks.length === 1 && editAsks[0].includes(ea.worktree.cwd) && editAsks[0].includes(eb.worktree.cwd) && /Council arena/.test(editAsks[0]) && cmds.filter((c) => /run the project's checks on/.test(c)).length === 2, cmds.map((c) => c.split('\n')[0]).join(' | '));
+  const checkedIn = fs.existsSync(checksFile) ? fs.readFileSync(checksFile, 'utf8').trim().split('\n').map(real) : [];
+  check('arena: checks ran in each copy', checkedIn.length === 2 && checkedIn.includes(real(ea.worktree.cwd)) && checkedIn.includes(real(eb.worktree.cwd)) && ea.checks?.ok === true && eb.checks?.ok === true, checkedIn.join(' | '));
+  const jp = lastOf('gemini').prompt as string;
+  check('arena: judge (third member) saw both diffs', run.arena.judge === 'gemini' && run.steps.at(-1).role === 'judge' && /\(cursor\)/.test(jp) && /new Map/.test(jp) && /Version A/.test(jp) && /Version B/.test(jp) && !/\bCursor\b|\bCodex\b/.test(jp.split('Task from the user')[1] ?? ''));
+  check('arena: judge picks one with a reason', run.arena.pick === 'codex' && /limits requests per IP/.test(run.arena.reason ?? '') && /Gemini recommends Codex/.test(run.result ?? ''), `${run.arena.pick} ${run.arena.reason}`);
+  check('arena: entries carry diff, files and summary; result says two versions wait', ea.worktree.status === 'pending' && ea.worktree.files.includes('src/rateLimit.ts') && /\+export/.test(eb.worktree.diff ?? '') && /Implemented the plan/.test(eb.summary ?? '') && /Two versions are waiting/.test(run.result ?? '') && !run.worktree);
+
+  // Keep one: codex's file lands, cursor's copy and branch go.
+  let kept = applyArenaEntry(run, 'codex');
+  check('arena keep: chosen version applied to the folder', kept?.status === 'applied' && !kept.error && fs.readFileSync(`${DEMO}/src/rateLimit.ts`, 'utf8') === fs.readFileSync(path.join(eb.worktree.cwd, 'src/rateLimit.ts'), 'utf8') && sh('git status --porcelain') === '?? src/rateLimit.ts' && run.arena.kept === 'codex', kept?.error);
+  check('arena keep: the other copy and branch removed', ea.worktree.status === 'discarded' && !fs.existsSync(ea.worktree.path) && !branchExists(ea.worktree.branch) && !sh('git worktree list').includes(ea.worktree.path));
+  kept = applyArenaEntry(run, 'cursor');
+  check('arena keep: the other version can no longer be applied', !!kept?.error && /already kept Codex/.test(kept.error) && /new Map/.test(fs.readFileSync(`${DEMO}/src/rateLimit.ts`, 'utf8')));
+  discardArena(run);
+
+  // Discard both.
+  reset(); sh(`git reset -q --hard ${headBefore}`);
+  run = await runCouncil(ctx(), parseCommand('/arena add a rate limiter')!);
+  const both = run.arena.entries.map((x: any) => ({ ...x.worktree }));
+  const gone = discardArena(run);
+  check('arena discard both: copies and branches removed, folder untouched', gone.length === 2 && run.arena.entries.every((x: any) => x.worktree.status === 'discarded') && both.every((w: any) => !fs.existsSync(w.path) && !branchExists(w.branch)) && sh('git status --porcelain') === '' && !run.arena.kept);
+
+  // Read-only access: refused before anything runs.
+  reset(); approvals = 0;
+  const branchesBefore = sh('git branch --list "council/*"');
+  run = await runCouncil(ctx(), { ...parseCommand('/arena add a rate limiter')!, access: 'read' });
+  check('arena: refused under read access', run.status === 'error' && /needs file edits/.test(run.result ?? '') && /Read only/.test(run.result ?? '') && run.steps.length === 0 && !run.arena && approvals === 0 && sh('git branch --list "council/*"') === branchesBefore, run.result);
+
+  // Fewer than two members that can build.
+  reset();
+  for (const m of ['cursor', 'codex', 'claude'] as const) markLimited(m, 'Usage limit. Try again in 2 hours.');
+  run = await runCouncil(ctx(), parseCommand('/arena add a rate limiter')!);
+  check('arena: fewer than two members → clear error', run.status === 'error' && /needs two cloud members that can build/.test(run.result ?? '') && /only Gemini is available/.test(run.result ?? '') && !run.arena && run.steps.length === 0, run.result?.split('\n')[0]);
+  reset();
+  run = await runCouncil(ctx(), parseCommand('/arena local codex add a rate limiter')!);
+  check('arena: the local model is refused as a contestant', run.status === 'error' && /local model can't race/.test(run.result ?? '') && !run.arena);
+
+  // Stop cancels both contestants.
+  reset(); flag('codex_slow', true); flag('gemini_slow', true);
+  const stop = new AbortController();
+  setTimeout(() => stop.abort(), 1500);
+  const t0 = Date.now();
+  run = await runCouncil(ctx(stop.signal), parseCommand('/arena codex gemini add a rate limiter')!);
+  const took = Date.now() - t0;
+  const pids = ['codex', 'gemini'].map((m) => Number(fs.readFileSync(path.join(CTL, `${m}.pid`), 'utf8')));
+  const alive = pids.filter((pid) => { try { process.kill(pid, 0); return true; } catch { return false; } });
+  check('arena: Stop cancels both builders', run.status === 'cancelled' && took < 6000 && run.arena.entries.every((x: any) => x.status === 'cancelled') && run.steps.filter((s: any) => s.role === 'builder').length === 2 && run.steps.every((s: any) => s.status === 'cancelled') && !run.steps.some((s: any) => s.role === 'judge') && alive.length === 0, `${took}ms ${run.steps.map((s: any) => `${s.member}:${s.status}`).join(' ')} alive=${alive.length}`);
+  check('arena: copies without changes are removed after Stop', run.arena.entries.every((x: any) => x.worktree.status === 'discarded' && !fs.existsSync(x.worktree.path) && !branchExists(x.worktree.branch)));
+
+  off();
+  reset(); sh(`git reset -q --hard ${headBefore}`);
+  updateSettings({ council: prev });
+}
+
 console.log(`\n${pass} passed, ${fail} failed. events: ${JSON.stringify(events)}`);
 reset();
 process.exit(fail ? 1 : 0);

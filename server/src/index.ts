@@ -6,12 +6,12 @@ import { Hono } from 'hono';
 import { serve } from '@hono/node-server';
 import { serveStatic } from '@hono/node-server/serve-static';
 import { WebSocketServer, WebSocket } from 'ws';
-import type { ClientEvent, CouncilRunAccess, ServerEvent } from '@localdex/shared';
+import type { ClientEvent, CouncilRunAccess, CouncilWorktree, ServerEvent } from '@localdex/shared';
 import { DATA_DIR, applyMcpToggles, expandHome, getSettings, stripCouncilCommands, updateSettings } from './config.js';
 import { MEMBERS, cachedStatuses, memberStatuses } from './council/registry.js';
 import { getStats, resetStats } from './council/stats.js';
 import { cleanupStaleWorktrees } from './council/worktrees.js';
-import { applyRunChanges, discardRunChanges } from './council/orchestrator.js';
+import { applyArenaEntry, applyRunChanges, discardArena, discardRunChanges } from './council/orchestrator.js';
 import { listModels } from './lmstudio.js';
 import { createSession, deleteSession, flushAll, getSession, listSessions, saveSession } from './store.js';
 import { bus } from './agent/bus.js';
@@ -273,12 +273,20 @@ async function handle(ws: WebSocket, ev: ClientEvent): Promise<void> {
     case 'council_discard': {
       const s = getSession(ev.sessionId);
       const run = s?.councilRuns?.find((r) => r.id === ev.runId);
-      if (!s || !run?.worktree) return send(ws, { type: 'error', message: 'No waiting changes for that council run.' });
+      if (!s || !(run?.worktree || run?.arena)) return send(ws, { type: 'error', message: 'No waiting changes for that council run.' });
       if (run.status === 'running') return send(ws, { type: 'error', sessionId: s.id, message: 'Wait for the council run to finish first.' });
-      const wt = ev.type === 'council_apply' ? applyRunChanges(run) : discardRunChanges(run);
+      let wts: Array<CouncilWorktree | undefined>;
+      if (run.arena) {
+        const member = ev.member;
+        if (member && !run.arena.entries.some((x) => x.member === member)) return send(ws, { type: 'error', sessionId: s.id, message: 'That member did not race in this arena.' });
+        if (ev.type === 'council_apply' && !member) return send(ws, { type: 'error', sessionId: s.id, message: 'Pick which version to keep.' });
+        wts = ev.type === 'council_apply' ? [applyArenaEntry(run, member!)] : discardArena(run, member);
+      } else {
+        wts = [ev.type === 'council_apply' ? applyRunChanges(run) : discardRunChanges(run)];
+      }
       saveSession(s);
       bus.emit({ type: 'session', session: s });
-      if (wt?.error) bus.log('warn', `[council] ${wt.error}`);
+      for (const wt of wts) if (wt?.error) bus.log('warn', `[council] ${wt.error}`);
       return;
     }
     case 'council_login': {

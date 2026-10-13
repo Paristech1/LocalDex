@@ -394,6 +394,7 @@ const ESCALATE_LABELS: Record<EscalatePattern, string> = {
   plan_build_review: 'plan → build → review',
   second_opinion: 'second opinion',
   vote: 'vote',
+  arena: 'arena (two builders race)',
 };
 
 /** The user's latest real request: skips notes LocalDex adds itself ([system], [Goal …], [Handed to council] …). */

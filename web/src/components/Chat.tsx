@@ -268,6 +268,7 @@ const ESCALATE_OPTIONS: Array<{ id: EscalatePattern; label: string; hint: string
   { id: 'plan_build_review', label: 'Plan → Build → Review', hint: 'Planned, built and reviewed' },
   { id: 'second_opinion', label: 'Second opinion', hint: 'Built, then critiqued' },
   { id: 'vote', label: 'Vote', hint: 'Independent answers and a judge' },
+  { id: 'arena', label: 'Arena', hint: 'Two builders race in separate copies; you keep one' },
 ];
 
 /** "Hand to council": pick how the council takes over the latest request. */
