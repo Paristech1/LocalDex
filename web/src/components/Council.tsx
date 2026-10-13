@@ -42,10 +42,13 @@ const ROLE_HINT: Record<CouncilRole, string> = {
   frontend: 'Builds UI work: components, CSS, layout (edits like the builder)',
   backend: 'Builds API, database and server work (edits like the builder)',
   reviewer: 'Checks the diff, asks for fixes (read-only)',
+  qa: 'Tries to break approved changes with edge cases (read-only)',
   researcher: 'Answers questions about the codebase (read-only)',
   vision: 'Looks at screenshots and mockups you mention (read-only)',
   quick: 'Short questions (local model first = free)',
 };
+
+const roleName = (role: string) => (role === 'qa' ? 'QA' : role);
 
 export function VendorBadge({ member, dim }: { member: CouncilMemberRef; dim?: boolean }) {
   const m = MEMBER_META[member];
@@ -179,7 +182,7 @@ function StepRow({ step, now, defaultOpen }: { step: CouncilStep; now: number; d
     <div className="rounded-md border border-ink-700 bg-ink-950/40">
       <button type="button" onClick={() => setOpen((o) => !o)} className="w-full text-left px-2.5 py-1.5 flex items-center gap-2 text-xs">
         <span className={cx('w-3 text-center', STEP_STYLE[step.status])}>{STEP_ICON[step.status]}</span>
-        <span className="text-ink-300 w-[68px] shrink-0 capitalize" title={step.role in ROLE_HINT ? ROLE_HINT[step.role as CouncilRole] : undefined}>{step.role}</span>
+        <span className="text-ink-300 w-[68px] shrink-0 capitalize" title={step.role === 'checks' ? "The project's own checks, run on your machine" : step.role in ROLE_HINT ? ROLE_HINT[step.role as CouncilRole] : undefined}>{roleName(step.role)}</span>
         <VendorBadge member={step.member} />
         {step.model && <span className="font-mono text-[10px] text-ink-400 truncate max-w-[90px]">{step.model}</span>}
         <span
@@ -222,7 +225,7 @@ function StepRow({ step, now, defaultOpen }: { step: CouncilStep; now: number; d
             <>
               {step.output && (
                 <div className="text-ink-100 text-[13px] max-h-[50vh] overflow-y-auto">
-                  <Markdown text={step.output} />
+                  {step.role === 'checks' ? <pre className="text-[11px] font-mono whitespace-pre-wrap break-words text-ink-200">{step.output}</pre> : <Markdown text={step.output} />}
                 </div>
               )}
               {running && !step.output && <div className="text-xs text-ink-400 pulse">working…</div>}
@@ -536,7 +539,7 @@ export function CouncilSettingsTab({ settings, patch }: TabProps) {
         {COUNCIL_ROLES.map((role) => (
           <div key={role} className="grid grid-cols-[110px_1fr] gap-3 items-center">
             <div>
-              <div className="text-sm capitalize">{role}</div>
+              <div className="text-sm capitalize">{roleName(role)}</div>
               <div className="text-[10px] text-ink-400 leading-tight">{ROLE_HINT[role]}</div>
             </div>
             <div className="flex gap-1.5">
@@ -601,12 +604,20 @@ export function CouncilSettingsTab({ settings, patch }: TabProps) {
         <Field label="Timeout per member run (minutes)">
           <input type="number" min={1} max={120} className={inputCls} value={c.timeoutMinutes} onChange={(e) => setC({ timeoutMinutes: Math.max(1, Number(e.target.value)) })} />
         </Field>
+        <Field label="Check command" hint="Runs in the project folder after each build, before review. Leave empty to detect typecheck, lint and test scripts, pytest, cargo or go.">
+          <input type="text" className={cx(inputCls, 'font-mono text-xs')} placeholder="auto-detect" value={c.checkCommand ?? ''} disabled={c.checksGate === false} onChange={(e) => setC({ checkCommand: e.target.value })} />
+        </Field>
+        <Field label="Checks timeout (minutes)">
+          <input type="number" min={1} max={120} className={inputCls} value={c.checkTimeoutMinutes ?? 10} disabled={c.checksGate === false} onChange={(e) => setC({ checkTimeoutMinutes: Math.max(1, Math.min(120, Number(e.target.value) || 10)) })} />
+        </Field>
       </div>
       <div className="space-y-1 pt-1">
         <Toggle label="Let builders (builder, frontend, backend) edit files in approved folders" checked={c.allowWrite} onChange={(v) => setC({ allowWrite: v })} />
         <div className={cx(!c.allowWrite && 'opacity-40 pointer-events-none')}>
           <Toggle label="Ask me before each member that can edit files" checked={c.confirmWrites} onChange={(v) => setC({ confirmWrites: v })} />
         </div>
+        <Toggle label="Run the project's checks before review (asks before running)" checked={c.checksGate !== false} onChange={(v) => setC({ checksGate: v })} />
+        <Toggle label="QA tries to break approved changes" checked={c.qaStep !== false} onChange={(v) => setC({ qaStep: v })} />
         <Toggle label="Always plan and review risky changes" checked={c.riskRouting} onChange={(v) => setC({ riskRouting: v })} />
         <Toggle label="Subscription only (refuse members signed in with an API key)" checked={c.requirePlanBilling} onChange={(v) => setC({ requirePlanBilling: v })} />
         <Toggle label="Remove secrets before sending to members" checked={c.redactSecrets !== false} onChange={(v) => setC({ redactSecrets: v })} />

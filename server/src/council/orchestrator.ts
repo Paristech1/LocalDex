@@ -18,16 +18,23 @@ import { MEMBERS, markLimited, memberStatuses, noteError } from './registry.js';
 import { availableMembers, findImageRefs, modelFor, pickMember, unavailableReason, withRisk, type Route } from './router.js';
 import {
   builderPrompt,
+  checksFixPrompt,
+  checksSummary,
   critiquePrompt,
   fixPrompt,
   judgePrompt,
   memberInstructions,
+  parseQaVerdict,
   parseVerdict,
   plannerPrompt,
+  qaFixPrompt,
+  qaPrompt,
+  restateVerdictPrompt,
   reviewerPrompt,
   visionPrompt,
   votePrompt,
 } from './prompts.js';
+import { detectCheckCommand, runChecks, type CheckRun } from './checks.js';
 import { describeKinds, existingRedactions, redactSecrets } from './redact.js';
 import { recordBuildOutcome, recordStep } from './stats.js';
 
@@ -131,28 +138,191 @@ async function planBuildReview(ctx: CouncilContext, run: CouncilRun, task: strin
   }
   if (ctx.signal.aborted) return 'Cancelled.';
 
+  // Each round: project checks → reviewer → QA. The first gate that fails sends the builder into a fix round.
+  const gate = checksGateFor(cwd, accessFor(builderRole));
   let report = builder.output ?? '';
-  let review: CouncilStep | null = null;
-  let verdict: 'approve' | 'changes' | 'unknown' = 'unknown';
-  for (let round = 0; round <= maxFixRounds; round++) {
-    const diff = gitDiffSince(cwd, before);
-    review = await runRole(ctx, run, 'reviewer', 'read', reviewerPrompt(task, report, diff, planText || undefined), statuses, [builder.member]);
-    if (!review || review.status !== 'done') break;
-    verdict = parseVerdict(review.output ?? '');
-    if (verdict !== 'changes' || round === maxFixRounds || ctx.signal.aborted) break;
-    const fix = await runStep(ctx, run, { role: builderRole, member: builder.member, access: accessFor(builderRole), prompt: fixPrompt(task, review.output ?? ''), note: `fix round ${round + 1}` });
+  let g: Gates = { checks: null, review: null, reviewOk: false, reviewMissing: false, qa: null, qaOk: false, qaMissing: false };
+  let fixes = 0;
+  while (!ctx.signal.aborted) {
+    g = { checks: null, review: null, reviewOk: false, reviewMissing: false, qa: null, qaOk: false, qaMissing: false };
+    g.checks = await runChecksStep(ctx, run, gate, fixes);
+    let feedback = '';
+    let why = '';
+    if (g.checks && !g.checks.ok) {
+      feedback = checksFixPrompt(task, g.checks);
+      why = 'checks failed';
+    } else {
+      const checksText = checksSummary(g.checks);
+      const diff = gitDiffSince(cwd, before);
+      g.review = await runRole(ctx, run, 'reviewer', 'read', reviewerPrompt(task, report, diff, planText || undefined, checksText), statuses, [builder.member]);
+      if (!g.review || g.review.status !== 'done') break;
+      ({ ok: g.reviewOk, missing: g.reviewMissing } = await readVerdict(ctx, run, g.review, 'review'));
+      if (!g.reviewOk) {
+        feedback = fixPrompt(task, g.reviewMissing ? `${g.review.output ?? ''}\n\n(The reviewer gave no verdict; treat its notes as requested fixes.)` : g.review.output ?? '');
+        why = g.reviewMissing ? 'no verdict' : '';
+      } else if (c.qaStep && !ctx.signal.aborted) {
+        g.qa = await runRole(ctx, run, 'qa', 'read', qaPrompt(task, report, diff, stripVerdictLine(g.review.output ?? ''), checksText), statuses, [builder.member, g.review.member]);
+        if (g.qa?.status === 'done') {
+          ({ ok: g.qaOk, missing: g.qaMissing } = await readVerdict(ctx, run, g.qa, 'qa'));
+          if (!g.qaOk) {
+            feedback = qaFixPrompt(task, g.qa.output ?? '');
+            why = 'QA';
+          }
+        }
+      }
+    }
+    if (!feedback || fixes >= maxFixRounds || ctx.signal.aborted) break;
+    fixes++;
+    const fix = await runStep(ctx, run, { role: builderRole, member: builder.member, access: accessFor(builderRole), prompt: feedback, note: `fix round ${fixes}${why ? ` (${why})` : ''}` });
     if (fix.status !== 'done') break;
     builder = fix;
-    report = `${report}\n\nFix round ${round + 1}:\n${fix.output ?? ''}`;
+    report = `${report}\n\nFix round ${fixes}:\n${fix.output ?? ''}`;
   }
 
-  recordBuildOutcome(run, verdict);
-  const v = verdict === 'approve' ? '✅ Approved' : verdict === 'changes' ? '⚠️ Changes still requested' : review?.status === 'done' ? 'Reviewed (no explicit verdict)' : '⚠️ Not reviewed';
-  out.push(`**${v}**${review?.status === 'done' ? ` by ${label(review.member)}` : ''} · built by ${label(builder.member)}${plan?.status === 'done' ? ` · planned by ${label(plan.member)}` : ''}`);
+  recordBuildOutcome(run, overallVerdict(g));
+  out.push(`**${gatesHeader(g, gate, c.qaStep)}** · built by ${label(builder.member)}${plan?.status === 'done' ? ` · planned by ${label(plan.member)}` : ''}`);
   out.push(`### What changed\n${report || '(no report)'}`);
-  if (review?.status === 'done') out.push(`### Review\n${(review.output ?? '').replace(/^\s*VERDICT:\s*\S+\s*\n?/i, '').trim()}`);
+  if (g.checks) out.push(`### Checks\n\`${g.checks.command}\` ${g.checks.ok ? 'passed' : g.checks.timedOut ? 'timed out' : `failed (exit ${g.checks.code ?? 'killed'})`}${g.checks.tail.trim() ? `\n\n\`\`\`\n${g.checks.tail.trim().slice(-1_500)}\n\`\`\`` : ''}`);
+  if (g.review?.status === 'done') out.push(`### Review\n${stripVerdictLine(g.review.output ?? '')}`);
+  if (g.qa?.status === 'done') out.push(`### QA\n${(g.qa.output ?? '').trim()}`);
   if (planText) out.push(`### Plan\n${planText}`);
   return out.join('\n\n');
+}
+
+// ---------- plan → build → review gates: project checks, verdicts, QA ----------
+
+interface Gates {
+  checks: CheckRun | null;
+  review: CouncilStep | null;
+  reviewOk: boolean;
+  /** The reviewer gave no readable verdict, even when asked again (counts as changes requested). */
+  reviewMissing: boolean;
+  qa: CouncilStep | null;
+  qaOk: boolean;
+  qaMissing: boolean;
+}
+
+interface ChecksGate {
+  /** '' = nothing to run (no checks found, or the builder could not edit files). */
+  command: string;
+  source: 'settings' | 'detected';
+  /** The user declined running the checks once; they are skipped for the rest of the run. */
+  declined: boolean;
+}
+
+function checksGateFor(cwd: string, builderAccess: CouncilAccess): ChecksGate {
+  // A read-only builder changed nothing, so there is nothing new to check.
+  const c = getSettings().council;
+  if (builderAccess !== 'write' || c.checksGate === false) return { command: '', source: 'detected', declined: false };
+  const custom = (c.checkCommand ?? '').trim();
+  return { command: custom || detectCheckCommand(cwd), source: custom ? 'settings' : 'detected', declined: false };
+}
+
+/**
+ * Run the project's checks as their own step (member 'local'). Commands run on the user's machine,
+ * so the user approves each run unless shell approval is set to "never". Returns null when nothing ran.
+ */
+async function runChecksStep(ctx: CouncilContext, run: CouncilRun, gate: ChecksGate, fixRound: number): Promise<CheckRun | null> {
+  if (!gate.command || gate.declined || ctx.signal.aborted) return null;
+  const sessionId = ctx.session.id;
+  const cwd = approvedFolders()[0];
+  const step: CouncilStep = {
+    id: `${run.id}-${run.steps.length + 1}`,
+    role: 'checks',
+    member: 'local',
+    access: 'read',
+    status: 'running',
+    startedAt: Date.now(),
+    transcript: [],
+    note: `${gate.source === 'settings' ? 'your check command' : 'detected'}: ${gate.command}${fixRound ? ` · after fix round ${fixRound}` : ''}`,
+  };
+  run.steps.push(step);
+  const agent: AgentId = `member:${step.id}`;
+  ctx.persist();
+  try {
+    if (getSettings().shellApproval !== 'never') {
+      bus.emit({ type: 'agent_status', sessionId, agent: 'main', status: 'waiting', detail: "Approve running the project's checks?" });
+      const approved = await bus.requestApproval(sessionId, agent, `Council: run the project's checks before review?\n\n$ ${gate.command}`, cwd, ctx.signal).catch(() => false);
+      if (!approved) {
+        step.status = ctx.signal.aborted ? 'cancelled' : 'skipped';
+        step.error = ctx.signal.aborted ? 'Cancelled.' : 'You declined running the checks, so they are skipped for this run.';
+        if (!ctx.signal.aborted) gate.declined = true;
+        return null;
+      }
+    }
+    bus.emit({ type: 'agent_status', sessionId, agent: 'main', status: 'running', detail: 'Council: running checks…' });
+    const res = await runChecks(gate.command, cwd, Math.max(1, getSettings().council.checkTimeoutMinutes || 10) * 60_000, ctx.signal);
+    step.output = res.tail;
+    step.status = res.cancelled ? 'cancelled' : res.ok ? 'done' : 'error';
+    if (!res.ok && !res.cancelled) step.error = res.timedOut ? `Checks timed out after ${getSettings().council.checkTimeoutMinutes || 10} min.` : `Checks failed (exit ${res.code ?? 'killed'}).`;
+    return res.cancelled ? null : res;
+  } finally {
+    step.endedAt = Date.now();
+    ctx.persist();
+  }
+}
+
+/**
+ * Read a reviewer's or QA's verdict. A reply without one gets one short follow-up asking the same member for the
+ * verdict line only; if that fails too, it counts as a rejection.
+ */
+async function readVerdict(ctx: CouncilContext, run: CouncilRun, step: CouncilStep, kind: 'review' | 'qa'): Promise<{ ok: boolean; missing: boolean }> {
+  const parse = (t: string): boolean | null => {
+    const v = kind === 'review' ? parseVerdict(t) : parseQaVerdict(t);
+    return v === 'unknown' ? null : v === 'approve' || v === 'pass';
+  };
+  const first = parse(step.output ?? '');
+  if (first !== null) return { ok: first, missing: false };
+  if (ctx.signal.aborted) return { ok: false, missing: true };
+  const again = await runStep(ctx, run, {
+    role: step.role as StepSpec['role'],
+    member: step.member,
+    access: 'read',
+    prompt: restateVerdictPrompt(kind, step.output ?? ''),
+    note: 'no verdict given, asked to restate it',
+  });
+  const second = again.status === 'done' ? parse(again.output ?? '') : null;
+  return second === null ? { ok: false, missing: true } : { ok: second, missing: false };
+}
+
+function stripVerdictLine(review: string): string {
+  return review.replace(/^\s*VERDICT:\s*\S+\s*\n?/i, '').trim();
+}
+
+function overallVerdict(g: Gates): 'approve' | 'changes' | 'unknown' {
+  if (g.checks && !g.checks.ok) return 'changes';
+  if (g.review?.status !== 'done') return 'unknown';
+  if (!g.reviewOk) return 'changes';
+  return g.qa?.status === 'done' && !g.qaOk ? 'changes' : 'approve';
+}
+
+/** "✅ Checks passed · Approved by Codex · QA passed by Gemini" */
+function gatesHeader(g: Gates, gate: ChecksGate, qaOn: boolean): string {
+  const parts: string[] = [];
+  let good = true;
+  if (g.checks) {
+    parts.push(g.checks.ok ? 'Checks passed' : g.checks.timedOut ? 'Checks timed out' : 'Checks failed');
+    good &&= g.checks.ok;
+  } else if (gate.declined) parts.push('Checks skipped (you declined)');
+  if (g.review?.status === 'done') {
+    const who = label(g.review.member);
+    parts.push(g.reviewOk ? `Approved by ${who}` : `Changes still requested by ${who}${g.reviewMissing ? ' (no verdict given)' : ''}`);
+    good &&= g.reviewOk;
+    if (g.reviewOk && qaOn) {
+      if (g.qa?.status === 'done') {
+        const q = label(g.qa.member);
+        parts.push(g.qaOk ? `QA passed by ${q}` : `QA failed by ${q}${g.qaMissing ? ' (no verdict given)' : ''}`);
+        good &&= g.qaOk;
+      } else {
+        parts.push(`QA skipped (${g.qa?.error ?? 'no member available'})`);
+        good = false;
+      }
+    }
+  } else {
+    parts.push(g.checks && !g.checks.ok ? 'Not reviewed (checks failed)' : 'Not reviewed');
+    good = false;
+  }
+  return `${good ? '✅' : '⚠️'} ${parts.join(' · ')}`;
 }
 
 async function secondOpinion(ctx: CouncilContext, run: CouncilRun, task: string, statuses: MemberStatus[], builderRole: CouncilRole): Promise<string> {
@@ -256,7 +426,7 @@ async function runRole(
 }
 
 interface StepSpec {
-  role: CouncilStep['role'];
+  role: Exclude<CouncilStep['role'], 'checks'>;
   member: CouncilMemberRef;
   access: CouncilAccess;
   prompt: string;

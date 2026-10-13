@@ -6,6 +6,7 @@ const ROLE_BRIEF: Record<CouncilRole | 'judge' | 'voter', string> = {
   frontend: 'You are the BUILDER for frontend work (UI, components, styling, layout, accessibility). Carry out the task (and the plan, if one is given) completely. Follow the project\'s existing component patterns, styling system and design tokens; keep layouts responsive and accessible (labels, focus, contrast); keep changes minimal and verify where you can (typecheck, build, tests).',
   backend: 'You are the BUILDER for backend work (APIs, server code, data, auth, jobs). Carry out the task (and the plan, if one is given) completely. Validate inputs, handle errors explicitly, keep database changes safe and reversible (migrations, no destructive queries), never weaken auth or log secrets, keep changes minimal and verify where you can (tests, typecheck).',
   reviewer: 'You are the REVIEWER. Check the work against the task with a skeptical eye: correctness, missed requirements, bugs, security problems, broken edge cases, style drift. Do not change any files.',
+  qa: 'You are the QA tester. Your job is to break the change: hunt for inputs, edge cases, error paths and regressions where it fails, and back every finding with concrete repro steps. You may read code and run read-only commands (tests, scripts that change nothing). Do not change any files.',
   researcher: 'You are the RESEARCHER. Read whatever you need in the codebase and answer the question accurately, citing file paths (and line numbers when useful). Do not change any files.',
   vision: 'You are the VISION member. The request is about one or more images (screenshots, mockups, designs). Open each image with your own file-reading tools and look at it carefully, then answer: describe what matters, compare it with the code when asked, and give concrete, actionable findings (components, layout, spacing, colors, text, errors shown). Do not change any files.',
   quick: 'Answer the question directly and briefly. Do not change any files.',
@@ -43,12 +44,13 @@ export function visionPrompt(task: string, images: string[]): string {
   return `Task from the user:\n${task}\n\n${where}`;
 }
 
-export function reviewerPrompt(task: string, report: string, diff: string, plan?: string): string {
+export function reviewerPrompt(task: string, report: string, diff: string, plan?: string, checks?: string): string {
   return [
     `Task from the user:\n${task}`,
     plan ? `Plan that was followed:\n${plan}` : '',
     `Builder's report:\n${report || '(no report)'}`,
     diff ? `Changes (git diff):\n${diff}` : 'No git diff is available; inspect the files the builder says it changed.',
+    checks ?? '',
     'Review the changes. Start your reply with exactly one line: "VERDICT: APPROVE" or "VERDICT: CHANGES_REQUESTED". Then list concrete issues (file:line, what is wrong, how to fix). Only request changes for real problems, not taste.',
   ]
     .filter(Boolean)
@@ -75,4 +77,62 @@ export function parseVerdict(review: string): 'approve' | 'changes' | 'unknown' 
   const m = review.match(/VERDICT:\s*(APPROVE|CHANGES[_ ]REQUESTED)/i);
   if (!m) return 'unknown';
   return /approve/i.test(m[1]) ? 'approve' : 'changes';
+}
+
+// ---------- checks gate + QA ----------
+
+export interface ChecksNote {
+  command: string;
+  ok: boolean;
+  code: number | null;
+  tail: string;
+}
+
+/** Short tail of the checks' output for prompts (the full tail is on the step). */
+function shortTail(tail: string, max = 1_500): string {
+  const t = tail.trim();
+  return t.length > max ? `…${t.slice(-max)}` : t;
+}
+
+/** Line handed to the reviewer and QA about the project's own checks. */
+export function checksSummary(c: ChecksNote | null): string {
+  if (!c) return '';
+  const tail = shortTail(c.tail);
+  return c.ok ? `Checks passed: ${c.command}${tail ? `\nOutput (tail):\n${tail}` : ''}` : `Checks FAILED (exit ${c.code ?? 'killed'}): ${c.command}${tail ? `\nOutput (tail):\n${tail}` : ''}`;
+}
+
+export function checksFixPrompt(task: string, c: ChecksNote): string {
+  return `Task from the user:\n${task}\n\nThe project's checks failed after your changes:\n$ ${c.command}\n(exit ${c.code ?? 'killed'})\n${c.tail.trim() || '(no output)'}\n\nFix what makes them fail (do not weaken or delete the checks). Finish with a short report of what you changed.`;
+}
+
+export function qaPrompt(task: string, report: string, diff: string, review: string, checks: string): string {
+  return [
+    `Task from the user:\n${task}`,
+    `Builder's report:\n${report || '(no report)'}`,
+    diff ? `Changes (git diff):\n${diff}` : 'No git diff is available; inspect the files the builder says it changed.',
+    review ? `The reviewer approved it with these notes:\n${review}` : '',
+    checks,
+    'Try to break this change. List concrete failing inputs, edge cases and regressions, each with repro steps (exact input or command, expected vs actual). Only report real failures you can show, not style. End your reply with exactly one line: "QA: PASS" (nothing breaks) or "QA: FAIL" (at least one real failure).',
+  ]
+    .filter(Boolean)
+    .join('\n\n');
+}
+
+export function qaFixPrompt(task: string, qa: string): string {
+  return `Task from the user:\n${task}\n\nA QA tester tried to break your change and found failures:\n${qa}\n\nFix every real failure (say why if you disagree with one). Finish with a short report of what you changed.`;
+}
+
+/** Last "QA: PASS|FAIL" line in a QA reply. */
+export function parseQaVerdict(text: string): 'pass' | 'fail' | 'unknown' {
+  const all = [...text.matchAll(/^[\s>*_`#-]*QA:\s*\**\s*(PASS|FAIL)\b/gim)];
+  const m = all.at(-1);
+  if (!m) return 'unknown';
+  return m[1].toUpperCase() === 'PASS' ? 'pass' : 'fail';
+}
+
+/** Second chance when a reviewer/QA reply has no readable verdict: ask for the verdict line only. */
+export function restateVerdictPrompt(kind: 'review' | 'qa', reply: string): string {
+  const line = kind === 'review' ? '"VERDICT: APPROVE" or "VERDICT: CHANGES_REQUESTED"' : '"QA: PASS" or "QA: FAIL"';
+  const prev = reply.trim();
+  return `Your previous ${kind === 'review' ? 'review' : 'QA report'} had no verdict line:\n---\n${prev.length > 4_000 ? `${prev.slice(0, 4_000)}…` : prev || '(empty)'}\n---\n\nRestate your verdict. Reply with exactly one line, ${line}, and nothing else.`;
 }
