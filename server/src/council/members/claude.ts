@@ -1,6 +1,6 @@
 import { getSettings } from '../../config.js';
 import { memberEnv, resolveBinary, runCapture, runJsonl, runQuick } from '../proc.js';
-import { detectLimit, parseResetAt, stringify, type MemberAdapter, type MemberResult, type MemberRunOptions } from '../types.js';
+import { RESUME_FAILED_RE, detectLimit, parseResetAt, stringify, type MemberAdapter, type MemberResult, type MemberRunOptions } from '../types.js';
 import type { MemberBilling } from '@localdex/shared';
 
 /** Claude Code's documented model aliases. It has no command that lists models, so these are suggestions. */
@@ -87,8 +87,11 @@ export const claudeMember: MemberAdapter = {
       // Print mode auto-denies anything that would need approval (shell, edits); block edits explicitly too.
       args.push('--permission-mode', 'default', '--disallowedTools', ...WRITE_TOOLS);
     }
+    // `--resume <session-id>` takes one value; keep it ahead of the variadic --add-dir.
+    if (o.resumeSessionId) args.push('--resume', o.resumeSessionId);
     if (o.extraDirs.length) args.push('--add-dir', ...o.extraDirs);
 
+    let sessionId: string | undefined;
     let billing: MemberBilling = 'unknown';
     let model: string | undefined;
     let sawPartialText = false;
@@ -99,6 +102,7 @@ export const claudeMember: MemberAdapter = {
     const textByTurn: string[] = [];
 
     const run = await runJsonl(b, args, { cwd: o.cwd, env: memberEnv(), signal: o.signal, timeoutMs: o.timeoutMs, stdin: o.prompt }, (ev) => {
+      if (typeof ev.session_id === 'string' && ev.session_id && (ev.type === 'system' || ev.type === 'result')) sessionId = ev.session_id;
       switch (ev.type) {
         case 'system': {
           if (ev.subtype === 'init') {
@@ -160,12 +164,14 @@ export const claudeMember: MemberAdapter = {
     });
 
     finalText = resultText || textByTurn.at(-1) || '';
-    if (run.aborted) return { ok: false, text: finalText, error: 'Cancelled.', cancelled: true, billing, model, usage };
-    if (run.timedOut) return { ok: false, text: finalText, error: `Timed out after ${Math.round(o.timeoutMs / 60000)} min.`, billing, model, usage };
+    if (run.aborted) return { ok: false, text: finalText, error: 'Cancelled.', cancelled: true, billing, model, usage, sessionId };
+    if (run.timedOut) return { ok: false, text: finalText, error: `Timed out after ${Math.round(o.timeoutMs / 60000)} min.`, billing, model, usage, sessionId };
     const errText = isError ? resultText || run.stderrTail : run.code !== 0 ? run.stderrTail || run.plainTail || `exit code ${run.code}` : '';
     if (errText || isError || run.code !== 0) {
       const limited = detectLimit(errText) || detectLimit(run.stderrTail);
-      const notSignedIn = /not logged in|login|authenticat|invalid api key|401/i.test(errText) && !limited;
+      // "No conversation found with session ID: …" when the session to resume is gone.
+      const resumeFailed = !!o.resumeSessionId && !limited && RESUME_FAILED_RE.test(`${errText}\n${run.stderrTail}`);
+      const notSignedIn = /not logged in|login|authenticat|invalid api key|401/i.test(errText) && !limited && !resumeFailed;
       return {
         ok: false,
         text: isError ? '' : finalText,
@@ -175,8 +181,10 @@ export const claudeMember: MemberAdapter = {
         billing,
         model,
         usage,
+        sessionId,
+        resumeFailed,
       };
     }
-    return { ok: true, text: finalText, billing, model, usage };
+    return { ok: true, text: finalText, billing, model, usage, sessionId };
   },
 };

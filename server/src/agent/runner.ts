@@ -62,6 +62,13 @@ export class SessionRunner {
     this.sync();
   }
 
+  /** "New conversation with members": forget every member's own session, so the next message starts fresh. */
+  clearMemberSessions(): void {
+    delete this.session.memberSessions;
+    this.persist();
+    this.sync();
+  }
+
   private councilContext(signal: AbortSignal): CouncilContext {
     return {
       session: this.session,
@@ -99,6 +106,8 @@ export class SessionRunner {
       // Rate risk on what was asked, before conversation context is appended (slash commands keep their pattern).
       route = withRisk(route);
       const asked = route.task;
+      // chatMessage lets a follow-up to the same member continue its own session with just this message.
+      route = { ...route, chatMessage: asked };
       const history = conversationContext(s.messages.slice(0, -1));
       if (history) route = { ...route, task: `${route.task}\n\n---\nEarlier in this conversation (for context):\n${history}` };
       bus.log('info', `[council] ${route.note} · risk: ${route.risk}${route.riskReasons?.length ? ` (${route.riskReasons.join(', ')})` : ''}`);

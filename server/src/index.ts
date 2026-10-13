@@ -247,6 +247,11 @@ async function handle(ws: WebSocket, ev: ClientEvent): Promise<void> {
     case 'council_stats_reset':
       resetStats();
       return;
+    case 'council_new_conversation': {
+      const s = getSession(ev.sessionId);
+      if (s) runnerFor(s).clearMemberSessions();
+      return;
+    }
     case 'council_login': {
       // Only members with an official in-app sign-in (Cursor SDK). CLIs sign in from Terminal.
       const adapter = MEMBERS[ev.member];

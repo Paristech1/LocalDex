@@ -13,7 +13,9 @@ const a = process.argv.slice(2);
     process.exit(55);
   }
   const ts = () => new Date().toISOString();
-  c.out({ type: 'init', timestamp: ts(), session_id: 'g1', model: a.includes('-m') ? a[a.indexOf('-m') + 1] : 'gemini-3-pro' });
+  const resume = a.includes('--resume') ? a[a.indexOf('--resume') + 1] : null;
+  if (resume && c.flag('resume_fail')) { process.stderr.write(`Error resuming session: Invalid session identifier "${resume}".\n  Use --list-sessions to see available sessions.\n`); process.exit(42); }
+  c.out({ type: 'init', timestamp: ts(), session_id: resume || c.newId('gemini'), model: a.includes('-m') ? a[a.indexOf('-m') + 1] : 'gemini-3-pro' });
   c.out({ type: 'message', timestamp: ts(), role: 'user', content: prompt.slice(0, 40) });
   await c.sleep(300);
   if (c.flag('gemini_limit')) { c.out({ type: 'result', timestamp: ts(), status: 'error', error: { type: 'Error', message: 'Quota exceeded for quota metric. RESOURCE_EXHAUSTED (429)' }, stats: {} }); process.exit(1); }

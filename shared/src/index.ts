@@ -157,6 +157,17 @@ export interface Session {
   mode?: SessionMode;
   /** Council runs in this session, oldest first (capped). */
   councilRuns?: CouncilRun[];
+  /** Each member's own vendor session from Council-mode chat turns, so a follow-up can continue it instead of resending history. */
+  memberSessions?: Partial<Record<MemberId, MemberSessionRef>>;
+}
+
+export interface MemberSessionRef {
+  /** Vendor session id (Claude session_id, Codex thread_id, Gemini session_id, Cursor agent id). */
+  id: string;
+  cwd: string;
+  role: string;
+  access?: CouncilAccess;
+  updatedAt: number;
 }
 
 export type SessionMode = 'solo' | 'council';
@@ -229,6 +240,8 @@ export interface CouncilSettings {
    * plan → build → review, the builder uses its heavy model, edits are always confirmed, and at least one fix round runs.
    */
   riskRouting: boolean;
+  /** Council mode: a follow-up to the same member continues that member's own session instead of resending chat history. Default on. */
+  continueSessions: boolean;
 }
 
 /** How risky a request looks, from explainable keyword rules. */
@@ -300,6 +313,8 @@ export interface CouncilStep {
   note?: string;
   /** Secrets removed from the prompt before it was sent to this member. */
   redactions?: number;
+  /** The member continued its own session from the previous turn (only the new message was sent). */
+  continued?: boolean;
 }
 
 export interface CouncilRun {
@@ -471,6 +486,7 @@ export const DEFAULT_COUNCIL: CouncilSettings = {
   redactSecrets: true,
   consultNudges: true,
   riskRouting: true,
+  continueSessions: true,
 };
 
 export const DEFAULT_CAPABILITIES: Record<ToolName, boolean> = {
@@ -588,5 +604,7 @@ export type ClientEvent =
   | { type: 'council_refresh'; deep?: boolean }
   | { type: 'council_login'; member: MemberId }
   | { type: 'council_stats_reset' }
+  /** Forget every member's own session for this LocalDex session; the next message starts fresh with chat history. */
+  | { type: 'council_new_conversation'; sessionId: string }
   | { type: 'reset_worker'; sessionId: string; name: string }
   | { type: 'delete_worker'; sessionId: string; name: string };

@@ -15,12 +15,19 @@ export const Cursor = {
   },
 };
 export const Agent = {
-  async create(opts) {
+  async create(opts) { return makeAgent(opts, c.newId('cursor'), null); },
+  async resume(agentId, opts) {
+    if (c.flag('resume_fail')) throw new Error(`Agent ${agentId} not found`);
+    return makeAgent(opts, agentId, agentId);
+  },
+};
+function makeAgent(opts, agentId, resumedFrom) {
     const readOnly = (opts.disallowedTools ?? []).includes('edit');
     const role = c.role(opts.systemPrompt ?? '');
     return {
+      agentId,
       async send(prompt) {
-        c.record('cursor', { opts, prompt });
+        c.record('cursor', { opts, prompt, agentId, resumedFrom });
         const cwd = opts.local.cwd; let status = 'running'; const text = c.answer(role, 'cursor', prompt);
         return {
           async *stream() {
@@ -47,5 +54,4 @@ export const Agent = {
       },
       close() {},
     };
-  },
-};
+}

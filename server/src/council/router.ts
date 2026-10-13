@@ -15,6 +15,11 @@ export interface Route {
   /** Risk rating from `assessRisk`; computed from the task when missing. */
   risk?: CouncilRisk;
   riskReasons?: string[];
+  /**
+   * Council-mode chat turn: the user's new message on its own (`task` also carries the chat history).
+   * A `single` run saves the member's own session, and a follow-up to the same member resumes it with just this message.
+   */
+  chatMessage?: string;
 }
 
 // ---------- risk ----------

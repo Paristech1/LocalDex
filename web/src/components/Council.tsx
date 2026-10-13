@@ -194,6 +194,11 @@ function StepRow({ step, now, defaultOpen }: { step: CouncilStep; now: number; d
             {step.redactions} {step.redactions === 1 ? 'secret' : 'secrets'} removed
           </span>
         )}
+        {step.continued && (
+          <span className="text-[10px] px-1 rounded bg-ink-700 text-ink-300 whitespace-nowrap" title="Picked up this member's own session from the previous message; only the new message was sent">
+            continued session
+          </span>
+        )}
         <span className="flex-1" />
         <span className="text-[10px] text-ink-400 whitespace-nowrap shrink-0">
           {elapsed ? dur(elapsed) : ''}
@@ -276,6 +281,7 @@ export function CouncilPanel({ onOpenSettings }: { onOpenSettings?: () => void }
   if (!settings || !session) return null;
   const c = settings.council;
   const runs = [...(session.councilRuns ?? [])].reverse();
+  const hasMemberSessions = Object.keys(session.memberSessions ?? {}).length > 0;
 
   if (!c.enabled) {
     return (
@@ -316,7 +322,19 @@ export function CouncilPanel({ onOpenSettings }: { onOpenSettings?: () => void }
       <Scorecard />
 
       <div>
-        <div className="text-[11px] text-ink-400 mb-1.5">Runs {runs.length ? `(${runs.length})` : ''}</div>
+        <div className="flex items-center justify-between mb-1.5">
+          <span className="text-[11px] text-ink-400">Runs {runs.length ? `(${runs.length})` : ''}</span>
+          {hasMemberSessions && (
+            <button
+              type="button"
+              className="text-[11px] text-ink-400 hover:text-ink-100"
+              onClick={() => send({ type: 'council_new_conversation', sessionId: session.id })}
+              title={`Members forget this chat's sessions (${Object.keys(session.memberSessions ?? {}).join(', ')}); the next message starts fresh with the chat history`}
+            >
+              New conversation with members
+            </button>
+          )}
+        </div>
         {runs.length === 0 ? (
           <div className="text-xs text-ink-400 leading-relaxed">
             No council runs yet. Switch the top bar to <b className="text-ink-200">Council</b> and send a message, or let the local agent call <code className="font-mono">ask_member</code>.
@@ -611,7 +629,11 @@ export function CouncilSettingsTab({ settings, patch }: TabProps) {
         <Toggle label="Subscription only (refuse members signed in with an API key)" checked={c.requirePlanBilling} onChange={(v) => setC({ requirePlanBilling: v })} />
         <Toggle label="Remove secrets before sending to members" checked={c.redactSecrets !== false} onChange={(v) => setC({ redactSecrets: v })} />
         <Toggle label="Suggest asking the council when the local model is stuck" checked={c.consultNudges} onChange={(v) => setC({ consultNudges: v })} />
+        <Toggle label="Continue a member's own session on follow-up messages" checked={c.continueSessions !== false} onChange={(v) => setC({ continueSessions: v })} />
       </div>
+      <p className="text-[11px] text-ink-400">
+        When you follow up with the same member in Council mode, it picks up its own earlier session (files it read, its reasoning) and gets only your new message instead of the pasted chat history. Plan → build → review and votes always start fresh.
+      </p>
       <p className="text-[11px] text-ink-400">
         Removing secrets replaces API keys, tokens, passwords and private keys in prompts, chat history and diffs with [REDACTED] before they reach a cloud member. Members can still open files in the project folder themselves.
       </p>

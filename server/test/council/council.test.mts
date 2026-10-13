@@ -432,6 +432,111 @@ run = await runCouncil(ctx(), { pattern: 'single', role: 'backend', member: 'cod
 check('edits off: backend builder is read-only too', run.steps[0].access === 'read' && approvals === 0);
 updateSettings({ council: { ...getSettings().council, allowWrite: true } });
 
+// 22. continue a member's own session on Council-mode follow-ups (through the real runner)
+{
+  const { SessionRunner } = await import(`${SRC}/agent/runner.ts`);
+  const HIST = 'Earlier in this conversation';
+  const logOf = (m: string): any[] => { try { return fs.readFileSync(path.join(CTL, `${m}.log.jsonl`), 'utf8').trim().split('\n').filter(Boolean).map((l) => JSON.parse(l)); } catch { return []; } };
+  const argAfter = (argv: string[], f: string) => (argv.includes(f) ? argv[argv.indexOf(f) + 1] : undefined);
+  const newSession = (): any => ({ id: `s-cont-${Math.random().toString(36).slice(2, 8)}`, title: 'New session', createdAt: Date.now(), updatedAt: Date.now(), model: null, messages: [], archive: [], workers: {}, plan: [], goal: null, usage: { promptTokens: 0, completionTokens: 0, lastPromptTokens: 0 }, compactions: 0, compactSummary: null, mode: 'council', councilRuns: [] });
+  const lastStep = (s: any) => s.councilRuns.at(-1).steps.at(-1);
+  check('continue: setting defaults to on', getSettings().council.continueSessions === true);
+
+  // Claude: two follow-ups resume the first run's session with just the new message.
+  reset(); approvals = 0;
+  let s = newSession(); let rn = new SessionRunner(s);
+  await rn.handleUserMessage('/plan how should we structure a parser for math expressions?');
+  let cl = logOf('claude');
+  const c1 = s.memberSessions?.claude?.id;
+  check('continue: first turn starts fresh and saves the session id', cl.length === 1 && !cl[0].argv.includes('--resume') && /^claude-[0-9a-f]{8}$/.test(c1 ?? '') && s.memberSessions.claude.role === 'planner' && s.memberSessions.claude.cwd === DEMO, c1);
+  await rn.handleUserMessage('/plan and where do the tests go?');
+  cl = logOf('claude');
+  check('continue: second turn resumes the first run\'s session', cl.length === 2 && argAfter(cl[1].argv, '--resume') === c1 && lastStep(s).continued === true, cl[1]?.argv.join(' '));
+  check('continue: resumed turn sends only the new message, no pasted history', cl[1].prompt === 'and where do the tests go?' && !cl[1].prompt.includes(HIST), JSON.stringify(cl[1].prompt).slice(0, 120));
+  await rn.handleUserMessage('/plan ok, and the error messages?');
+  cl = logOf('claude');
+  check('continue: third turn keeps continuing', argAfter(cl[2].argv, '--resume') === c1 && !cl[2].prompt.includes(HIST));
+
+  // A different member starts fresh (with history); switching back also starts fresh.
+  await rn.handleUserMessage('/review check src/math.ts for bugs');
+  const cx = logOf('codex');
+  check('continue: a different member starts fresh with the chat history', cx.length === 1 && !cx[0].argv.includes('resume') && cx[0].prompt.includes(HIST) && !lastStep(s).continued, cx[0]?.argv.join(' '));
+  await rn.handleUserMessage('/plan back to the parser: what about precedence?');
+  cl = logOf('claude');
+  check('continue: back to claude after codex answered → fresh run', cl.length === 4 && !cl[3].argv.includes('--resume') && cl[3].prompt.includes(HIST) && s.memberSessions.claude.id !== c1);
+
+  // Multi-step patterns never resume (even right after a single claude turn).
+  const before = logOf('claude').length;
+  await rn.handleUserMessage('/build add rate limiting to the API');
+  cl = logOf('claude').slice(before);
+  check('continue: pbr run starts every member fresh', s.councilRuns.at(-1).pattern === 'plan_build_review' && cl.length >= 1 && cl.every((x: any) => !x.argv.includes('--resume')) && s.councilRuns.at(-1).steps.every((st: any) => !st.continued), `${cl.length} claude runs`);
+
+  // Gemini: init session_id captured, resumed with --resume <uuid>; same role → instructions not repeated.
+  reset();
+  s = newSession(); rn = new SessionRunner(s);
+  await rn.handleUserMessage('/research what does src/math.ts do?');
+  await rn.handleUserMessage('/research who calls add?');
+  const gm = logOf('gemini');
+  check('continue: gemini resumes by session id with just the message', gm.length === 2 && !gm[0].argv.includes('--resume') && argAfter(gm[1].argv, '--resume') === s.memberSessions.gemini.id && gm[1].prompt === 'who calls add?', gm[1]?.argv.filter((x: string) => x.startsWith('-')).join(' '));
+
+  // Codex: thread_id captured, `exec … resume <id> -` with -C/-s still before `resume`.
+  reset();
+  s = newSession(); rn = new SessionRunner(s);
+  await rn.handleUserMessage('/review check src/math.ts for bugs');
+  const t1 = s.memberSessions?.codex?.id;
+  await rn.handleUserMessage('/review anything else?');
+  const cxl = logOf('codex');
+  const ri = cxl[1]?.argv.indexOf('resume') ?? -1;
+  check('continue: codex resumes its thread (exec flags before `resume`)', /^codex-/.test(t1 ?? '') && ri > 0 && cxl[1].argv[ri + 1] === t1 && cxl[1].argv.at(-1) === '-' && cxl[1].argv.indexOf('-C') < ri && cxl[1].argv.indexOf('-s') < ri && cxl[1].argv[cxl[1].argv.indexOf('-s') + 1] === 'read-only' && cxl[1].prompt === 'anything else?', cxl[1]?.argv.join(' '));
+
+  // Cursor: Agent.resume with the first agent's id; tool limits and system prompt passed again.
+  reset(); approvals = 0;
+  s = newSession(); rn = new SessionRunner(s);
+  await rn.handleUserMessage('/ask cursor explain what add does');
+  await rn.handleUserMessage('/ask cursor and what about negative numbers?');
+  const cu = logOf('cursor');
+  check('continue: cursor resumes its local agent', cu.length === 2 && !cu[0].resumedFrom && cu[1].resumedFrom === cu[0].agentId && !!cu[1].opts.systemPrompt && JSON.stringify(cu[1].opts.disallowedTools) === JSON.stringify(cu[0].opts.disallowedTools) && cu[1].prompt === 'and what about negative numbers?' && lastStep(s).continued === true, JSON.stringify({ a: cu[0]?.agentId, r: cu[1]?.resumedFrom }));
+
+  // Resume failure → one fresh retry with history, noted on the step, new session saved.
+  for (const [m, first, second] of [['claude', '/plan how should we structure the parser?', '/plan and the tests?'], ['gemini', '/research what does src/math.ts do?', '/research who calls add?'], ['codex', '/review check src/math.ts', '/review anything else?'], ['cursor', '/ask cursor explain add', '/ask cursor and negatives?']] as const) {
+    reset(); approvals = 0;
+    s = newSession(); rn = new SessionRunner(s);
+    await rn.handleUserMessage(first);
+    const old = s.memberSessions?.[m]?.id;
+    flag('resume_fail', true);
+    await rn.handleUserMessage(second);
+    const lg = logOf(m);
+    const st2 = lastStep(s);
+    const resumedFirst = m === 'cursor' ? true : m === 'codex' ? lg[1]?.argv.includes('resume') : lg[1]?.argv.includes('--resume');
+    const freshPrompt = lg.at(-1)?.prompt ?? '';
+    check(`continue: ${m} resume failure falls back to a fresh run`, !!old && resumedFirst && st2.status === 'done' && !st2.continued && freshPrompt.includes(HIST) && st2.transcript.some((t: any) => t.kind === 'note' && /Couldn't continue .* earlier session/.test(t.text ?? '')) && !!s.memberSessions?.[m]?.id && s.memberSessions[m].id !== old, `${st2.status} ${st2.error ?? ''} ${lg.length} runs`);
+  }
+
+  // Setting off → fresh with history; "New conversation with members" clears saved sessions.
+  reset();
+  updateSettings({ council: { ...getSettings().council, continueSessions: false } });
+  s = newSession(); rn = new SessionRunner(s);
+  await rn.handleUserMessage('/plan how should we structure the parser?');
+  await rn.handleUserMessage('/plan and the tests?');
+  cl = logOf('claude');
+  check('continue: setting off → no resume, history pasted', cl.length === 2 && cl.every((x: any) => !x.argv.includes('--resume')) && cl[1].prompt.includes(HIST) && !s.memberSessions);
+  updateSettings({ council: { ...getSettings().council, continueSessions: true } });
+  reset();
+  s = newSession(); rn = new SessionRunner(s);
+  await rn.handleUserMessage('/plan how should we structure the parser?');
+  rn.clearMemberSessions();
+  check('continue: new conversation clears member sessions', !s.memberSessions);
+  await rn.handleUserMessage('/plan and the tests?');
+  cl = logOf('claude');
+  check('continue: after clearing, the next turn starts fresh', !cl[1].argv.includes('--resume') && cl[1].prompt.includes(HIST));
+
+  // Runs outside Council-mode chat (lead agent tools, direct runCouncil) never save or resume.
+  reset();
+  const plain: any = newSession();
+  await runCouncil({ session: plain, signal: new AbortController().signal, persist: () => {}, delegateLocal: async () => '' }, { pattern: 'single', role: 'planner', member: 'claude', task: 'plan it', note: 'test' });
+  check('continue: non-chat runs do not save sessions', !plain.memberSessions);
+}
+
 console.log(`\n${pass} passed, ${fail} failed. events: ${JSON.stringify(events)}`);
 reset();
 process.exit(fail ? 1 : 0);
