@@ -3,7 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { getSettings } from '../../config.js';
 import { memberEnv, resolveBinary, runJsonl, runQuick } from '../proc.js';
-import { detectLimit, parseResetAt, stringify, type MemberAdapter, type MemberResult, type MemberRunOptions } from '../types.js';
+import { RESUME_FAILED_RE, detectLimit, parseResetAt, promptWithInstructions, stringify, type MemberAdapter, type MemberResult, type MemberRunOptions } from '../types.js';
 import type { MemberBilling } from '@localdex/shared';
 
 /** Gemini CLI's model aliases (`-m auto|pro|flash|flash-lite`). It has no non-interactive model listing. */
@@ -15,6 +15,8 @@ function bin(): string | null {
 
 /** Gemini's FatalUntrustedWorkspaceError: headless runs in a folder the user never trusted exit with 55. */
 const UNTRUSTED_EXIT_CODE = 55;
+/** ExitCodes.FATAL_INPUT_ERROR: what a failed `--resume` exits with (session not found for this folder). */
+const RESUME_ERROR_EXIT_CODE = 42;
 
 export function isUntrustedFolder(code: number | null, output: string): boolean {
   return code === UNTRUSTED_EXIT_CODE || /not running in a trusted directory/i.test(output);
@@ -84,14 +86,17 @@ export const geminiMember: MemberAdapter = {
     const b = bin();
     if (!b) return { ok: false, text: '', error: 'Gemini CLI not found. Install it (npm i -g @google/gemini-cli), run `gemini` once and pick "Login with Google".', billing: 'unknown' };
 
-    const prompt = `${o.instructions}\n\n---\n\n${o.prompt}`;
+    const prompt = promptWithInstructions(o);
     // read: 'plan' is Gemini's read-only mode. write: auto-approve edits; shell still needs approval, which headless mode denies.
     const trustProject = getSettings().council.trustProjectConfig;
     const args = ['-p', prompt, '-o', 'stream-json', '--approval-mode', o.access === 'write' ? 'auto_edit' : 'plan'];
     if (trustProject) args.push('--skip-trust');
     if (o.model) args.push('-m', o.model);
     if (o.extraDirs.length) args.push('--include-directories', o.extraDirs.join(','));
+    // `--resume` takes "latest", an index, or a session UUID (sessions are stored per project folder, so same cwd).
+    if (o.resumeSessionId) args.push('--resume', o.resumeSessionId);
 
+    let sessionId: string | undefined;
     let model: string | undefined;
     let segment = '';
     let full = '';
@@ -108,6 +113,7 @@ export const geminiMember: MemberAdapter = {
       switch (ev.type) {
         case 'init':
           model = typeof ev.model === 'string' ? ev.model : undefined;
+          if (typeof ev.session_id === 'string' && ev.session_id) sessionId = ev.session_id;
           return;
         case 'message':
           if (ev.role === 'assistant' && typeof ev.content === 'string') {
@@ -141,14 +147,17 @@ export const geminiMember: MemberAdapter = {
 
     const text = (segment.trim() ? segment : full).trim();
     const billing: MemberBilling = 'unknown';
-    if (run.aborted) return { ok: false, text, error: 'Cancelled.', cancelled: true, billing, model, usage };
-    if (run.timedOut) return { ok: false, text, error: `Timed out after ${Math.round(o.timeoutMs / 60000)} min.`, billing, model, usage };
+    if (run.aborted) return { ok: false, text, error: 'Cancelled.', cancelled: true, billing, model, usage, sessionId };
+    if (run.timedOut) return { ok: false, text, error: `Timed out after ${Math.round(o.timeoutMs / 60000)} min.`, billing, model, usage, sessionId };
     const errText = resultError || (status === 'error' ? errors.join('\n') : '') || (run.code !== 0 ? errors.join('\n') || run.stderrTail || run.plainTail || `exit code ${run.code}` : '');
     if (isUntrustedFolder(run.code, `${errText}\n${run.stderrTail}`)) {
       return { ok: false, text, error: untrustedFolderMessage(o.cwd), billing, model, usage };
     }
     if (errText) {
       const limited = detectLimit(errText) || detectLimit(run.stderrTail);
+      // Gemini prints "Error resuming session: Invalid session identifier …" and exits 42 before any init event.
+      const resumeFailed = !!o.resumeSessionId && !limited && (RESUME_FAILED_RE.test(`${errText}\n${run.stderrTail}`) || run.code === RESUME_ERROR_EXIT_CODE);
+      if (resumeFailed) return { ok: false, text, error: errText.slice(0, 1500), billing, model, usage, resumeFailed };
       const notSignedIn = !limited && /auth|login|credential|sign in/i.test(errText);
       return {
         ok: false,
@@ -159,8 +168,9 @@ export const geminiMember: MemberAdapter = {
         billing,
         model,
         usage,
+        sessionId,
       };
     }
-    return { ok: true, text, billing, model, usage };
+    return { ok: true, text, billing, model, usage, sessionId };
   },
 };

@@ -1,6 +1,6 @@
 import { getSettings } from '../../config.js';
 import { memberEnv, resolveBinary, runCapture, runJsonl, runQuick } from '../proc.js';
-import { detectLimit, parseResetAt, stringify, type MemberAdapter, type MemberResult, type MemberRunOptions } from '../types.js';
+import { RESUME_FAILED_RE, detectLimit, parseResetAt, promptWithInstructions, stringify, type MemberAdapter, type MemberResult, type MemberRunOptions } from '../types.js';
 import type { MemberBilling } from '@localdex/shared';
 
 function bin(): string | null {
@@ -73,6 +73,8 @@ export const codexMember: MemberAdapter = {
     const args = ['exec', '--json', '--skip-git-repo-check', '-C', o.cwd, '-s', o.access === 'write' ? 'workspace-write' : 'read-only', '-c', 'approval_policy="never"'];
     if (o.model) args.push('-m', o.model);
     if (o.access === 'write') for (const d of o.extraDirs) args.push('--add-dir', d);
+    // `exec resume <SESSION_ID> [PROMPT]` only takes its own few flags; -C/-s/--add-dir must stay on `exec`, before it.
+    if (o.resumeSessionId) args.push('resume', o.resumeSessionId);
     args.push('-'); // prompt from stdin
 
     let lastMessage = '';
@@ -85,8 +87,13 @@ export const codexMember: MemberAdapter = {
       it.type === 'command_execution' ? { command: it.command } : it.type === 'file_change' ? { changes: it.changes } : it.type === 'mcp_tool_call' ? it.arguments : it.type === 'web_search' ? { query: it.query } : it.type === 'todo_list' ? { steps: it.items } : {};
     const isTool = (t?: string) => t === 'command_execution' || t === 'file_change' || t === 'mcp_tool_call' || t === 'web_search' || t === 'todo_list';
 
-    const run = await runJsonl(b, args, { cwd: o.cwd, env: memberEnv(), signal: o.signal, timeoutMs: o.timeoutMs, stdin: `${o.instructions}\n\n---\n\n${o.prompt}` }, (ev) => {
+    let sessionId: string | undefined;
+    const run = await runJsonl(b, args, { cwd: o.cwd, env: memberEnv(), signal: o.signal, timeoutMs: o.timeoutMs, stdin: promptWithInstructions(o) }, (ev) => {
       const type = String(ev.type ?? '');
+      if (type === 'thread.started' && typeof ev.thread_id === 'string' && ev.thread_id) {
+        sessionId = ev.thread_id;
+        return;
+      }
       const it = (ev.item ?? {}) as Item;
       const id = it.id ?? Math.random().toString(36).slice(2);
       if (type === 'item.started' && isTool(it.type)) {
@@ -136,12 +143,14 @@ export const codexMember: MemberAdapter = {
 
     // Codex reports billing only through `codex login status`; the orchestrator checks that before the run.
     const billing: MemberBilling = 'unknown';
-    if (run.aborted) return { ok: false, text: lastMessage, error: 'Cancelled.', cancelled: true, billing, usage };
-    if (run.timedOut) return { ok: false, text: lastMessage, error: `Timed out after ${Math.round(o.timeoutMs / 60000)} min.`, billing, usage };
+    if (run.aborted) return { ok: false, text: lastMessage, error: 'Cancelled.', cancelled: true, billing, usage, sessionId };
+    if (run.timedOut) return { ok: false, text: lastMessage, error: `Timed out after ${Math.round(o.timeoutMs / 60000)} min.`, billing, usage, sessionId };
     const errText = error || (run.code !== 0 ? run.stderrTail || run.plainTail || `exit code ${run.code}` : '');
     if (errText) {
       const limited = detectLimit(errText);
-      const notSignedIn = !limited && /not logged in|login|unauthori[sz]ed|401/i.test(errText);
+      // A resume that never started a thread could not load the session.
+      const resumeFailed = !!o.resumeSessionId && !limited && (!sessionId || RESUME_FAILED_RE.test(errText));
+      const notSignedIn = !limited && !resumeFailed && /not logged in|login|unauthori[sz]ed|401/i.test(errText);
       return {
         ok: false,
         text: lastMessage,
@@ -150,8 +159,10 @@ export const codexMember: MemberAdapter = {
         limitResetsAt: limited ? parseResetAt(errText) : undefined,
         billing,
         usage,
+        sessionId,
+        resumeFailed,
       };
     }
-    return { ok: true, text: lastMessage, billing, usage };
+    return { ok: true, text: lastMessage, billing, usage, sessionId };
   },
 };

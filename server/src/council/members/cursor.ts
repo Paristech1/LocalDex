@@ -22,11 +22,16 @@ interface SdkRun {
   cancel(): Promise<void>;
 }
 interface SdkAgent {
+  readonly agentId?: string;
   send(message: string): Promise<SdkRun>;
   close(): void;
 }
 interface CursorSdk {
-  Agent: { create(options: Record<string, unknown>): Promise<SdkAgent> };
+  Agent: {
+    create(options: Record<string, unknown>): Promise<SdkAgent>;
+    /** Local agents persist in the SDK's own store (~/.cursor), so they can be resumed from a later process. */
+    resume?(agentId: string, options?: Record<string, unknown>): Promise<SdkAgent>;
+  };
   Cursor: {
     /** Models available to the signed-in account (cloud catalog call made by the SDK itself). */
     models?: { list(): Promise<Array<{ id: string; displayName?: string; aliases?: string[] }>> };
@@ -118,15 +123,27 @@ export const cursorMember: MemberAdapter = {
     const timer = setTimeout(onAbort, o.timeoutMs);
     o.signal.addEventListener('abort', onAbort, { once: true });
 
+    // systemPrompt and disallowedTools are not persisted on the agent, so a resume passes them again.
+    const options = {
+      name: 'LocalDex council',
+      model: { id: model },
+      systemPrompt: o.instructions,
+      // Only the user's own Cursor settings unless the user opted in to project config (see trustProjectConfig).
+      local: { cwd: o.cwd, dirs: o.extraDirs, settingSources: getSettings().council.trustProjectConfig ? ['user', 'project'] : ['user'] },
+      ...(o.access === 'read' ? { disallowedTools: MUTATING_TOOLS } : { disallowedTools: ['delete'] }),
+    };
+    const sessionId = (): string | undefined => agent?.agentId || undefined;
+
     try {
-      agent = await sdk.Agent.create({
-        name: 'LocalDex council',
-        model: { id: model },
-        systemPrompt: o.instructions,
-        // Only the user's own Cursor settings unless the user opted in to project config (see trustProjectConfig).
-        local: { cwd: o.cwd, dirs: o.extraDirs, settingSources: getSettings().council.trustProjectConfig ? ['user', 'project'] : ['user'] },
-        ...(o.access === 'read' ? { disallowedTools: MUTATING_TOOLS } : { disallowedTools: ['delete'] }),
-      });
+      if (o.resumeSessionId) {
+        try {
+          if (!sdk.Agent.resume) throw new Error('this @cursor/sdk version cannot resume agents');
+          agent = await sdk.Agent.resume(o.resumeSessionId, options);
+        } catch (e) {
+          return { ok: false, text: '', error: `Could not resume the Cursor agent: ${(e as Error).message}`.slice(0, 1500), billing, model, resumeFailed: true };
+        }
+      }
+      agent ??= await sdk.Agent.create(options);
       run = await agent.send(o.prompt);
       if (o.signal.aborted) onAbort();
       for await (const m of run.stream()) {
@@ -152,14 +169,14 @@ export const cursorMember: MemberAdapter = {
       const final = res.result?.trim() || text.trim();
       if (res.usage) usage = { inputTokens: res.usage.inputTokens ?? res.usage.input_tokens ?? 0, outputTokens: res.usage.outputTokens ?? res.usage.output_tokens ?? 0 };
       if (res.status === 'cancelled') {
-        return { ok: false, text: final, error: o.signal.aborted ? 'Cancelled.' : `Timed out after ${Math.round(o.timeoutMs / 60000)} min.`, cancelled: o.signal.aborted, billing, usage, model };
+        return { ok: false, text: final, error: o.signal.aborted ? 'Cancelled.' : `Timed out after ${Math.round(o.timeoutMs / 60000)} min.`, cancelled: o.signal.aborted, billing, usage, model, sessionId: sessionId() };
       }
       if (res.status === 'error') {
         const msg = res.error?.message ?? 'Cursor run failed';
         const limited = detectLimit(msg) || res.error?.code === 'resource_exhausted';
-        return { ok: false, text: final, error: msg, limited, limitResetsAt: limited ? parseResetAt(msg) : undefined, billing, usage, model };
+        return { ok: false, text: final, error: msg, limited, limitResetsAt: limited ? parseResetAt(msg) : undefined, billing, usage, model, sessionId: sessionId() };
       }
-      return { ok: true, text: final, billing, usage, model: res.model?.id ?? model };
+      return { ok: true, text: final, billing, usage, model: res.model?.id ?? model, sessionId: sessionId() };
     } catch (e) {
       const err = e as Error & { name?: string; code?: string };
       const msg = err.message || String(e);
@@ -175,6 +192,7 @@ export const cursorMember: MemberAdapter = {
         billing,
         usage,
         model,
+        sessionId: sessionId(),
       };
     } finally {
       clearTimeout(timer);

@@ -11,7 +11,9 @@ const a = process.argv.slice(2);
   const role = c.role(prompt);
   const cwd = a[a.indexOf('-C') + 1];
   const write = a[a.indexOf('-s') + 1] === 'workspace-write';
-  c.out({ type: 'thread.started', thread_id: 't1' });
+  const resume = a.includes('resume') ? a[a.indexOf('resume') + 1] : null;
+  if (resume && c.flag('resume_fail')) { process.stderr.write(`Error: thread/resume failed: no rollout found for thread id ${resume}\n`); process.exit(1); }
+  c.out({ type: 'thread.started', thread_id: resume || c.newId('codex') });
   c.out({ type: 'turn.started' });
   await c.sleep(300);
   if (c.flag('codex_limit')) { c.out({ type: 'turn.failed', error: { message: "You've hit your usage limit. Try again in 2 hours." } }); process.exit(1); }

@@ -9,6 +9,7 @@ import type {
   CouncilStep,
   MemberId,
   CouncilPeerRank,
+  MemberSessionRef,
   MemberStatus,
   Session,
 } from '@localdex/shared';
@@ -117,14 +118,59 @@ export async function runCouncil(ctx: CouncilContext, input: Route): Promise<Cou
 async function single(ctx: CouncilContext, run: CouncilRun, route: Route, statuses: MemberStatus[]): Promise<string> {
   const access = accessFor(route.role);
   const prompt = route.role === 'vision' ? visionPrompt(route.task, findImageRefs(askedPart(route.task))) : route.task;
+  const continuation = (member: CouncilMemberRef) => continuationFor(ctx, run, route, member, access);
   if (route.member) {
     const why = unavailableReason(route.member, statuses);
     if (why) return `${label(route.member)} can't take this: ${why}.`;
-    const step = await runStep(ctx, run, { role: route.role, member: route.member, access, prompt, note: 'requested' });
+    const step = await runStep(ctx, run, { role: route.role, member: route.member, access, prompt, note: 'requested', continuation: continuation(route.member) });
     return stepAnswer(step);
   }
-  const step = await runRole(ctx, run, route.role, access, prompt, statuses);
+  const step = await runRole(ctx, run, route.role, access, prompt, statuses, [], continuation);
   return step ? stepAnswer(step) : noMemberMessage(route.role, statuses);
+}
+
+// ---------- member sessions ----------
+
+/** How a step uses the member's own vendor session. */
+interface Continuation {
+  /** Save the member's session after a successful run. */
+  save: boolean;
+  /** Resume this session with `prompt` (the new message only); on failure the step starts fresh with the full prompt. */
+  resume?: { id: string; prompt: string; instructionsInSession: boolean };
+}
+
+/** Council-mode chat turns on the single pattern save member sessions, and resume them on a follow-up to the same member. */
+function continuationFor(ctx: CouncilContext, run: CouncilRun, route: Route, member: CouncilMemberRef, access: CouncilAccess): Continuation | undefined {
+  if (route.chatMessage === undefined || member === 'local' || getSettings().council.continueSessions === false) return undefined;
+  const ref = resumableSession(ctx, run, member, access);
+  if (!ref) return { save: true };
+  const msg = route.chatMessage;
+  const prompt = route.role === 'vision' ? visionPrompt(msg, findImageRefs(msg)) : msg;
+  return { save: true, resume: { id: ref.id, prompt, instructionsInSession: ref.role === route.role } };
+}
+
+/** The member's saved session, if the previous turn was a single run answered by this member in the same folder with the same access. */
+function resumableSession(ctx: CouncilContext, run: CouncilRun, member: MemberId, access: CouncilAccess): MemberSessionRef | undefined {
+  const ref = ctx.session.memberSessions?.[member];
+  if (!ref) return undefined;
+  const runs = ctx.session.councilRuns ?? [];
+  const prev = runs[runs.indexOf(run) - 1];
+  if (!prev || prev.pattern !== 'single') return undefined;
+  const answered = [...prev.steps].reverse().find((s) => s.status === 'done');
+  if (answered?.member !== member) return undefined;
+  // Saved during the previous turn, not by some older one.
+  if (ref.updatedAt < prev.startedAt) return undefined;
+  if (ref.cwd !== approvedFolders()[0]) return undefined;
+  if ((ref.access ?? 'read') !== access) return undefined;
+  return ref;
+}
+
+function saveMemberSession(ctx: CouncilContext, member: MemberId, ref: MemberSessionRef): void {
+  (ctx.session.memberSessions ??= {})[member] = ref;
+}
+
+function forgetMemberSession(ctx: CouncilContext, member: MemberId): void {
+  if (ctx.session.memberSessions) delete ctx.session.memberSessions[member];
 }
 
 async function planBuildReview(ctx: CouncilContext, run: CouncilRun, task: string, statuses: MemberStatus[], builderRole: CouncilRole): Promise<string> {
@@ -499,6 +545,7 @@ async function runRole(
   prompt: string,
   statuses: MemberStatus[],
   avoid: CouncilMemberRef[] = [],
+  continuation?: (member: CouncilMemberRef) => Continuation | undefined,
 ): Promise<CouncilStep | null> {
   const exclude: CouncilMemberRef[] = [];
   let last: CouncilStep | null = null;
@@ -520,6 +567,8 @@ async function runRole(
       prompt: carried ? withHandoff(prompt, carried.from, carried.text, access) : prompt,
       note,
       handoff: carried ? { from: carried.from, text: carried.text } : undefined,
+      // A handoff needs the full prompt, so never resume a session on a hand-off attempt.
+      continuation: carried ? undefined : continuation?.(pick.member),
     });
     last = step;
     if (step.status === 'done' || step.status === 'cancelled') return step;
@@ -542,6 +591,7 @@ interface StepSpec {
   handoff?: CouncilStep['handoff'];
   /** Stops just this step (e.g. a vote straggler). Combined with ctx.signal; a string abort reason becomes the step's error. */
   signal?: AbortSignal;
+  continuation?: Continuation;
 }
 
 async function runStep(ctx: CouncilContext, run: CouncilRun, spec: StepSpec): Promise<CouncilStep> {
@@ -619,7 +669,8 @@ async function runStep(ctx: CouncilContext, run: CouncilRun, spec: StepSpec): Pr
     }
 
     // Cloud members only: the prompt leaves this machine, so credentials in it are replaced first.
-    const prompt = c.redactSecrets !== false ? redactForCloud(spec.prompt, step) : spec.prompt;
+    const forCloud = (text: string) => (c.redactSecrets !== false ? redactForCloud(text, step) : text);
+    const member = spec.member;
 
     // Child controller so a mid-run billing surprise (or the step's own signal) can stop just this member.
     const ac = new AbortController();
@@ -628,8 +679,9 @@ async function runStep(ctx: CouncilContext, run: CouncilRun, spec: StepSpec): Pr
     spec.signal?.addEventListener('abort', onParentAbort, { once: true });
     if (spec.signal?.aborted) ac.abort();
     let billingAbort = '';
+    let produced = false;
 
-    const res = await MEMBERS[spec.member].run({
+    const invoke = (prompt: string, resume?: Continuation['resume']) => MEMBERS[member].run({
       prompt,
       instructions,
       cwd,
@@ -638,7 +690,10 @@ async function runStep(ctx: CouncilContext, run: CouncilRun, spec: StepSpec): Pr
       model: step.model,
       signal: ac.signal,
       timeoutMs: Math.max(1, c.timeoutMinutes) * 60_000,
+      resumeSessionId: resume?.id,
+      instructionsInSession: resume?.instructionsInSession,
       onEvent: (ev) => {
+        if (ev.kind === 'text' || ev.kind === 'tool_start') produced = true;
         switch (ev.kind) {
           case 'text': {
             const lastItem = step.transcript.at(-1);
@@ -678,6 +733,24 @@ async function runStep(ctx: CouncilContext, run: CouncilRun, spec: StepSpec): Pr
         persistSoon();
       },
     });
+
+    const resume = spec.continuation?.resume;
+    let res = await invoke(forCloud(resume ? resume.prompt : spec.prompt), resume);
+    if (resume) {
+      // A resume that failed before the member did anything (session gone, moved, unreadable) gets one fresh run with the chat history.
+      const retry = !res.ok && !res.cancelled && !res.limited && !billingAbort && !ctx.signal.aborted && (res.resumeFailed || !produced);
+      if (retry) {
+        forgetMemberSession(ctx, member);
+        pushItem({ kind: 'note', text: `Couldn't continue ${label(member)}'s earlier session (${(res.error ?? 'unknown error').split('\n')[0].slice(0, 160)}). Started fresh with the chat history.` });
+        bus.log('warn', `[council] ${label(member)}: resume failed, starting fresh`);
+        res = await invoke(forCloud(spec.prompt));
+      } else if (res.ok) {
+        step.continued = true;
+      }
+    }
+    if (res.ok && spec.continuation?.save && res.sessionId) {
+      saveMemberSession(ctx, member, { id: res.sessionId, cwd, role: spec.role, access: spec.access, updatedAt: Date.now() });
+    }
     ctx.signal.removeEventListener('abort', onParentAbort);
     spec.signal?.removeEventListener('abort', onParentAbort);
 

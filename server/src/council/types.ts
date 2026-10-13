@@ -21,6 +21,21 @@ export interface MemberRunOptions {
   signal: AbortSignal;
   timeoutMs: number;
   onEvent: (ev: MemberEvent) => void;
+  /** Continue this vendor session (from an earlier MemberResult.sessionId) instead of starting a new one. */
+  resumeSessionId?: string;
+  /**
+   * The resumed session already holds these instructions, so adapters that prepend instructions to the prompt
+   * (Codex, Gemini) send only the prompt. Adapters with a real system prompt pass it again either way.
+   */
+  instructionsInSession?: boolean;
+}
+
+/** A resume that failed because the vendor could not find or load the session (not a task error). */
+export const RESUME_FAILED_RE = /no (conversation|session|saved session|rollout|thread)s? found|(session|conversation|thread|rollout|agent)\b[^\n]{0,60}\bnot found|invalid session|error resuming session|failed to (find|load|resume) (the )?(session|conversation|thread|agent)|unknown (session|thread|agent)/i;
+
+/** Prompt body for members without a system prompt: instructions first, unless a resumed session already has them. */
+export function promptWithInstructions(o: MemberRunOptions): string {
+  return o.resumeSessionId && o.instructionsInSession ? o.prompt : `${o.instructions}\n\n---\n\n${o.prompt}`;
 }
 
 export interface MemberResult {
@@ -36,6 +51,10 @@ export interface MemberResult {
   usage?: { inputTokens: number; outputTokens: number };
   model?: string;
   cancelled?: boolean;
+  /** The vendor's own session id for this run, so a follow-up can resume it. */
+  sessionId?: string;
+  /** resumeSessionId was given and the vendor could not continue that session. The caller retries fresh. */
+  resumeFailed?: boolean;
 }
 
 export type MemberStatusBase = Omit<MemberStatus, 'limitedUntil' | 'lastError' | 'checkedAt'> & { lastError?: string };

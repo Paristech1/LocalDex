@@ -4,7 +4,9 @@ const CTL = process.env.FAKE_CTL || path.join(__dirname, '..', 'fakectl');
 exports.flag = (name) => fs.existsSync(path.join(CTL, name));
 // Record what a stand-in received so tests can assert on args/prompts: <ctl>/<name>.last.json and <name>.log.jsonl
 exports.record = (name, data) => { try { fs.mkdirSync(CTL, { recursive: true }); const line = JSON.stringify({ ts: Date.now(), ...data }); fs.writeFileSync(path.join(CTL, name + '.last.json'), line); fs.appendFileSync(path.join(CTL, name + '.log.jsonl'), line + '\n'); } catch {} };
-exports.out = (o) => process.stdout.write(JSON.stringify(o) + '\n');
+// A fresh vendor session id per run, e.g. claude-3f9a1c2b.
+exports.newId = (who) => `${who}-${require('crypto').randomBytes(4).toString('hex')}`;
+exports.out =(o) => process.stdout.write(JSON.stringify(o) + '\n');
 exports.sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 exports.readStdin = () => new Promise((r) => { let d = ''; if (process.stdin.isTTY) return r(''); process.stdin.setEncoding('utf8'); process.stdin.on('data', (c) => (d += c)); process.stdin.on('end', () => r(d)); });
 exports.role = (text) => (/You are a PEER REVIEWER/.test(text) ? 'peer' : /You are the QA tester/.test(text) ? 'qa' : /You are the PLANNER/.test(text) ? 'planner' : /You are the BUILDER/.test(text) ? 'builder' : /You are the REVIEWER/.test(text) ? 'reviewer' : /You are the JUDGE/.test(text) ? 'judge' : /You are the VISION/.test(text) ? 'vision' : /independent advisers/.test(text) ? 'voter' : /RESEARCHER/.test(text) ? 'researcher' : 'quick');

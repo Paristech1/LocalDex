@@ -11,7 +11,10 @@ const a = process.argv.slice(2);
   const sys = a[a.indexOf('--append-system-prompt') + 1] || '';
   const role = c.role(sys);
   const model = a.includes('--model') ? a[a.indexOf('--model') + 1] : 'claude-sonnet-5-5';
-  c.out({ type: 'system', subtype: 'init', session_id: 's1', model, apiKeySource: c.flag('claude_api') ? 'ANTHROPIC_API_KEY' : 'none', tools: ['Read', 'Grep', 'Edit'] });
+  const resume = a.includes('--resume') ? a[a.indexOf('--resume') + 1] : null;
+  if (resume && c.flag('resume_fail')) { process.stderr.write(`No conversation found with session ID: ${resume}\n`); process.exit(1); }
+  const sessionId = resume || c.newId('claude');
+  c.out({ type: 'system', subtype: 'init', session_id: sessionId, model, apiKeySource: c.flag('claude_api') ? 'ANTHROPIC_API_KEY' : 'none', tools: ['Read', 'Grep', 'Edit'] });
   await c.sleep(300);
   if (c.flag('claude_limit')) {
     c.out({ type: 'result', subtype: 'success', is_error: true, result: 'Claude AI usage limit reached|' + Math.floor(Date.now() / 1000 + 3600), usage: { input_tokens: 0, output_tokens: 0 } });
