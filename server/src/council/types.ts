@@ -38,12 +38,24 @@ export interface MemberResult {
   cancelled?: boolean;
 }
 
+export type MemberStatusBase = Omit<MemberStatus, 'limitedUntil' | 'lastError' | 'checkedAt'> & { lastError?: string };
+
+export interface ModelList {
+  models: string[];
+  source: 'account' | 'suggested';
+}
+
 export interface MemberAdapter {
   id: MemberId;
   label: string;
   /** Detect install + sign-in + billing. Must be cheap-ish (called on demand and cached). */
   status(): Promise<Omit<MemberStatus, 'limitedUntil' | 'lastError' | 'checkedAt'>>;
   run(opts: MemberRunOptions): Promise<MemberResult>;
+  /**
+   * Models this member can use. 'account' = listed by the vendor's own CLI/SDK for the signed-in account;
+   * 'suggested' = known aliases when the vendor offers no listing. Called off the status path, with a timeout.
+   */
+  listModels?(status: MemberStatusBase, signal: AbortSignal): Promise<ModelList>;
   /** Cursor only: open the vendor's sign-in page from LocalDex. */
   login?(onUrl: (url: string) => void, signal: AbortSignal): Promise<{ ok: boolean; account?: string; error?: string }>;
 }

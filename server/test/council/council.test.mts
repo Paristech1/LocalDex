@@ -6,7 +6,7 @@ import { execSync } from 'node:child_process';
 const SRC = new URL('../../src', import.meta.url).pathname;
 const DEMO = process.env.DEMO_DIR!;
 const { bus } = await import(`${SRC}/agent/bus.ts`);
-const { memberStatuses, clearLimit } = await import(`${SRC}/council/registry.ts`);
+const { memberStatuses, clearLimit, markLimited } = await import(`${SRC}/council/registry.ts`);
 const { classify, parseCommand } = await import(`${SRC}/council/router.ts`);
 const { runCouncil, runSummary, runVia } = await import(`${SRC}/council/orchestrator.ts`);
 const { memberEnv } = await import(`${SRC}/council/proc.ts`);
@@ -134,6 +134,28 @@ setTimeout(() => ac.abort(), 600);
 const t0 = Date.now();
 run = await runCouncil(ctx(ac.signal), { pattern: 'single', role: 'researcher', member: 'gemini', task: 'slow', note: 'test' });
 check('stop: run cancelled quickly', run.status === 'cancelled' && Date.now() - t0 < 5000, `${Date.now() - t0}ms ${run.steps[0]?.status}`);
+
+// 15. health check: deep refresh adds a checklist and each member's models
+reset();
+const t15 = Date.now();
+st = await memberStatuses(true, true);
+const ck = (id: string, name: string) => by(id).checks?.find((c: any) => c.name === name);
+check('health: checklist for all four members', st.length === 4 && st.every((s: any) => ['Signed in', 'Subscription billing', 'Models listed', 'Not cooling down'].every((n) => s.checks?.some((c: any) => c.name === n && c.ok))), st.map((s: any) => `${s.id}:${(s.checks ?? []).filter((c: any) => !c.ok).map((c: any) => c.name).join('/') || 'ok'}`).join(' '));
+check('health: run time recorded', st.every((s: any) => (s.healthCheckedAt ?? 0) >= t15));
+check('health: cursor models come from the SDK for your account', by('cursor').modelsSource === 'account' && JSON.stringify(by('cursor').models) === '["composer-fake-2","gpt-fake-6"]', JSON.stringify(by('cursor').models));
+const codexModelsArgv = JSON.parse(fs.readFileSync(path.join(CTL, 'codex-models.last.json'), 'utf8')).argv;
+check('health: codex models from `codex debug models`, hidden ones dropped', by('codex').modelsSource === 'account' && by('codex').models?.includes('gpt-fake-6-sol') && !by('codex').models?.includes('codex-internal') && !codexModelsArgv.includes('--bundled'), JSON.stringify(by('codex').models));
+check('health: claude falls back to suggested aliases', by('claude').modelsSource === 'suggested' && ['opus', 'sonnet', 'haiku'].every((m) => by('claude').models?.includes(m)), JSON.stringify(by('claude').models));
+check('health: gemini suggests its aliases', by('gemini').modelsSource === 'suggested' && by('gemini').models?.includes('flash'));
+reset(); flag('claude_signed_out', true); flag('cursor_signed_out', true); flag('codex_signed_out', true);
+st = await memberStatuses(true, true);
+check('health: signed-out claude fails "Signed in" with the login command', ck('claude', 'Signed in')?.ok === false && /claude auth login/.test(ck('claude', 'Signed in')?.detail ?? '') && ck('claude', 'Subscription billing')?.ok === false);
+check('health: signed-out cursor only gets suggestions', ck('cursor', 'Signed in')?.ok === false && by('cursor').modelsSource === 'suggested');
+check('health: signed-out codex reads the bundled catalog (no account call)', by('codex').modelsSource === 'suggested' && by('codex').models?.includes('gpt-bundled-1'));
+reset(); markLimited('gemini', 'Quota exceeded. Try again in 30 minutes.');
+st = await memberStatuses();
+check('health: cooling-down member fails "Not cooling down"', ck('gemini', 'Not cooling down')?.ok === false && ck('claude', 'Not cooling down')?.ok === true);
+reset(); await memberStatuses(true);
 
 console.log(`\n${pass} passed, ${fail} failed. events: ${JSON.stringify(events)}`);
 reset();

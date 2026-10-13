@@ -3,6 +3,12 @@ import fs from 'node:fs'; import path from 'node:path'; import { createRequire }
 const require = createRequire(import.meta.url);
 const c = require('./fakebin/_common.cjs');
 export const Cursor = {
+  models: {
+    async list() {
+      if (c.flag('cursor_signed_out')) { const e = new Error('API key is required'); e.name = 'AuthenticationError'; throw e; }
+      return [{ id: 'composer-fake-2', displayName: 'Composer Fake 2' }, { id: 'gpt-fake-6', displayName: 'GPT Fake 6', aliases: ['gpt-6'] }];
+    },
+  },
   auth: {
     async status() { return c.flag('cursor_signed_out') ? { status: 'logged-out' } : { status: 'logged-in', email: 'paris@example.com' }; },
     async login({ onLoginUrl }) { onLoginUrl?.('https://cursor.com/loginDeepControl?challenge=test'); await c.sleep(500); return { apiKey: 'redacted', email: 'paris@example.com' }; },

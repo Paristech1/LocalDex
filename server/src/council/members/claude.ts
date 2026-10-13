@@ -1,7 +1,18 @@
 import { getSettings } from '../../config.js';
-import { memberEnv, resolveBinary, runJsonl, runQuick } from '../proc.js';
+import { memberEnv, resolveBinary, runCapture, runJsonl, runQuick } from '../proc.js';
 import { detectLimit, parseResetAt, stringify, type MemberAdapter, type MemberResult, type MemberRunOptions } from '../types.js';
 import type { MemberBilling } from '@localdex/shared';
+
+/** Claude Code's documented model aliases. It has no command that lists models, so these are suggestions. */
+const CLAUDE_ALIASES = ['sonnet', 'opus', 'haiku'];
+
+/** Aliases quoted in the `--model` help text (e.g. "an alias for the latest model (e.g. 'opus' or 'sonnet')"). */
+export function aliasesFromHelp(help: string): string[] {
+  const i = help.indexOf('--model <model>');
+  if (i < 0) return [];
+  const block = help.slice(i, i + 600).split(/\n\s*-/)[0];
+  return [...block.matchAll(/'([a-z][a-z0-9.-]{1,30})'/g)].map((m) => m[1]);
+}
 
 /** Tools that change files. Blocked for read-only council roles. */
 const WRITE_TOOLS = ['Edit', 'Write', 'MultiEdit', 'NotebookEdit'];
@@ -39,6 +50,12 @@ export const claudeMember: MemberAdapter = {
       signedIn = /logged in|signed in/i.test(s.stdout) && !/not logged in/i.test(s.stdout);
     }
     return { ...base, installed: true, version, path: b, signedIn, billing, account };
+  },
+
+  async listModels(st) {
+    const b = st.path ?? bin();
+    const fromHelp = b ? aliasesFromHelp((await runCapture(b, ['--help'], 10_000, 200_000)).stdout) : [];
+    return { models: Array.from(new Set([...fromHelp, ...CLAUDE_ALIASES])), source: 'suggested' };
   },
 
   async run(o: MemberRunOptions): Promise<MemberResult> {
