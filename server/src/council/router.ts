@@ -271,6 +271,6 @@ export function availableMembers(statuses: MemberStatus[]): MemberId[] {
 export function modelFor(ref: CouncilMemberRef, role: CouncilStep['role'], opts: { heavy?: boolean } = {}): string | undefined {
   if (ref === 'local') return undefined;
   const cfg = getSettings().council.members[ref];
-  const heavy = opts.heavy || role === 'planner' || role === 'reviewer' || role === 'judge';
+  const heavy = opts.heavy || role === 'planner' || role === 'reviewer' || role === 'qa' || role === 'judge';
   return (heavy && cfg.heavyModel) || cfg.model || undefined;
 }

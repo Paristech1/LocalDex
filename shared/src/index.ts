@@ -169,8 +169,8 @@ export const MEMBER_IDS: MemberId[] = ['claude', 'codex', 'gemini', 'cursor'];
 /** 'local' is LocalDex's own LM Studio model (runs as a worker with LocalDex's permissions). */
 export type CouncilMemberRef = MemberId | 'local';
 
-export type CouncilRole = 'planner' | 'builder' | 'frontend' | 'backend' | 'reviewer' | 'researcher' | 'vision' | 'quick';
-export const COUNCIL_ROLES: CouncilRole[] = ['planner', 'builder', 'frontend', 'backend', 'reviewer', 'researcher', 'vision', 'quick'];
+export type CouncilRole = 'planner' | 'builder' | 'frontend' | 'backend' | 'reviewer' | 'qa' | 'researcher' | 'vision' | 'quick';
+export const COUNCIL_ROLES: CouncilRole[] = ['planner', 'builder', 'frontend', 'backend', 'reviewer', 'qa', 'researcher', 'vision', 'quick'];
 /** Roles that make changes. `frontend` and `backend` are domain builders and behave exactly like `builder`. */
 export const BUILDER_ROLES: CouncilRole[] = ['builder', 'frontend', 'backend'];
 export function isBuilderRole(role: string): boolean {
@@ -240,6 +240,14 @@ export interface CouncilSettings {
   riskRouting: boolean;
   /** Vote: before the judge, each adviser ranks all answers blind (anonymized as Response A/B/C…). Default on. */
   peerReview: boolean;
+  /** Plan → build → review: run the project's own checks (typecheck/lint/tests) after each build and fix round, before review. */
+  checksGate: boolean;
+  /** Plan → build → review: command that runs the project's own checks before review. Empty = detect from the project (package.json scripts, pytest, cargo, go). */
+  checkCommand: string;
+  /** Kill the checks after this many minutes. */
+  checkTimeoutMinutes: number;
+  /** Plan → build → review: after approval, a QA member tries to break the change (read-only). */
+  qaStep: boolean;
 }
 
 /** How risky a request looks, from explainable keyword rules. */
@@ -294,7 +302,8 @@ export interface CouncilTranscriptItem {
 
 export interface CouncilStep {
   id: string;
-  role: CouncilRole | 'judge' | 'voter' | 'peer';
+  /** 'checks' = the project's own checks, run by LocalDex itself (member 'local'), not by a model. */
+  role: CouncilRole | 'judge' | 'voter' | 'peer' | 'checks';
   member: CouncilMemberRef;
   model?: string;
   access: CouncilAccess;
@@ -483,6 +492,7 @@ export const DEFAULT_COUNCIL: CouncilSettings = {
     frontend: ['gemini', 'cursor', 'claude'],
     backend: ['codex', 'claude', 'cursor'],
     reviewer: ['codex', 'gemini', 'claude'],
+    qa: ['gemini', 'codex', 'claude'],
     researcher: ['gemini', 'claude', 'codex'],
     vision: ['gemini', 'claude'],
     quick: ['local', 'gemini'],
@@ -503,6 +513,10 @@ export const DEFAULT_COUNCIL: CouncilSettings = {
   consultNudges: true,
   riskRouting: true,
   peerReview: true,
+  checksGate: true,
+  checkCommand: '',
+  checkTimeoutMinutes: 10,
+  qaStep: true,
 };
 
 export const DEFAULT_CAPABILITIES: Record<ToolName, boolean> = {

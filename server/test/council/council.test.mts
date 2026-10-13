@@ -30,6 +30,9 @@ bus.subscribe((ev: any) => {
 const session: any = { id: 's-test', title: 't', messages: [], workers: {}, plan: [], councilRuns: [], usage: { promptTokens: 0, completionTokens: 0, lastPromptTokens: 0 } };
 const ctx = (signal = new AbortController().signal) => ({ session, signal, persist: () => {}, delegateLocal: async () => 'local report' });
 const reset = () => { execSync('git checkout -q -- . && git clean -qfd', { cwd: DEMO }); for (const f of fs.readdirSync(CTL)) fs.rmSync(path.join(CTL, f)); for (const m of ['claude','codex','gemini','cursor'] as const) clearLimit(m); };
+// The QA step (section 22) changes plan → build → review step sequences; older sections check the flow without it.
+// (The demo project has no package.json, so the checks gate finds nothing to run there.)
+updateSettings({ council: { ...getSettings().council, qaStep: false } });
 
 // 1. env stripping
 process.env.ANTHROPIC_API_KEY = 'sk-ant-should-not-leak'; process.env.OPENAI_API_KEY = 'sk-x'; process.env.GEMINI_API_KEY = 'g';
@@ -574,6 +577,106 @@ updateSettings({ council: { ...getSettings().council, allowWrite: true } });
   updateSettings({ council: { ...getSettings().council, peerReview: true } });
   check('peer: setting defaults to on', DEFAULT_COUNCIL.peerReview === true);
   resetStats();
+}
+
+// 22. checks gate + QA step + strict verdicts in plan → build → review
+{
+  const { detectCheckCommand } = await import(`${SRC}/council/checks.ts`);
+  const tmp = fs.mkdtempSync(path.join(path.dirname(DEMO), 'detect-'));
+  const dir = (name: string, files: Record<string, string>) => { const d = path.join(tmp, name); fs.mkdirSync(d); for (const [f, body] of Object.entries(files)) fs.writeFileSync(path.join(d, f), body); return d; };
+  const pkg = (scripts: Record<string, string>) => JSON.stringify({ name: 'x', scripts });
+  check('checks detect: typecheck, lint, test in that order', detectCheckCommand(dir('a', { 'package.json': pkg({ test: 'vitest', build: 'vite build', lint: 'eslint .', typecheck: 'tsc' }) })) === 'npm run typecheck && npm run lint && npm run test');
+  check('checks detect: npm default test script skipped', detectCheckCommand(dir('b', { 'package.json': pkg({ test: 'echo "Error: no test specified" && exit 1' }) })) === '');
+  check('checks detect: pnpm lockfile → pnpm', detectCheckCommand(dir('c', { 'package.json': pkg({ test: 'vitest' }), 'pnpm-lock.yaml': '' })) === 'pnpm run test');
+  check('checks detect: pytest, cargo, go', detectCheckCommand(dir('d', { 'pyproject.toml': '' })) === 'pytest -q' && detectCheckCommand(dir('e', { 'Cargo.toml': '' })) === 'cargo test' && detectCheckCommand(dir('f', { 'go.mod': '' })) === 'go test ./...');
+  check('checks detect: nothing found → empty', detectCheckCommand(dir('g', { 'README.md': '' })) === '');
+  fs.rmSync(tmp, { recursive: true, force: true });
+
+  const base = getSettings().council;
+  updateSettings({ council: { ...base, qaStep: true, checksGate: true, checkCommand: '', maxFixRounds: 1 } });
+  // Untracked, so reset() removes them again. The test passes only once the builder has created src/rateLimit.ts;
+  // a `.fail_once` marker makes it fail exactly once.
+  const setupProject = () => {
+    fs.writeFileSync(`${DEMO}/package.json`, JSON.stringify({ name: 'demo', private: true, scripts: { test: 'node check.cjs' } }));
+    fs.writeFileSync(`${DEMO}/check.cjs`, "const fs = require('fs');\nif (fs.existsSync('.fail_once')) { fs.rmSync('.fail_once'); console.error('FAIL rateLimit: expected 429 after 60 requests, got 200'); process.exit(1); }\nif (!fs.existsSync('src/rateLimit.ts')) { console.error('missing src/rateLimit.ts'); process.exit(1); }\nconsole.log('ok 3 tests passed');\n");
+  };
+  const roles = (x: any) => x.steps.map((s: any) => s.role).join(',');
+  const prompts = (m: string) => { try { return fs.readFileSync(path.join(CTL, `${m}.log.jsonl`), 'utf8').trim().split('\n').map((l) => JSON.parse(l).prompt as string); } catch { return [] as string[]; } };
+  let approvalCmds: string[] = [];
+  const offA = bus.subscribe((ev: any) => { if (ev.type === 'approval_request') approvalCmds.push(ev.command); });
+
+  // Happy path: checks pass → reviewer approves → QA passes.
+  reset(); setupProject(); approvals = 0; approvalCmds = [];
+  run = await runCouncil(ctx(), { pattern: 'plan_build_review', role: 'builder', task: 'Add rate limiting to the API', note: 'test' });
+  console.log(runSummary(run));
+  const chk = run.steps.find((s: any) => s.role === 'checks');
+  check('gates: plan → build → checks → review → QA', roles(run) === 'planner,builder,checks,reviewer,qa', roles(run));
+  check('gates: checks step is local, read, done with output', chk?.member === 'local' && chk.access === 'read' && chk.status === 'done' && /ok 3 tests passed/.test(chk.output ?? '') && /npm run test/.test(chk.note ?? ''), JSON.stringify({ s: chk?.status, n: chk?.note, o: chk?.output?.slice(-60) }));
+  check('gates: checks asked for approval with the exact command and folder', approvals === 2 && approvalCmds.some((c) => /\$ npm run test$/.test(c)));
+  check('gates: reviewer told the checks passed', /Checks passed: npm run test/.test(prompts('codex').at(-1) ?? ''));
+  const qa = run.steps.find((s: any) => s.role === 'qa');
+  check('gates: QA on gemini (not the builder or reviewer), read-only', qa?.member === 'gemini' && qa.access === 'read' && /try to break this change/i.test(prompts('gemini').at(-1) ?? ''), `${qa?.member}`);
+  check('gates: header lists every gate', (run.result ?? '').startsWith('**✅ Checks passed · Approved by Codex · QA passed by Gemini**'), (run.result ?? '').split('\n')[0]);
+
+  // A failing check goes straight to a fix round; the reviewer only sees the fixed work.
+  reset(); setupProject(); fs.writeFileSync(`${DEMO}/.fail_once`, '1'); approvals = 0;
+  run = await runCouncil(ctx(), { pattern: 'plan_build_review', role: 'builder', task: 'Add rate limiting to the API', note: 'test' });
+  const fix = run.steps.filter((s: any) => s.role === 'builder')[1];
+  check('checks fail: fix round without reviewer, then checks → review → QA', roles(run) === 'planner,builder,checks,builder,checks,reviewer,qa' && run.steps[2].status === 'error', roles(run));
+  check('checks fail: builder gets the check output', /checks failed/.test(fix?.note ?? '') && /expected 429 after 60 requests/.test(prompts('cursor').at(-1) ?? ''), fix?.note);
+  check('checks fail: ends approved', /^\*\*✅ Checks passed · Approved by Codex/.test(run.result ?? ''));
+
+  // Out of fix rounds with checks still failing: no reviewer at all.
+  reset(); setupProject(); updateSettings({ council: { ...getSettings().council, maxFixRounds: 0 } }); fs.writeFileSync(`${DEMO}/.fail_once`, '1');
+  run = await runCouncil(ctx(), { pattern: 'plan_build_review', role: 'builder', task: 'Add rate limiting to the API', note: 'test' });
+  check('checks fail, no rounds left: not reviewed', roles(run) === 'planner,builder,checks' && /^\*\*⚠️ Checks failed · Not reviewed \(checks failed\)/.test(run.result ?? ''), (run.result ?? '').split('\n')[0]);
+  updateSettings({ council: { ...getSettings().council, maxFixRounds: 1 } });
+
+  // QA FAIL → fix round → checks → review → QA again.
+  reset(); setupProject(); flag('qa_fail_once', true);
+  run = await runCouncil(ctx(), { pattern: 'plan_build_review', role: 'builder', task: 'Add rate limiting to the API', note: 'test' });
+  check('QA fail: fix round, then the full gate again', roles(run) === 'planner,builder,checks,reviewer,qa,builder,checks,reviewer,qa', roles(run));
+  check('QA fail: builder gets the repro', /\(QA\)/.test(run.steps[5]?.note ?? '') && /rateLimit\(0\)/.test(prompts('cursor').at(-1) ?? ''));
+  check('QA fail: final header passes', /^\*\*✅ Checks passed · Approved by Codex · QA passed by Gemini/.test(run.result ?? ''), (run.result ?? '').split('\n')[0]);
+
+  // No fix rounds left after a QA fail → header says so.
+  reset(); setupProject(); flag('qa_fail_once', true); updateSettings({ council: { ...getSettings().council, maxFixRounds: 0 } });
+  run = await runCouncil(ctx(), { pattern: 'plan_build_review', role: 'builder', task: 'Add rate limiting to the API', note: 'test' });
+  check('QA fail, no rounds left: header shows QA failed', /^\*\*⚠️ Checks passed · Approved by Codex · QA failed by Gemini\*\*/.test(run.result ?? ''), (run.result ?? '').split('\n')[0]);
+
+  // Reviewer without a verdict: asked once to restate, then counts as changes requested.
+  reset(); setupProject(); flag('review_no_verdict', true);
+  run = await runCouncil(ctx(), { pattern: 'plan_build_review', role: 'builder', task: 'Add rate limiting to the API', note: 'test' });
+  const restates = prompts('codex').filter((p) => /had no verdict line/.test(p));
+  check('no verdict: one restate request, then a rejection (no QA)', roles(run) === 'planner,builder,checks,reviewer,reviewer' && restates.length === 1 && /no verdict given/.test(run.steps[4].note ?? ''), roles(run));
+  check('no verdict: header says why', /^\*\*⚠️ Checks passed · Changes still requested by Codex \(no verdict given\)/.test(run.result ?? ''), (run.result ?? '').split('\n')[0]);
+  updateSettings({ council: { ...getSettings().council, maxFixRounds: 1 } });
+  reset(); setupProject(); flag('review_no_verdict', true);
+  run = await runCouncil(ctx(), { pattern: 'plan_build_review', role: 'builder', task: 'Add rate limiting to the API', note: 'test' });
+  check('no verdict: counts as changes → fix round', roles(run) === 'planner,builder,checks,reviewer,reviewer,builder,checks,reviewer,reviewer' && /no verdict/.test(run.steps[5]?.note ?? ''), roles(run));
+
+  // Declining the checks skips the gate for the rest of the run (edit prompts off so only the checks ask).
+  reset(); setupProject(); updateSettings({ council: { ...getSettings().council, confirmWrites: false } }); denyNext = true; approvals = 0;
+  run = await runCouncil(ctx(), { pattern: 'plan_build_review', role: 'builder', task: 'Add rate limiting to the API', note: 'test' });
+  denyNext = false;
+  check('declined checks: step skipped, review and QA still run', roles(run) === 'planner,builder,checks,reviewer,qa' && run.steps[2].status === 'skipped' && approvals === 1, roles(run));
+  check('declined checks: header notes it', /^\*\*✅ Checks skipped \(you declined\) · Approved by Codex · QA passed by Gemini/.test(run.result ?? ''), (run.result ?? '').split('\n')[0]);
+
+  // shellApproval 'never' → no prompt; custom command from settings wins.
+  reset(); setupProject(); approvals = 0;
+  const prevShell = getSettings().shellApproval;
+  updateSettings({ shellApproval: 'never', council: { ...getSettings().council, checkCommand: 'node check.cjs' } });
+  run = await runCouncil(ctx(), { pattern: 'plan_build_review', role: 'builder', task: 'Add rate limiting to the API', note: 'test' });
+  check('custom command, shell approval off: runs without asking', approvals === 0 && /your check command: node check\.cjs/.test(run.steps.find((s: any) => s.role === 'checks')?.note ?? '') && /^\*\*✅ Checks passed/.test(run.result ?? ''));
+  updateSettings({ shellApproval: prevShell, council: { ...getSettings().council, checkCommand: '', confirmWrites: true } });
+
+  // Both gates off → the old plan → build → review flow.
+  reset(); setupProject(); updateSettings({ council: { ...getSettings().council, checksGate: false, qaStep: false } });
+  run = await runCouncil(ctx(), { pattern: 'plan_build_review', role: 'builder', task: 'Add rate limiting to the API', note: 'test' });
+  check('gates off: plan → build → review only', roles(run) === 'planner,builder,reviewer' && /^\*\*✅ Approved by Codex\*\*/.test(run.result ?? ''), (run.result ?? '').split('\n')[0]);
+
+  offA();
+  updateSettings({ council: base });
 }
 
 console.log(`\n${pass} passed, ${fail} failed. events: ${JSON.stringify(events)}`);
