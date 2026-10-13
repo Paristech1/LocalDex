@@ -164,6 +164,20 @@ function RiskChip({ risk, reasons }: { risk: CouncilRisk; reasons: string[] }) {
   );
 }
 
+/** What the previous member handed over when it stopped mid-task. */
+function HandoffBox({ handoff }: { handoff: NonNullable<CouncilStep['handoff']> }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <div className="rounded border border-ink-700 bg-ink-900/40">
+      <button type="button" onClick={() => setOpen((o) => !o)} className="w-full text-left px-2 py-1 flex items-center gap-1.5 text-[11px] text-ink-300 hover:text-ink-100">
+        <span className="text-ink-500">{open ? '▾' : '▸'}</span>
+        Handoff from <VendorBadge member={handoff.from} />
+      </button>
+      {open && <pre className="border-t border-ink-800 px-2 py-1.5 font-mono text-[11px] text-ink-200 whitespace-pre-wrap break-words max-h-64 overflow-y-auto">{handoff.text}</pre>}
+    </div>
+  );
+}
+
 function StepRow({ step, now, defaultOpen }: { step: CouncilStep; now: number; defaultOpen?: boolean }) {
   const [open, setOpen] = useState(!!defaultOpen);
   const [showWork, setShowWork] = useState(false);
@@ -205,6 +219,7 @@ function StepRow({ step, now, defaultOpen }: { step: CouncilStep; now: number; d
         <div className="border-t border-ink-800 px-2.5 py-2 text-sm space-y-2">
           {step.note && <div className="text-[11px] text-ink-400">{step.note}</div>}
           {step.error && <div className={cx('text-xs whitespace-pre-wrap break-words', step.status === 'limited' || step.status === 'skipped' ? 'text-warn' : 'text-danger')}>{step.error}</div>}
+          {step.handoff && <HandoffBox handoff={step.handoff} />}
           {running && live ? (
             <>
               {live.content && (

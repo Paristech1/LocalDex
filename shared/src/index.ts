@@ -300,6 +300,8 @@ export interface CouncilStep {
   note?: string;
   /** Secrets removed from the prompt before it was sent to this member. */
   redactions?: number;
+  /** Written handoff this member got because the previous member stopped mid-task (e.g. usage limit). */
+  handoff?: { from: CouncilMemberRef; text: string };
 }
 
 export interface CouncilRun {
