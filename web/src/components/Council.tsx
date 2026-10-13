@@ -2,6 +2,7 @@ import { useEffect, useId, useState } from 'react';
 import {
   COUNCIL_ROLES,
   MEMBER_IDS,
+  quorumLabel,
   type CouncilMemberRef,
   type CouncilMemberStats,
   type CouncilPattern,
@@ -113,6 +114,11 @@ export function CouncilRunCard({ run, defaultOpen, compact }: { run: CouncilRun;
             {running ? 'running' : run.status}
           </span>
           {run.risk && <RiskChip risk={run.risk} reasons={run.riskReasons ?? []} />}
+          {run.quorum && (
+            <span className={cx('text-[10px] truncate', run.quorum.dropped ? 'text-warn' : 'text-ink-400')} title="Advisers needed before the grace timer starts / advisers asked">
+              {quorumLabel(run.quorum)}
+            </span>
+          )}
           <span className="flex-1" />
           <span className="text-[11px] text-ink-400">
             {dur((run.endedAt ?? now) - run.startedAt)}
@@ -609,6 +615,26 @@ export function CouncilSettingsTab({ settings, patch }: TabProps) {
               </label>
             ))}
           </div>
+        </Field>
+        <Field label="Vote quorum" hint="Answers needed before the grace timer starts.">
+          <input
+            type="number"
+            min={1}
+            max={Math.max(1, c.voteMembers.length)}
+            className={inputCls}
+            value={c.voteQuorum}
+            onChange={(e) => setC({ voteQuorum: Math.max(1, Math.min(Math.max(1, c.voteMembers.length), Math.round(Number(e.target.value)) || 1)) })}
+          />
+        </Field>
+        <Field label="Vote grace period (seconds)" hint="After quorum, how long to wait for the rest. Slower advisers are then stopped.">
+          <input
+            type="number"
+            min={0}
+            max={600}
+            className={inputCls}
+            value={c.voteGraceSeconds}
+            onChange={(e) => setC({ voteGraceSeconds: Math.max(0, Math.min(600, Math.round(Number(e.target.value)) || 0)) })}
+          />
         </Field>
         <Field label="Review → fix rounds" hint="How many times the builder may fix issues the reviewer finds.">
           <input type="number" min={0} max={3} className={inputCls} value={c.maxFixRounds} onChange={(e) => setC({ maxFixRounds: Math.max(0, Math.min(3, Number(e.target.value))) })} />

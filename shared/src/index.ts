@@ -177,6 +177,11 @@ export function isBuilderRole(role: string): boolean {
   return (BUILDER_ROLES as string[]).includes(role);
 }
 
+/** Vote quorum line for run cards and summaries, e.g. "Quorum 2/3 · 1 dropped after 30s". */
+export function quorumLabel(q: NonNullable<CouncilRun['quorum']>): string {
+  return `Quorum ${q.needed}/${q.of}${q.dropped ? ` · ${q.dropped} dropped after ${q.graceSeconds}s` : ''}`;
+}
+
 export type CouncilPattern = 'single' | 'plan_build_review' | 'second_opinion' | 'vote';
 export type CouncilAccess = 'read' | 'write';
 
@@ -204,6 +209,10 @@ export interface CouncilSettings {
   voteMembers: MemberId[];
   /** Who combines vote answers. */
   judge: CouncilMemberRef;
+  /** Vote: once this many advisers have answered, the grace timer starts. */
+  voteQuorum: number;
+  /** Vote: seconds to wait for the remaining advisers after quorum; still-running ones are then stopped. */
+  voteGraceSeconds: number;
   /** Allow the builder roles (builder, frontend, backend) to edit files in the approved folders. Off (default) = every member is read-only. */
   allowWrite: boolean;
   /** Ask the user (approval prompt) before each member run that can edit files. Default on. */
@@ -316,6 +325,8 @@ export interface CouncilRun {
   /** Risk rating of the request and the signals behind it (e.g. ['auth', 'migration']). */
   risk?: CouncilRisk;
   riskReasons?: string[];
+  /** Vote runs: quorum used, voters asked, and how many were dropped after the grace period. */
+  quorum?: { needed: number; of: number; dropped: number; graceSeconds: number };
   steps: CouncilStep[];
   /** Combined result returned to the user / lead agent. */
   result?: string;
@@ -464,6 +475,8 @@ export const DEFAULT_COUNCIL: CouncilSettings = {
   defaultPattern: 'auto',
   voteMembers: ['claude', 'codex', 'gemini'],
   judge: 'claude',
+  voteQuorum: 2,
+  voteGraceSeconds: 30,
   allowWrite: false,
   confirmWrites: true,
   maxFixRounds: 1,

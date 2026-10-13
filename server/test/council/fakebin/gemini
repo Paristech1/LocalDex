@@ -16,6 +16,8 @@ const a = process.argv.slice(2);
   c.out({ type: 'init', timestamp: ts(), session_id: 'g1', model: a.includes('-m') ? a[a.indexOf('-m') + 1] : 'gemini-3-pro' });
   c.out({ type: 'message', timestamp: ts(), role: 'user', content: prompt.slice(0, 40) });
   await c.sleep(300);
+  // Slow adviser for the vote quorum/grace test: records its pid, then stalls (dies on SIGTERM like a real CLI).
+  if (c.flag('gemini_slow')) { require('fs').writeFileSync(require('path').join(process.env.FAKE_CTL || '.', 'gemini.pid'), String(process.pid)); await c.sleep(15_000); }
   if (c.flag('gemini_limit')) { c.out({ type: 'result', timestamp: ts(), status: 'error', error: { type: 'Error', message: 'Quota exceeded for quota metric. RESOURCE_EXHAUSTED (429)' }, stats: {} }); process.exit(1); }
   c.out({ type: 'message', timestamp: ts(), role: 'assistant', content: 'Reading the project. ', delta: true });
   c.out({ type: 'tool_use', timestamp: ts(), tool_name: 'read_file', tool_id: 'rf-1', parameters: { absolute_path: 'src/math.ts' } });
