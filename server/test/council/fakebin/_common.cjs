@@ -2,6 +2,8 @@
 const fs = require('fs'); const path = require('path');
 const CTL = process.env.FAKE_CTL || path.join(__dirname, '..', 'fakectl');
 exports.flag = (name) => fs.existsSync(path.join(CTL, name));
+// Record what a stand-in received so tests can assert on args/prompts: <ctl>/<name>.last.json and <name>.log.jsonl
+exports.record = (name, data) => { try { fs.mkdirSync(CTL, { recursive: true }); const line = JSON.stringify({ ts: Date.now(), ...data }); fs.writeFileSync(path.join(CTL, name + '.last.json'), line); fs.appendFileSync(path.join(CTL, name + '.log.jsonl'), line + '\n'); } catch {} };
 exports.out = (o) => process.stdout.write(JSON.stringify(o) + '\n');
 exports.sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 exports.readStdin = () => new Promise((r) => { let d = ''; if (process.stdin.isTTY) return r(''); process.stdin.setEncoding('utf8'); process.stdin.on('data', (c) => (d += c)); process.stdin.on('end', () => r(d)); });

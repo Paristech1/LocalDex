@@ -6,6 +6,7 @@ const a = process.argv.slice(2);
   if (a[0] === '--version') return console.log('2.1.296 (Claude Code)');
   if (a[0] === 'auth' && a[1] === 'status') return console.log(JSON.stringify(c.flag('claude_signed_out') ? { loggedIn: false } : { loggedIn: true, authMethod: c.flag('claude_api') ? 'api_key' : 'claude.ai', email: 'paris@example.com' }));
   const prompt = await c.readStdin();
+  c.record('claude', { argv: a, prompt });
   const sys = a[a.indexOf('--append-system-prompt') + 1] || '';
   const role = c.role(sys);
   const model = a.includes('--model') ? a[a.indexOf('--model') + 1] : 'claude-sonnet-5-5';

@@ -6,6 +6,7 @@ const a = process.argv.slice(2);
   if (a[0] === '--version') return console.log('0.63.0');
   const prompt = a[a.indexOf('-p') + 1] || '';
   const role = c.role(prompt);
+  c.record('gemini', { argv: a, prompt });
   const ts = () => new Date().toISOString();
   c.out({ type: 'init', timestamp: ts(), session_id: 'g1', model: a.includes('-m') ? a[a.indexOf('-m') + 1] : 'gemini-3-pro' });
   c.out({ type: 'message', timestamp: ts(), role: 'user', content: prompt.slice(0, 40) });

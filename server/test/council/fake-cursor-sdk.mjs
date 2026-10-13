@@ -14,6 +14,7 @@ export const Agent = {
     const role = c.role(opts.systemPrompt ?? '');
     return {
       async send(prompt) {
+        c.record('cursor', { opts, prompt });
         const cwd = opts.local.cwd; let status = 'running'; const text = c.answer(role, 'cursor', prompt);
         return {
           async *stream() {
