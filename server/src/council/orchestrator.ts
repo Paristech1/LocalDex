@@ -8,6 +8,7 @@ import type {
   CouncilRun,
   CouncilStep,
   MemberId,
+  CouncilPeerRank,
   MemberStatus,
   Session,
 } from '@localdex/shared';
@@ -24,14 +25,16 @@ import {
   judgePrompt,
   memberInstructions,
   parseVerdict,
+  peerReviewPrompt,
   plannerPrompt,
   reviewerPrompt,
   visionPrompt,
   votePrompt,
 } from './prompts.js';
 import { describeKinds, existingRedactions, redactSecrets } from './redact.js';
-import { recordBuildOutcome, recordStep } from './stats.js';
+import { recordBuildOutcome, recordPeerRanking, recordStep } from './stats.js';
 import { buildHandoff, handoffReason, withHandoff } from './handoff.js';
+import { LETTERS, aggregateRanking, anonymize, parseRanking, rankingForJudge, rankingLine, shuffle, type PeerBallot } from './peer.js';
 
 const MAX_RUNS_KEPT = 30;
 const MAX_OUTPUT = 20_000;
@@ -184,17 +187,59 @@ async function vote(ctx: CouncilContext, run: CouncilRun, question: string, stat
   if (answers.length === 0) return `No adviser answered.\n\n${steps.map((s) => `- ${label(s.member)}: ${s.error ?? s.status}`).join('\n')}`;
   if (answers.length === 1) return `Only ${answers[0].member} answered:\n\n${answers[0].text}`;
 
+  // Stage 2: blind peer review between the answers and the judge.
+  const ranking = c.peerReview !== false ? await peerReview(ctx, run, question, steps.filter((s) => s.status === 'done' && s.output).map((s) => ({ member: s.member, text: s.output! }))) : null;
+  if (ctx.signal.aborted) return 'Cancelled.';
+
   let judge: CouncilMemberRef | null = unavailableReason(c.judge, statuses) ? null : c.judge;
   if (!judge) judge = pickMember('planner', statuses)?.member ?? null;
   let verdict = '';
   if (judge) {
-    const j = await runStep(ctx, run, { role: 'judge', member: judge, access: 'read', prompt: judgePrompt(question, answers), note: judge === c.judge ? 'judge' : 'judge (fallback)' });
+    const j = await runStep(ctx, run, { role: 'judge', member: judge, access: 'read', prompt: judgePrompt(question, answers, ranking ? rankingForJudge(ranking, label) : undefined), note: judge === c.judge ? 'judge' : 'judge (fallback)' });
     verdict = j.status === 'done' ? j.output ?? '' : '';
   }
   return [
     verdict ? `### Council verdict (${label(judge!)})\n${verdict}` : '### Council answers (no judge available)',
+    ranking ? `_${rankingLine(ranking, label)}_` : '',
     ...answers.map((a) => `### ${a.member}\n${a.text}`),
-  ].join('\n\n');
+  ]
+    .filter(Boolean)
+    .join('\n\n');
+}
+
+/**
+ * Blind peer review (Karpathy's llm-council stage 2): every adviser that answered gets all answers, its own included,
+ * shuffled and anonymized as Response A/B/C…, and ranks them. Rankings are combined with a Borda count, stored on the
+ * run and fed to the scorecard. Returns null when fewer than two answers exist or no review produced a usable ranking.
+ */
+async function peerReview(ctx: CouncilContext, run: CouncilRun, question: string, answers: Array<{ member: CouncilMemberRef; text: string }>): Promise<CouncilPeerRank[] | null> {
+  if (answers.length < 2 || answers.length > LETTERS.length) return null;
+  const blind = answers.map((a) => ({ member: a.member, text: anonymize(a.text) }));
+  const reviews = await Promise.all(
+    answers.map(async ({ member }) => {
+      const order = shuffle(blind);
+      const prompt = peerReviewPrompt(question, order.map((a, i) => ({ letter: LETTERS[i], text: a.text })));
+      const step = await runStep(ctx, run, { role: 'peer', member, access: 'read', prompt, note: 'peer review (blind)' });
+      return { reviewer: member, step, order };
+    }),
+  );
+  const ballots: PeerBallot[] = [];
+  for (const r of reviews) {
+    const letters = r.step.status === 'done' ? parseRanking(r.step.output ?? '', r.order.length) : null;
+    if (!letters) {
+      if (r.step.status === 'done') r.step.transcript.push({ kind: 'note', text: 'No usable RANKING line; this review was left out of the peer ranking.' });
+      continue;
+    }
+    // Show which letter was whose, now that the review is in.
+    r.step.transcript.push({ kind: 'note', text: `Letters: ${r.order.map((a, i) => `${LETTERS[i]} = ${label(a.member)}`).join(', ')}` });
+    ballots.push({ reviewer: r.reviewer, order: letters.map((l) => r.order[LETTERS.indexOf(l)].member) });
+  }
+  if (!ballots.length) return null;
+  const ranking = aggregateRanking(answers.map((a) => a.member), ballots);
+  run.peerRanking = ranking;
+  ranking.forEach((r, i) => recordPeerRanking(r.member, i + 1, ranking.length));
+  ctx.persist();
+  return ranking;
 }
 
 /**
@@ -247,7 +292,7 @@ function isRiskyRun(run: CouncilRun): boolean {
   return run.risk === 'high' && getSettings().council.riskRouting;
 }
 
-function accessFor(role: CouncilRole | 'judge' | 'voter'): CouncilAccess {
+function accessFor(role: CouncilStep['role']): CouncilAccess {
   return isBuilderRole(role) && getSettings().council.allowWrite ? 'write' : 'read';
 }
 
