@@ -17,8 +17,37 @@ export type ChatMessage =
       reasoning?: string;
       tool_calls?: ToolCall[];
       ts?: number;
+      /** Set when the text came from cloud council members rather than the local model, e.g. "claude → codex → gemini". */
+      via?: string;
+      /** The council run this answer came from (for the "changes waiting" chip). */
+      councilRunId?: string;
     }
   | { role: 'tool'; tool_call_id: string; name?: string; content: string; ok?: boolean; ts?: number };
+
+// ---------- Skills ----------
+
+export interface SkillInfo {
+  /** Folder name under ~/.localdex/skills; also the name the model passes to load_skill. */
+  name: string;
+  description: string;
+  enabled: boolean;
+  /** Where it came from: 'upload', or the GitHub URL it was imported from. */
+  source: string;
+  /** Extra files shipped with the skill (relative paths, capped). */
+  files: string[];
+  /** True when the skill bundles executable scripts (.py/.sh/.js/...). Shown as a badge in the UI. */
+  hasScripts: boolean;
+  bytes: number;
+  installedAt: number;
+}
+
+export interface SkillImportResult {
+  ok: boolean;
+  added: string[];
+  updated: string[];
+  skipped: { name: string; reason: string }[];
+  error?: string;
+}
 
 // ---------- Tools ----------
 
@@ -36,7 +65,10 @@ export type ToolName =
   | 'terminal_close'
   | 'ask_user'
   | 'delegate_to_worker'
-  | 'update_plan';
+  | 'update_plan'
+  | 'load_skill'
+  | 'ask_member'
+  | 'council';
 
 export const ALL_TOOL_NAMES: ToolName[] = [
   'read_file',
@@ -53,12 +85,16 @@ export const ALL_TOOL_NAMES: ToolName[] = [
   'ask_user',
   'delegate_to_worker',
   'update_plan',
+  'load_skill',
+  'ask_member',
+  'council',
 ];
 
 export interface ToolSchema {
   type: 'function';
   function: {
-    name: ToolName;
+    /** Built-in tools use a ToolName; MCP tools are named at runtime (mcp_<server>_<tool>). */
+    name: string;
     description: string;
     parameters: Record<string, unknown>;
   };
@@ -119,6 +155,338 @@ export interface Session {
   usage: TokenUsage;
   compactions: number;
   compactSummary: string | null;
+  /** 'solo' = the local model leads (default). 'council' = each message is routed to cloud council members. */
+  mode?: SessionMode;
+  /** Council runs in this session, oldest first (capped). */
+  councilRuns?: CouncilRun[];
+  /** Each member's own vendor session from Council-mode chat turns, so a follow-up can continue it instead of resending history. */
+  memberSessions?: Partial<Record<MemberId, MemberSessionRef>>;
+}
+
+export interface MemberSessionRef {
+  /** Vendor session id (Claude session_id, Codex thread_id, Gemini session_id, Cursor agent id). */
+  id: string;
+  cwd: string;
+  role: string;
+  access?: CouncilAccess;
+  updatedAt: number;
+}
+
+export type SessionMode = 'solo' | 'council';
+
+// ---------- Model council ----------
+
+/** Cloud members. Each runs through the vendor's own CLI/SDK on your subscription login. */
+export type MemberId = 'claude' | 'codex' | 'gemini' | 'cursor';
+export const MEMBER_IDS: MemberId[] = ['claude', 'codex', 'gemini', 'cursor'];
+/** 'local' is LocalDex's own LM Studio model (runs as a worker with LocalDex's permissions). */
+export type CouncilMemberRef = MemberId | 'local';
+
+export type CouncilRole = 'planner' | 'builder' | 'frontend' | 'backend' | 'reviewer' | 'qa' | 'researcher' | 'vision' | 'quick';
+export const COUNCIL_ROLES: CouncilRole[] = ['planner', 'builder', 'frontend', 'backend', 'reviewer', 'qa', 'researcher', 'vision', 'quick'];
+/** Roles that make changes. `frontend` and `backend` are domain builders and behave exactly like `builder`. */
+export const BUILDER_ROLES: CouncilRole[] = ['builder', 'frontend', 'backend'];
+export function isBuilderRole(role: string): boolean {
+  return (BUILDER_ROLES as string[]).includes(role);
+}
+
+/** Vote quorum line for run cards and summaries, e.g. "Quorum 2/3 · 1 dropped after 30s". */
+export function quorumLabel(q: NonNullable<CouncilRun['quorum']>): string {
+  return `Quorum ${q.needed}/${q.of}${q.dropped ? ` · ${q.dropped} dropped after ${q.graceSeconds}s` : ''}`;
+}
+
+/** 'arena': two builders race on the same task, each in its own separate copy; the user keeps one. Opt-in (/arena) only. */
+export type CouncilPattern = 'single' | 'plan_build_review' | 'second_opinion' | 'vote' | 'arena';
+export type CouncilAccess = 'read' | 'write';
+/**
+ * Per-message access override for one council run (never saved to settings).
+ * read = every member read-only; confirm = builders may edit, each edit step asks; auto = builders edit without asking
+ * unless the run is high risk (risk routing still asks).
+ */
+export type CouncilRunAccess = 'read' | 'confirm' | 'auto';
+export const RUN_ACCESS_LABELS: Record<CouncilRunAccess, string> = { read: 'Read only', confirm: 'Ask before edits', auto: 'Edits allowed' };
+/** The access a message gets when the user doesn't pick one: from Settings → Council. */
+export function defaultRunAccess(c: Pick<CouncilSettings, 'allowWrite' | 'confirmWrites'>): CouncilRunAccess {
+  return !c.allowWrite ? 'read' : c.confirmWrites ? 'confirm' : 'auto';
+}
+/** Patterns the user can pick when handing a Solo chat to the council. 'auto' lets the router pick. */
+export type EscalatePattern = CouncilPattern | 'auto';
+
+export interface CouncilMemberSettings {
+  enabled: boolean;
+  /** Executable to run. Empty = find it on PATH and the usual install folders. (Not used for cursor, which is an SDK.) */
+  command?: string;
+  /** Model passed to the member. Empty = the member's own default. */
+  model?: string;
+  /** Stronger model used for 'heavy' work (planner/reviewer). Empty = same as model. */
+  heavyModel?: string;
+}
+
+export interface CouncilSettings {
+  /** Master switch. Off = no council tools, no Council mode. */
+  enabled: boolean;
+  members: Record<MemberId, CouncilMemberSettings>;
+  /** For each role, members to try in order. The first one that is enabled, signed in and not rate-limited wins. */
+  roles: Record<CouncilRole, CouncilMemberRef[]>;
+  /** 'rules' = keyword routing (instant, free). 'local' = ask the local model to classify, falling back to rules. */
+  routing: 'rules' | 'local';
+  /** Pattern for plain messages in Council mode. 'auto' lets the router pick. */
+  defaultPattern: CouncilPattern | 'auto';
+  /** Members asked in parallel for 'vote'. */
+  voteMembers: MemberId[];
+  /** Who combines vote answers. */
+  judge: CouncilMemberRef;
+  /** Vote: once this many advisers have answered, the grace timer starts. */
+  voteQuorum: number;
+  /** Vote: seconds to wait for the remaining advisers after quorum; still-running ones are then stopped. */
+  voteGraceSeconds: number;
+  /** Allow the builder roles (builder, frontend, backend) to edit files in the approved folders. Off (default) = every member is read-only. */
+  allowWrite: boolean;
+  /** Ask the user (approval prompt) before each member run that can edit files. Default on. */
+  confirmWrites: boolean;
+  /** Review → fix rounds in plan_build_review before giving up. */
+  maxFixRounds: number;
+  /** Per member-run timeout. */
+  timeoutMinutes: number;
+  /** Subscription-only guard: refuse to run a member that is signed in with an API key. */
+  requirePlanBilling: boolean;
+  /**
+   * Let members load agent config from the project folder (Claude project/local settings and .mcp.json,
+   * Cursor project settings) and run Gemini with --skip-trust. Off (default) = only the user's own config,
+   * so a cloned repo cannot add hooks, MCP servers or instructions to a member run.
+   */
+  trustProjectConfig: boolean;
+  /** Replace API keys, tokens, passwords and private keys with [REDACTED:<kind>] before anything goes to a cloud member. Default on. */
+  redactSecrets: boolean;
+  /** Solo mode: suggest asking a council member when the local model is stuck (repeated failures). Default on. */
+  consultNudges: boolean;
+  /**
+   * Risk-aware routing: high-risk changes (auth, migrations, payments, secrets, deletes, deploy config…) always go
+   * plan → build → review, the builder uses its heavy model, edits are always confirmed, and at least one fix round runs.
+   */
+  riskRouting: boolean;
+  /** Vote: before the judge, each adviser ranks all answers blind (anonymized as Response A/B/C…). Default on. */
+  peerReview: boolean;
+  /** Plan → build → review: run the project's own checks (typecheck/lint/tests) after each build and fix round, before review. */
+  checksGate: boolean;
+  /** Plan → build → review: command that runs the project's own checks before review. Empty = detect from the project (package.json scripts, pytest, cargo, go). */
+  checkCommand: string;
+  /** Kill the checks after this many minutes. */
+  checkTimeoutMinutes: number;
+  /** Plan → build → review: after approval, a QA member tries to break the change (read-only). */
+  qaStep: boolean;
+  /** Council mode: a follow-up to the same member continues that member's own session instead of resending chat history. Default on. */
+  continueSessions: boolean;
+  /**
+   * Builders edit a separate copy of the project (a git worktree under LocalDex's data folder) instead of your folder.
+   * You review the diff and apply or discard it. Needs a git repo with at least one commit; otherwise edits go to the folder.
+   */
+  builderWorktree: boolean;
+}
+
+/** How risky a request looks, from explainable keyword rules. */
+export type CouncilRisk = 'low' | 'normal' | 'high';
+
+export type MemberBilling = 'plan' | 'api' | 'unknown';
+
+export interface MemberStatus {
+  id: MemberId;
+  label: string;
+  installed: boolean;
+  version?: string;
+  /** Resolved executable path (CLIs) or package (SDK). */
+  path?: string;
+  signedIn: boolean;
+  billing: MemberBilling;
+  account?: string;
+  /** Command to run in Terminal to sign in. */
+  loginCommand: string;
+  /** True when LocalDex can open the vendor's sign-in page itself (Cursor SDK). */
+  canLoginInApp: boolean;
+  /** Set while the member is cooling down after a usage-limit error (epoch ms). */
+  limitedUntil?: number;
+  lastError?: string;
+  checkedAt: number;
+  /** Models this member can use: listed by the vendor for your account, or a short list of known aliases. */
+  models?: string[];
+  modelsSource?: 'account' | 'suggested';
+  /** Health checklist (CLI found, signed in, billing, models, cooldown). */
+  checks?: MemberCheck[];
+  /** When the last full health check (with model listing) finished (epoch ms). */
+  healthCheckedAt?: number;
+}
+
+export interface MemberCheck {
+  name: string;
+  ok: boolean;
+  detail?: string;
+}
+
+export type CouncilStepStatus = 'queued' | 'running' | 'done' | 'error' | 'limited' | 'skipped' | 'cancelled';
+
+export interface CouncilTranscriptItem {
+  kind: 'text' | 'tool' | 'thinking' | 'note';
+  text?: string;
+  id?: string;
+  name?: string;
+  args?: unknown;
+  ok?: boolean;
+  result?: string;
+}
+
+export interface CouncilStep {
+  id: string;
+  /** 'checks' = the project's own checks, run by LocalDex itself (member 'local'), not by a model. */
+  role: CouncilRole | 'judge' | 'voter' | 'peer' | 'checks';
+  member: CouncilMemberRef;
+  model?: string;
+  access: CouncilAccess;
+  status: CouncilStepStatus;
+  startedAt?: number;
+  endedAt?: number;
+  /** Final answer/report from the member (capped). */
+  output?: string;
+  error?: string;
+  billing?: MemberBilling;
+  usage?: { inputTokens: number; outputTokens: number };
+  transcript: CouncilTranscriptItem[];
+  /** Why this member was picked (router note or fallback reason). */
+  note?: string;
+  /** Secrets removed from the prompt before it was sent to this member. */
+  redactions?: number;
+  /** Written handoff this member got because the previous member stopped mid-task (e.g. usage limit). */
+  handoff?: { from: CouncilMemberRef; text: string };
+  /** The member continued its own session from the previous turn (only the new message was sent). */
+  continued?: boolean;
+}
+
+export interface CouncilRun {
+  id: string;
+  pattern: CouncilPattern;
+  task: string;
+  status: 'running' | 'done' | 'error' | 'cancelled';
+  startedAt: number;
+  endedAt?: number;
+  /** How the router decided, shown in the panel. */
+  routeNote?: string;
+  /** Risk rating of the request and the signals behind it (e.g. ['auth', 'migration']). */
+  risk?: CouncilRisk;
+  riskReasons?: string[];
+  /** Vote runs: quorum used, voters asked, and how many were dropped after the grace period. */
+  quorum?: { needed: number; of: number; dropped: number; graceSeconds: number };
+  steps: CouncilStep[];
+  /** Combined result returned to the user / lead agent. */
+  result?: string;
+  /** Vote runs with peer review: aggregate blind ranking of the answers, best first. */
+  peerRanking?: CouncilPeerRank[];
+  /** Builder edits went to a separate copy (git worktree); the user applies or discards them. */
+  worktree?: CouncilWorktree;
+  /** Access picked for this message in the composer (overrides Settings for this run only). */
+  access?: CouncilRunAccess;
+  /** Started from a Solo chat with "Hand to council". */
+  escalated?: boolean;
+  /** Arena runs: the two contestants' copies, the judge's pick and which one the user kept. */
+  arena?: CouncilArena;
+}
+
+/** One contestant in an arena run: its own separate copy and how its build went. */
+export interface CouncilArenaEntry {
+  member: MemberId;
+  worktree: CouncilWorktree;
+  /** The contestant's build step. */
+  stepId?: string;
+  status: CouncilStepStatus;
+  /** The builder's own report (capped). */
+  summary?: string;
+  error?: string;
+  /** The project's checks, run in this copy. */
+  checks?: { command: string; ok: boolean; detail: string };
+}
+
+export interface CouncilArena {
+  entries: CouncilArenaEntry[];
+  /** Who compared the two diffs (absent when nobody was free to judge). */
+  judge?: CouncilMemberRef;
+  /** The judge's recommendation and its short reason. */
+  pick?: MemberId;
+  reason?: string;
+  /** The entry the user applied to their folder. */
+  kept?: MemberId;
+}
+
+export type CouncilWorktreeStatus = 'pending' | 'applied' | 'discarded' | 'conflict';
+
+/** A separate copy of the project (git worktree on branch council/<runId>) where a run's builders edit files. */
+export interface CouncilWorktree {
+  /** Worktree root under LocalDex's data folder. */
+  path: string;
+  /** Where members work: the worktree root, or the matching subfolder when the project is inside a bigger repo. */
+  cwd: string;
+  branch: string;
+  /**
+   * Commit the members' changes are measured from: the user's last commit, plus (on the copy's own branch) the
+   * uncommitted changes their folder had when the copy was made.
+   */
+  base: string;
+  /** How many files with uncommitted changes from the user's folder were brought into the copy. */
+  imported?: number;
+  /** The user's folder the changes are applied to. */
+  projectDir: string;
+  status: CouncilWorktreeStatus;
+  /** Changed files, relative to the repo root. */
+  files: string[];
+  diffStat: string;
+  /** Capped diff for the run card (secrets redacted when that setting is on). */
+  diff?: string;
+  /** Why the last apply/discard failed, or what the user should do. */
+  error?: string;
+  /** Set when the user's uncommitted changes couldn't be brought into the copy (it then starts from the last commit). */
+  note?: string;
+}
+
+/** One answer's place in a blind peer review (Borda count over every adviser's ranking). */
+export interface CouncilPeerRank {
+  /** Who wrote the answer (the advisers didn't know). */
+  member: CouncilMemberRef;
+  /** Average 1-based position across the rankings that placed it. */
+  avgRank: number;
+  /** Rankings that placed this answer. */
+  votes: number;
+  /** Where its own author ranked it, if the author's ranking placed it. */
+  selfRank?: number;
+}
+
+/** Counters for one member (overall, or in one role). `runs` counts started steps; declined edits are `skipped` and not runs. */
+export interface CouncilStepCounts {
+  runs: number;
+  done: number;
+  errors: number;
+  limited: number;
+  cancelled: number;
+  skipped: number;
+  /** Sum of step wall time (includes any wait for edit approval). */
+  durationMs: number;
+  inputTokens: number;
+  outputTokens: number;
+}
+
+export interface CouncilMemberStats extends CouncilStepCounts {
+  byRole: Partial<Record<CouncilStep['role'], CouncilStepCounts>>;
+  /** Plan → build → review outcomes for builds this member made. */
+  builder: { approvedFirst: number; approvedAfterFixes: number; changesRequested: number };
+  /** Verdicts this member gave as a reviewer ('none' = no VERDICT line). */
+  reviewer: { approve: number; changes: number; none: number };
+  /** Vote participation: answers given and their total length in characters. */
+  voter: { answers: number; answerChars: number };
+  /** Blind peer ranking in votes: sum of ranks and of field sizes; average rank = rankSum / count. */
+  peerRanking: { count: number; rankSum: number; ofSum: number };
+}
+
+export interface CouncilStats {
+  /** When counting started (first record after a reset). */
+  since: number;
+  updatedAt: number;
+  members: Partial<Record<CouncilMemberRef, CouncilMemberStats>>;
 }
 
 export interface SessionSummary {
@@ -126,6 +494,54 @@ export interface SessionSummary {
   title: string;
   updatedAt: number;
   messageCount: number;
+}
+
+// ---------- MCP (Model Context Protocol) servers ----------
+
+/** 'always' asks before every call, 'once' asks on the first call to a server, 'never' never asks. */
+export type McpApprovalMode = 'always' | 'once' | 'never';
+
+export interface McpServerConfig {
+  /** Executable that starts the server over stdio, e.g. "npx". */
+  command: string;
+  args?: string[];
+  /** Extra environment variables (merged over a minimal safe default environment). */
+  env?: Record<string, string>;
+  /**
+   * Names of environment variables to copy from LocalDex's own environment into the server process.
+   * Servers start with a minimal environment (PATH, HOME, ...) so your secrets are not leaked to them;
+   * list things like HTTPS_PROXY or NODE_EXTRA_CA_CERTS here if you need them.
+   */
+  inheritEnv?: string[];
+  /** Working directory for the server process. Default: ~/.localdex/mcp/<name>. */
+  cwd?: string;
+  enabled: boolean;
+  /** Expose only these tools (the server's own tool names). Omit or leave empty to expose all. Keep it short for small models. */
+  allowTools?: string[];
+  /** Never expose these tools. Applied after allowTools. */
+  denyTools?: string[];
+  /** Default 'once'. */
+  approval?: McpApprovalMode;
+  /** Per-call timeout. Default 60. */
+  timeoutSeconds?: number;
+  /** Cap on characters of tool output sent back to the model. Default 12000. */
+  maxOutputChars?: number;
+  /** Let worker agents use this server's tools. Default false (main agent only). */
+  allowWorkers?: boolean;
+  /** One or two sentences added to the system prompt telling the model how to use this server. */
+  hint?: string;
+}
+
+export type McpServerState = 'disabled' | 'connecting' | 'ready' | 'error';
+
+export interface McpServerStatus {
+  name: string;
+  state: McpServerState;
+  /** Tools the model can see (after allow/deny filtering), as the server names them. */
+  exposedTools: string[];
+  /** Every tool the server reported. */
+  availableTools: string[];
+  error?: string;
 }
 
 // ---------- Settings ----------
@@ -154,7 +570,55 @@ export interface Settings {
   shellApproval: ShellApprovalMode;
   workerConcurrency: number;
   systemPrompt: string;
+  /** MCP servers keyed by a short name. Edit ~/.localdex/config.json to add servers; the UI can only toggle them. */
+  mcpServers: Record<string, McpServerConfig>;
+  /** Names of installed skills the user has switched off (they stay on disk but are hidden from the model). */
+  disabledSkills: string[];
+  council: CouncilSettings;
 }
+
+export const DEFAULT_COUNCIL: CouncilSettings = {
+  enabled: false,
+  members: {
+    claude: { enabled: true, model: 'sonnet', heavyModel: 'opus' },
+    codex: { enabled: true },
+    gemini: { enabled: true },
+    cursor: { enabled: true, model: 'auto' },
+  },
+  roles: {
+    planner: ['claude', 'gemini', 'codex'],
+    builder: ['cursor', 'codex', 'claude'],
+    frontend: ['gemini', 'cursor', 'claude'],
+    backend: ['codex', 'claude', 'cursor'],
+    reviewer: ['codex', 'gemini', 'claude'],
+    qa: ['gemini', 'codex', 'claude'],
+    researcher: ['gemini', 'claude', 'codex'],
+    vision: ['gemini', 'claude'],
+    quick: ['local', 'gemini'],
+  },
+  routing: 'rules',
+  defaultPattern: 'auto',
+  voteMembers: ['claude', 'codex', 'gemini'],
+  judge: 'claude',
+  voteQuorum: 2,
+  voteGraceSeconds: 30,
+  allowWrite: false,
+  confirmWrites: true,
+  maxFixRounds: 1,
+  timeoutMinutes: 20,
+  requirePlanBilling: true,
+  trustProjectConfig: false,
+  redactSecrets: true,
+  consultNudges: true,
+  riskRouting: true,
+  peerReview: true,
+  checksGate: true,
+  checkCommand: '',
+  checkTimeoutMinutes: 10,
+  qaStep: true,
+  continueSessions: true,
+  builderWorktree: true,
+};
 
 export const DEFAULT_CAPABILITIES: Record<ToolName, boolean> = {
   read_file: true,
@@ -171,6 +635,9 @@ export const DEFAULT_CAPABILITIES: Record<ToolName, boolean> = {
   ask_user: true,
   delegate_to_worker: true,
   update_plan: true,
+  load_skill: true,
+  ask_member: true,
+  council: true,
 };
 
 export const DEFAULT_SETTINGS: Settings = {
@@ -187,6 +654,30 @@ export const DEFAULT_SETTINGS: Settings = {
   shellApproval: 'dangerous',
   workerConcurrency: 2,
   systemPrompt: '',
+  disabledSkills: [],
+  council: DEFAULT_COUNCIL,
+  mcpServers: {
+    playwright: {
+      command: 'npx',
+      args: ['-y', '@playwright/mcp@latest', '--headless', '--isolated'],
+      enabled: false,
+      allowTools: [
+        'browser_navigate',
+        'browser_navigate_back',
+        'browser_snapshot',
+        'browser_click',
+        'browser_type',
+        'browser_fill_form',
+        'browser_select_option',
+        'browser_hover',
+        'browser_tabs',
+      ],
+      approval: 'once',
+      timeoutSeconds: 60,
+      maxOutputChars: 12000,
+      hint: 'Browser: open pages with browser_navigate, then read them with browser_snapshot (a text outline of the page; no screenshots). Click or type using the element refs from the latest snapshot, then snapshot again to confirm.',
+    },
+  },
 };
 
 export interface ModelInfo {
@@ -197,7 +688,8 @@ export interface ModelInfo {
 
 // ---------- WebSocket protocol ----------
 
-export type AgentId = 'main' | `worker:${string}`;
+/** 'member:<stepId>' streams a council member's live output. */
+export type AgentId = 'main' | `worker:${string}` | `member:${string}`;
 
 export type ServerEvent =
   | { type: 'hello'; settings: Settings; sessions: SessionSummary[]; session: Session | null; models: ModelInfo[] }
@@ -205,6 +697,11 @@ export type ServerEvent =
   | { type: 'sessions'; sessions: SessionSummary[] }
   | { type: 'settings'; settings: Settings }
   | { type: 'models'; models: ModelInfo[]; error?: string }
+  | { type: 'mcp_status'; servers: McpServerStatus[] }
+  | { type: 'skills'; skills: SkillInfo[] }
+  | { type: 'council_status'; members: MemberStatus[] }
+  | { type: 'council_login'; member: MemberId; url?: string; done?: boolean; error?: string }
+  | { type: 'council_stats'; stats: CouncilStats }
   | { type: 'agent_status'; sessionId: string; agent: AgentId; status: AgentStatus; detail?: string }
   | { type: 'assistant_delta'; sessionId: string; agent: AgentId; delta: string }
   | { type: 'reasoning_delta'; sessionId: string; agent: AgentId; delta: string }
@@ -219,7 +716,10 @@ export type ServerEvent =
   | { type: 'log'; level: 'info' | 'warn' | 'error'; message: string };
 
 export type ClientEvent =
-  | { type: 'send_message'; sessionId: string; content: string }
+  /** access: Council mode only, overrides Settings → Council edit access for this message's run. */
+  | { type: 'send_message'; sessionId: string; content: string; access?: CouncilRunAccess }
+  /** Solo mode: hand the latest request, with a summary of what the local agent did, to the council. The mode stays Solo. */
+  | { type: 'council_escalate'; sessionId: string; pattern: EscalatePattern; member?: MemberId; note?: string; access?: CouncilRunAccess }
   | { type: 'new_session' }
   | { type: 'load_session'; id: string }
   | { type: 'delete_session'; id: string }
@@ -233,5 +733,16 @@ export type ClientEvent =
   | { type: 'set_goal'; sessionId: string; goal: { mode: GoalMode; brief: string; doneCriteria: string; maxIterations: number } }
   | { type: 'clear_goal'; sessionId: string }
   | { type: 'compact'; sessionId: string }
+  | { type: 'set_mode'; sessionId: string; mode: SessionMode }
+  /** deep: also list each member's models (the health check). */
+  | { type: 'council_refresh'; deep?: boolean }
+  | { type: 'council_login'; member: MemberId }
+  | { type: 'council_stats_reset' }
+  /** Forget every member's own session for this LocalDex session; the next message starts fresh with chat history. */
+  | { type: 'council_new_conversation'; sessionId: string }
+  /** Bring a run's waiting changes (its separate copy) into the project folder as uncommitted changes. Arena runs: `member` picks the entry to keep; the other copy is discarded. */
+  | { type: 'council_apply'; sessionId: string; runId: string; member?: MemberId }
+  /** Throw a run's waiting changes away (removes its separate copy and branch). Arena runs: `member` discards one entry, without it every copy goes. */
+  | { type: 'council_discard'; sessionId: string; runId: string; member?: MemberId }
   | { type: 'reset_worker'; sessionId: string; name: string }
   | { type: 'delete_worker'; sessionId: string; name: string };

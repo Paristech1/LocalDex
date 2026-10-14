@@ -1,15 +1,25 @@
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import type { GoalMode, PlanStep, WorkerState } from '@localdex/shared';
 import { send, useStore } from '../store';
 import { AssistantBubble, MessageList } from './Message';
 import { ToolCard } from './ToolCard';
 import { Button, Field, StatusDot, cx, fmtTokens, inputCls, statusLabel, timeAgo } from './ui';
+import { CouncilPanel } from './Council';
+import type { SettingsTab } from './Settings';
 
-type Tab = 'plan' | 'workers' | 'goal' | 'context' | 'log';
+type Tab = 'plan' | 'workers' | 'council' | 'goal' | 'context' | 'log';
 
-export function RightPanel() {
+export function RightPanel({ onOpenSettings }: { onOpenSettings?: (tab?: SettingsTab) => void }) {
   const [tab, setTab] = useState<Tab>('plan');
   const session = useStore((s) => s.session);
+  const councilRunning = (session?.councilRuns ?? []).some((r) => r.status === 'running');
+  const councilCount = session?.councilRuns?.length ?? 0;
+  // Jump to the Council tab when a council run starts.
+  const wasRunning = useRef(false);
+  useEffect(() => {
+    if (councilRunning && !wasRunning.current) setTab('council');
+    wasRunning.current = councilRunning;
+  }, [councilRunning]);
   const workerCount = Object.keys(session?.workers ?? {}).length;
   const planCount = session?.plan.length ?? 0;
   const goalActive = session?.goal?.active;
@@ -18,13 +28,14 @@ export function RightPanel() {
   const tabs: Array<{ id: Tab; label: string; badge?: string | number; hot?: boolean }> = [
     { id: 'plan', label: 'Plan', badge: planCount || undefined },
     { id: 'workers', label: 'Workers', badge: workerCount || undefined },
+    { id: 'council', label: 'Council', badge: councilRunning ? '●' : councilCount || undefined, hot: councilRunning },
     { id: 'goal', label: 'Goal', badge: goalActive ? '●' : undefined, hot: !!goalActive },
     { id: 'context', label: 'Context' },
     { id: 'log', label: 'Log', badge: errorCount || undefined, hot: errorCount > 0 },
   ];
 
   return (
-    <aside className="w-[380px] shrink-0 border-l border-ink-700 bg-ink-900/40 flex flex-col min-h-0">
+    <aside className="w-[400px] shrink-0 border-l border-ink-700 bg-ink-900/40 flex flex-col min-h-0">
       <div className="flex border-b border-ink-700 text-xs">
         {tabs.map((t) => (
           <button
@@ -46,6 +57,7 @@ export function RightPanel() {
       <div className="flex-1 overflow-y-auto p-3">
         {tab === 'plan' && <PlanPanel steps={session?.plan ?? []} />}
         {tab === 'workers' && <WorkersPanel />}
+        {tab === 'council' && <CouncilPanel onOpenSettings={() => onOpenSettings?.('council')} />}
         {tab === 'goal' && <GoalPanel />}
         {tab === 'context' && <ContextPanel />}
         {tab === 'log' && <LogPanel />}

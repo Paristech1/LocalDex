@@ -3,8 +3,13 @@ import type {
   AgentId,
   AgentStatus,
   ClientEvent,
+  CouncilStats,
+  McpServerStatus,
+  MemberId,
+  MemberStatus,
   ModelInfo,
   ServerEvent,
+  SkillInfo,
   Session,
   SessionSummary,
   Settings,
@@ -49,6 +54,11 @@ export interface State {
   status: Record<string, { status: AgentStatus; detail?: string }>;
   prompts: Prompt[];
   logs: LogEntry[];
+  mcp: McpServerStatus[];
+  skills: SkillInfo[];
+  council: MemberStatus[];
+  councilStats: CouncilStats | null;
+  councilLogin: { member: MemberId; url?: string; done?: boolean; error?: string } | null;
   error: string | null;
 }
 
@@ -63,6 +73,11 @@ let state: State = {
   status: {},
   prompts: [],
   logs: [],
+  mcp: [],
+  skills: [],
+  council: [],
+  councilStats: null,
+  councilLogin: null,
   error: null,
 };
 
@@ -178,6 +193,21 @@ function handle(ev: ServerEvent): void {
       return;
     case 'models':
       set({ models: ev.models, modelsError: ev.error ?? null });
+      return;
+    case 'mcp_status':
+      set({ mcp: ev.servers });
+      return;
+    case 'skills':
+      set({ skills: ev.skills });
+      return;
+    case 'council_status':
+      set({ council: ev.members });
+      return;
+    case 'council_stats':
+      set({ councilStats: ev.stats });
+      return;
+    case 'council_login':
+      set({ councilLogin: { member: ev.member, url: ev.url, done: ev.done, error: ev.error } });
       return;
     case 'agent_status':
       if (ev.sessionId !== state.session?.id) return;

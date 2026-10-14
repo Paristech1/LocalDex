@@ -1,0 +1,31 @@
+#!/usr/bin/env node
+// Stand-in for `gemini -p … -o stream-json`, for LocalDex tests only.
+const c = require('./_common.cjs');
+const a = process.argv.slice(2);
+(async () => {
+  if (a[0] === '--version') return console.log('0.63.0');
+  const prompt = a[a.indexOf('-p') + 1] || '';
+  const role = c.role(prompt);
+  c.record('gemini', { argv: a, prompt, cwd: process.cwd(), trustEnv: process.env.GEMINI_CLI_TRUST_WORKSPACE ?? null });
+  // Real Gemini (FatalUntrustedWorkspaceError): headless run in an untrusted folder → stderr message, exit 55.
+  if (c.flag('gemini_untrusted') && !a.includes('--skip-trust') && process.env.GEMINI_CLI_TRUST_WORKSPACE !== 'true') {
+    process.stderr.write('Gemini CLI is not running in a trusted directory. To proceed, either use `--skip-trust`, set the `GEMINI_CLI_TRUST_WORKSPACE=true` environment variable, or trust this directory in interactive mode. For more details, see https://geminicli.com/docs/cli/trusted-folders/#headless-and-automated-environments\n');
+    process.exit(55);
+  }
+  const ts = () => new Date().toISOString();
+  const resume = a.includes('--resume') ? a[a.indexOf('--resume') + 1] : null;
+  if (resume && c.flag('resume_fail')) { process.stderr.write(`Error resuming session: Invalid session identifier "${resume}".\n  Use --list-sessions to see available sessions.\n`); process.exit(42); }
+  c.out({ type: 'init', timestamp: ts(), session_id: resume || c.newId('gemini'), model: a.includes('-m') ? a[a.indexOf('-m') + 1] : 'gemini-3-pro' });
+  c.out({ type: 'message', timestamp: ts(), role: 'user', content: prompt.slice(0, 40) });
+  await c.sleep(300);
+  // Slow adviser for the vote quorum/grace test: records its pid, then stalls (dies on SIGTERM like a real CLI).
+  if (c.flag('gemini_slow')) { require('fs').writeFileSync(require('path').join(process.env.FAKE_CTL || '.', 'gemini.pid'), String(process.pid)); await c.sleep(15_000); }
+  if (c.flag('gemini_limit')) { c.out({ type: 'result', timestamp: ts(), status: 'error', error: { type: 'Error', message: 'Quota exceeded for quota metric. RESOURCE_EXHAUSTED (429)' }, stats: {} }); process.exit(1); }
+  c.out({ type: 'message', timestamp: ts(), role: 'assistant', content: 'Reading the project. ', delta: true });
+  c.out({ type: 'tool_use', timestamp: ts(), tool_name: 'read_file', tool_id: 'rf-1', parameters: { absolute_path: 'src/math.ts' } });
+  await c.sleep(400);
+  c.out({ type: 'tool_result', timestamp: ts(), tool_id: 'rf-1', status: 'success', output: 'export function add(a, b) { return a + b; }' });
+  const text = c.answer(role, 'gemini', prompt);
+  for (const ch of text.match(/.{1,16}/gs)) { c.out({ type: 'message', timestamp: ts(), role: 'assistant', content: ch, delta: true }); await c.sleep(25); }
+  c.out({ type: 'result', timestamp: ts(), status: 'success', stats: { total_tokens: 7000, input_tokens: 6300, output_tokens: 700, duration_ms: 1500, tool_calls: 1 } });
+})();

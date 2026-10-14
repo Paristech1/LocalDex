@@ -1,4 +1,12 @@
-import type { AgentId, PlanStep, ToolName, ToolSchema } from '@localdex/shared';
+import type { AgentId, CouncilAccess, CouncilMemberRef, CouncilPattern, CouncilRole, PlanStep, ToolName, ToolSchema } from '@localdex/shared';
+
+export interface CouncilRequest {
+  pattern: CouncilPattern;
+  role: CouncilRole;
+  member?: CouncilMemberRef;
+  task: string;
+  access?: CouncilAccess;
+}
 
 export interface ToolContext {
   sessionId: string;
@@ -12,6 +20,8 @@ export interface ToolContext {
   delegate?(name: string, task: string): Promise<string>;
   /** Replace the session's task plan. */
   updatePlan?(steps: PlanStep[]): void;
+  /** Run a model-council request. Only available to the main agent when the council is on. Resolves to a report. */
+  council?(req: CouncilRequest): Promise<string>;
 }
 
 export interface ToolResult {

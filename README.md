@@ -85,6 +85,122 @@ Keyboard: `Enter` send, `Shift+Enter` newline, `Cmd/Ctrl+,` settings, `Esc` clos
 
 Settings and sessions live in `~/.localdex/` (override with `LOCALDEX_HOME`). Server port: `PORT`.
 
+## Security
+
+LocalDex can read your files and run commands, so it only accepts your own browser:
+
+- The server listens on `127.0.0.1` only, so other machines on your network cannot reach it. (`LOCALDEX_HOST=0.0.0.0` overrides this; don't, unless you know why.)
+- The WebSocket and every `/api` route reject requests from other websites (foreign `Origin`) and from rebinding tricks (foreign `Host`). Other websites you visit can no longer drive the agent through your localhost.
+- If you serve the UI from another local hostname, add it with `LOCALDEX_ALLOWED_HOSTS=name1,name2`.
+
+## Skills
+
+A skill is a folder with a `SKILL.md` (frontmatter `name` + `description`, then instructions) plus any files it needs. Skills live in `~/.localdex/skills/<name>/`.
+
+Add one in **Settings → Skills**:
+
+- **Drag and drop** a skill folder, a `SKILL.md`, any `.md` file, or a `.zip` (several at once is fine).
+- **Paste a GitHub link**: `https://github.com/owner/repo` imports every skill in the repo; a `/tree/<branch>/<folder>` or `/blob/.../SKILL.md` link imports just that one. Public repos only.
+
+Only each skill's name and one-line description go into the system prompt. The model calls `load_skill` to read the full text (and `load_skill` with `file` for bundled files). Toggle or remove skills in the same tab. Skills that bundle scripts get a badge; scripts only run if the model calls `shell_run`, so your shell-approval setting still applies.
+
+## MCP servers (extra tools)
+
+LocalDex is an [MCP](https://modelcontextprotocol.io) client. Any stdio MCP server can add tools; the first one
+configured is [Playwright MCP](https://github.com/microsoft/playwright-mcp) for browsing (off by default).
+
+1. Open **Settings → MCP Servers** and switch **playwright** on (needs Node 20+; the first start downloads the server via `npx`).
+2. Ask the agent to open a page. The first call to a server asks for approval once; approving allows that
+   server's exposed tools until LocalDex restarts.
+
+Server definitions live in `~/.localdex/config.json` under `mcpServers`. They can only be edited in that file
+(restart LocalDex after editing); the UI and WebSocket can only toggle `enabled`, because a server command runs a
+program on your machine.
+
+```json
+"mcpServers": {
+  "playwright": {
+    "command": "npx",
+    "args": ["-y", "@playwright/mcp@latest", "--headless", "--isolated"],
+    "enabled": true,
+    "allowTools": ["browser_navigate", "browser_snapshot", "browser_click", "browser_type"],
+    "approval": "once",
+    "hint": "Browser: navigate, then read the page with browser_snapshot."
+  }
+}
+```
+
+| Field | Meaning |
+| --- | --- |
+| `allowTools` / `denyTools` | Which of the server's tools the model sees. **Keep this short**: small local models get less reliable as the tool list grows. |
+| `approval` | `once` (default), `always`, or `never`. |
+| `allowWorkers` | Let worker agents use the server (default `false`: main agent only). |
+| `env` / `inheritEnv` | Servers start with a minimal environment so your secrets are not leaked to them. Add variables with `env`, or copy named ones from LocalDex's own environment with `inheritEnv` (e.g. `["HTTPS_PROXY", "NODE_EXTRA_CA_CERTS"]` behind a proxy). |
+| `cwd` | Working directory. Default `~/.localdex/mcp/<name>`, so servers' scratch files stay out of your projects. |
+| `timeoutSeconds`, `maxOutputChars` | Per-call timeout (60) and cap on output returned to the model (12000). |
+
+MCP tools appear to the model as `mcp_<server>_<tool>`. Their output is wrapped in `<mcp_result>` tags and the system
+prompt tells the model to treat it as untrusted data (web pages can contain prompt injection).
+
+## Model council (cloud models on your subscriptions)
+
+LocalDex can hand work to **Claude, Codex (OpenAI), Gemini and Cursor**. Each one runs through the vendor's own tool, on the subscription you are signed into there. LocalDex never handles your passwords or keys.
+
+| Member | Runs as | Sign in once (Terminal) |
+|---|---|---|
+| Claude | `claude -p --output-format stream-json` | `claude auth login` (Pro/Max) |
+| Codex | `codex exec --json` | `codex login` (ChatGPT plan) |
+| Gemini | `gemini -p -o stream-json` | `gemini`, then "Login with Google" |
+| Cursor | `@cursor/sdk` local agent | **Settings → Council → Sign in** |
+
+Install the CLIs you want (`npm i -g @anthropic-ai/claude-code @openai/codex @google/gemini-cli`), then turn on **Settings → Council**. The tab shows each member's install, sign-in and billing status.
+
+**Two ways to use it**
+
+- **Council mode** (top bar → ☁ Council): each message goes to the council.
+  - `/ask claude …` asks one member by name.
+  - `/build …` runs plan → build → review.
+  - `/second …` builds, then gets a second opinion.
+  - `/review …` sends it to the reviewer only.
+  - `/vote …` collects independent answers, then a judge combines them.
+  - `/frontend …` and `/backend …` send a change to the UI or backend builder.
+  - `/vision …` asks a vision-capable member to look at a screenshot or mockup (name the image file; the member opens it itself).
+  - `/arena …` (or `/arena claude codex …`) races two builders on the same task, each in its own copy of the project. A third member compares the diffs and recommends one; you keep one or discard both.
+  - Plain messages are routed automatically (keyword rules, or the local model if you pick that).
+  - The composer has a per-message access switch: **Read only**, **Ask before edits**, **Edits allowed**. It applies to that run only and never changes Settings.
+- **Solo mode**: your local model leads. It can call `ask_member` and `council` itself when a task is too big for it, so the work tag-teams. **Hand to council ☁** under the last answer sends your latest request, plus what the local agent already did (files touched, commands, failures), to the council without leaving Solo.
+
+**How runs work**
+
+- **Separate copy (on by default).** Builders edit a git worktree of your project in LocalDex's data folder, including your uncommitted changes. Checks and reviewers run there too. At the end you see the diff and choose **Apply to my folder** (lands as uncommitted changes) or **Discard**. Apply refuses, and changes nothing, if a file it would touch changed in your folder meanwhile. If no copy can be made (e.g. not a git repo), LocalDex asks before editing your folder directly.
+- **Plan → build → review** adds an optional checks gate (your test command, after approval) and a QA step, with strict verdicts and fix rounds.
+- **Votes** wait for a quorum with a grace timer, then advisers rank each other's answers blind before the judge decides.
+- **Handoff.** When a member hits its usage limit mid-run, the next one gets a written handoff and continues.
+- **Follow-ups** in Council mode resume the same member's own session instead of re-sending the chat.
+- **Risk routing** sends risky changes (migrations, auth, deletes…) to stronger models and always asks before editing.
+- **Scorecard** in the Council tab tracks each member's runs, success rate, time, tokens, limits, build and review outcomes.
+- **Secrets are redacted** (API keys, tokens, passwords, private keys) from prompts, history and diffs before they reach a cloud member.
+
+**Routing and fallback.** Each role (planner, builder, frontend, backend, reviewer, researcher, vision, quick) has an ordered list of members. Changes with clear UI signals (CSS, components, layout…) go to the frontend builder, clear backend signals (API, SQL, migrations…) to the backend builder, anything mixed to the builder. Requests that name an image file or a screenshot/mockup go to vision (read-only). A member that is off, signed out, or at its usage limit is skipped. When a member hits a limit mid-run, the next one takes over, and the first one cools down until its reset time.
+
+**Guardrails**
+
+- **Subscription only (default on).**
+  - API-key variables (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GEMINI_API_KEY`, …) are removed before a member starts.
+  - Members signed in with an API key are refused.
+  - If Claude starts on API billing anyway, LocalDex stops it.
+- **Read-only by default.** File edits by the builder are off until you enable them. When on, LocalDex asks before each edit step.
+- **Separate permissions.** Members use their vendor's own tools and permission modes, not LocalDex's tools:
+  - Claude: edits blocked when read-only, `acceptEdits` when allowed.
+  - Codex: `read-only` / `workspace-write` sandbox.
+  - Gemini: `plan` / `auto_edit` approval mode.
+  - Cursor: mutating tools disallowed when read-only.
+- **Project config is not trusted by default.** A cloned repo can't add hooks, MCP servers or settings to a member run: Claude loads only your user settings and no MCP servers (`--setting-sources user --strict-mcp-config`), Cursor loads only user settings, and Gemini runs without `--skip-trust`, so it only works in folders you have trusted in Gemini. Codex already ignores `.codex/` config in projects you haven't trusted. Settings → Council → Advanced → *Trust project config* turns this off for repos you trust.
+- **Approved folders only.** Members start in your first approved folder, and the other approved folders are passed as extra directories (not when a builder works in a separate copy).
+- **Executables come from config only.** Member programs are found on `PATH`, or set with `council.members.<name>.command` in `~/.localdex/config.json`. That setting cannot be changed from the UI.
+
+The task, and any files a member reads, go to that vendor. Every message written by the council is marked with ☁ in the chat, and the **Council** tab in the right panel shows each run step by step: who did what, live output, tool calls, timing and tokens.
+
 ## Choosing a model
 
 Agentic work depends almost entirely on how reliably the model calls tools and tells the truth
@@ -113,6 +229,7 @@ server/   Node + Hono + ws
   src/agent/goal.ts      finish-checkpoint assessment
   src/agent/compact.ts   summarize → archive → reseed
   src/agent/runner.ts    per-session orchestration (corrections, goal controller, auto-compact)
+  src/mcp/client.ts      MCP client: spawns stdio servers, exposes their tools, routes calls
 web/      Vite + React + Tailwind UI
 ```
 
@@ -121,6 +238,7 @@ web/      Vite + React + Tailwind UI
 - The agent runs shell commands with your user privileges inside approved folders. Review what you
   approve; keep *Dangerous only* or *Always ask* for shell approval.
 - Paths such as `~/.ssh`, `~/.aws`, `.env*` and key files are blocked even inside approved folders.
-- Nothing is sent anywhere except your LM Studio server.
+- Nothing is sent anywhere except your LM Studio server, plus whatever MCP servers you enable (a browser server
+  makes web requests). Playwright MCP is not a security boundary; do not pass `--allow-unrestricted-file-access`.
 
 MIT. Not affiliated with LM Studio or the Chat On Steroids project.

@@ -2,6 +2,8 @@ import os from 'node:os';
 import { getSettings } from '../config.js';
 import { enabledTools } from '../tools/index.js';
 import { approvedFolders } from '../tools/permissions.js';
+import { mcpPromptNotes } from '../mcp/client.js';
+import { skillsPromptNotes } from '../skills/store.js';
 
 function environment(): string {
   const folders = approvedFolders();
@@ -36,12 +38,32 @@ export function mainSystemPrompt(): string {
     environment(),
     toolList('main'),
     SHARED_RULES,
+    mcpPromptNotes('main'),
+    skillsPromptNotes(),
     `Planning: for multi-step work, call update_plan first with the steps, then keep it current as you progress.`,
     `Delegation: for independent sub-tasks (e.g. "write tests" while you implement), call delegate_to_worker, giving each worker complete, self-contained instructions. Several delegate calls in one turn run in parallel. Reuse a worker's name to continue its context. Review workers' reports and integrate them.`,
+    councilNote(),
     custom ? `User instructions:\n${custom}` : '',
   ]
     .filter(Boolean)
     .join('\n\n');
+}
+
+function councilNote(): string {
+  const names = enabledTools('main').map((t) => t.function.name);
+  if (!names.includes('ask_member') && !names.includes('council')) return '';
+  return `Model council: stronger cloud models (Claude, Codex, Gemini, Cursor) run on the user's subscriptions and work directly in the project folder. Tools: ask_member (one member; several calls in one turn run in parallel; access "write" for big changes) and council ("plan_build_review" for multi-part changes, "second_opinion" to check work, "vote" for decisions).
+Ask a member when:
+- Two attempts to fix the same failure did not work.
+- Before a hard-to-reverse decision: data model, migration, auth, deleting data, public API.
+- A plan or diff should be reviewed before you call the work done.
+- You are unsure and being wrong is costly.
+- The task needs reading much more code than fits in your context.
+How to ask:
+- For reviews, prefer a member from a different vendor than the one that wrote the code.
+- Write a self-contained question: goal, file paths, what you tried, exact errors. The member can read the repo but not this chat.
+- Check the advice against the code before acting on it.
+Do small, simple steps yourself; members use the user's plan limits.`;
 }
 
 export function workerSystemPrompt(name: string): string {
@@ -51,6 +73,8 @@ export function workerSystemPrompt(name: string): string {
     environment(),
     toolList('worker'),
     SHARED_RULES,
+    mcpPromptNotes('worker'),
+    skillsPromptNotes(),
     custom ? `User instructions:\n${custom}` : '',
   ]
     .filter(Boolean)
