@@ -70,11 +70,13 @@ export const codexMember: MemberAdapter = {
     const b = bin();
     if (!b) return { ok: false, text: '', error: 'Codex CLI not found. Install it (npm i -g @openai/codex) and run `codex login`.', billing: 'unknown' };
 
-    const args = ['exec', '--json', '--skip-git-repo-check', '-C', o.cwd, '-s', o.access === 'write' ? 'workspace-write' : 'read-only', '-c', 'approval_policy="never"'];
+    const sandbox = o.access === 'write' ? 'workspace-write' : 'read-only';
+    const args = ['exec', '--json', '--skip-git-repo-check', '-C', o.cwd, '-s', sandbox, '-c', 'approval_policy="never"'];
     if (o.model) args.push('-m', o.model);
     if (o.access === 'write') for (const d of o.extraDirs) args.push('--add-dir', d);
     // `exec resume <SESSION_ID> [PROMPT]` only takes its own few flags; -C/-s/--add-dir must stay on `exec`, before it.
-    if (o.resumeSessionId) args.push('resume', o.resumeSessionId);
+    // The sandbox is repeated as `-c` on `resume` too, so a resumed thread can't keep a looser sandbox from its first run.
+    if (o.resumeSessionId) args.push('resume', o.resumeSessionId, '-c', `sandbox_mode="${sandbox}"`, '-c', 'approval_policy="never"');
     args.push('-'); // prompt from stdin
 
     let lastMessage = '';

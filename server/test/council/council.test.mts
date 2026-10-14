@@ -737,6 +737,7 @@ updateSettings({ council: { ...getSettings().council, allowWrite: true } });
   const cxl = logOf('codex');
   const ri = cxl[1]?.argv.indexOf('resume') ?? -1;
   check('continue: codex resumes its thread (exec flags before `resume`)', /^codex-/.test(t1 ?? '') && ri > 0 && cxl[1].argv[ri + 1] === t1 && cxl[1].argv.at(-1) === '-' && cxl[1].argv.indexOf('-C') < ri && cxl[1].argv.indexOf('-s') < ri && cxl[1].argv[cxl[1].argv.indexOf('-s') + 1] === 'read-only' && cxl[1].prompt === 'anything else?', cxl[1]?.argv.join(' '));
+  check('continue: codex resume repeats the read-only sandbox after `resume`', cxl[1].argv.indexOf('sandbox_mode="read-only"') > ri && cxl[1].argv[cxl[1].argv.indexOf('sandbox_mode="read-only"') - 1] === '-c', cxl[1]?.argv.join(' '));
 
   // Cursor: Agent.resume with the first agent's id; tool limits and system prompt passed again.
   reset(); approvals = 0;
