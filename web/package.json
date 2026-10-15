@@ -10,6 +10,9 @@
     "typecheck": "tsc --noEmit -p tsconfig.json"
   },
   "dependencies": {
+    "@fontsource/instrument-serif": "^5.3.0",
+    "@fontsource/jetbrains-mono": "^5.3.0",
+    "@fontsource/manrope": "^5.3.0",
     "@localdex/shared": "*",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",

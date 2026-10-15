@@ -1,8 +1,8 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { getSettings } from '../../config.js';
-import { memberEnv, resolveBinary, runJsonl, runQuick } from '../proc.js';
+import { DATA_DIR, getSettings } from '../../config.js';
+import { lastLines, loginEnv, memberEnv, resolveBinary, runJsonl, runLogin, runQuick } from '../proc.js';
 import { worktreesDir } from '../worktrees.js';
 import { RESUME_FAILED_RE, detectLimit, parseResetAt, promptWithInstructions, stringify, type MemberAdapter, type MemberResult, type MemberRunOptions } from '../types.js';
 import type { MemberBilling } from '@localdex/shared';
@@ -77,7 +77,7 @@ export const geminiMember: MemberAdapter = {
 
   async status() {
     const b = bin();
-    const base = { id: 'gemini' as const, label: 'Gemini', loginCommand: 'gemini   (then choose "Login with Google")', canLoginInApp: false };
+    const base = { id: 'gemini' as const, label: 'Gemini', loginCommand: 'gemini   (then choose "Login with Google")', canLoginInApp: true };
     if (!b) return { ...base, installed: false, signedIn: false, billing: 'unknown' as MemberBilling };
     const v = runQuick(b, ['--version']);
     const version = (v.stdout || v.stderr).trim().split('\n')[0]?.slice(0, 60);
@@ -90,6 +90,22 @@ export const geminiMember: MemberAdapter = {
 
   async listModels() {
     return { models: GEMINI_ALIASES, source: 'suggested' };
+  },
+
+  /**
+   * Gemini CLI has no login command. A one-line headless prompt with "Login with Google" selected
+   * (GOOGLE_GENAI_USE_GCA) makes it open Google's sign-in in the browser and cache the login, after we answer
+   * its consent question. It runs in LocalDex's own scratch folder, which is the only folder it is told to trust.
+   */
+  async login(hooks, signal) {
+    const b = bin();
+    if (!b) return { ok: false, error: 'Install the Gemini CLI first.' };
+    const cwd = path.join(DATA_DIR, 'login', 'gemini');
+    fs.mkdirSync(cwd, { recursive: true });
+    const env = loginEnv({ GOOGLE_GENAI_USE_GCA: 'true', GEMINI_CLI_TRUST_WORKSPACE: 'true' });
+    const r = await runLogin(b, ['-p', 'Reply with just the word OK.', '-o', 'text', '--approval-mode', 'plan'], { env, cwd, signal, hooks, input: 'y\n', urlFilter: /accounts\.google\.com|google/ });
+    if (r.code === 0) return { ok: true };
+    return { ok: false, error: signal.aborted ? 'Sign-in cancelled.' : lastLines(r.output) || `gemini exited with ${r.code}` };
   },
 
   async run(o: MemberRunOptions): Promise<MemberResult> {
@@ -118,6 +134,9 @@ export const geminiMember: MemberAdapter = {
     // GEMINI_CLI_TRUST_WORKSPACE=true in our own environment would trust the folder just like --skip-trust.
     const env = memberEnv();
     if (!trustProject) delete env.GEMINI_CLI_TRUST_WORKSPACE;
+    // Signed in from LocalDex: Google login is cached, but Gemini's settings may not name an auth method yet.
+    const auth = readAuth();
+    if (!auth.selected && auth.hasOauth) env.GOOGLE_GENAI_USE_GCA = 'true';
 
     const run = await runJsonl(b, args, { cwd: o.cwd, env, signal: o.signal, timeoutMs: o.timeoutMs }, (ev) => {
       switch (ev.type) {

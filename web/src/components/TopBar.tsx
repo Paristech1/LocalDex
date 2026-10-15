@@ -80,7 +80,7 @@ export function TopBar({ onOpenSettings }: { onOpenSettings: (tab?: SettingsTab)
 
       <div className="flex-1" />
 
-      {(error || modelsError) && (
+      {(error || (modelsError && !(mode === 'council' && !settings?.model))) && (
         <button type="button" onClick={dismissError} className="text-xs text-danger max-w-md truncate hover:underline" title={error ?? modelsError ?? ''}>
           ⚠ {error ?? modelsError}
         </button>

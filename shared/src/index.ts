@@ -575,7 +575,38 @@ export interface Settings {
   /** Names of installed skills the user has switched off (they stay on disk but are hidden from the model). */
   disabledSkills: string[];
   council: CouncilSettings;
+  /** First-run setup. Absent on installs that predate it. */
+  onboarding?: OnboardingState;
 }
+
+/** First-run setup progress, so the guide shows once. */
+export interface OnboardingState {
+  /** When the guide was finished or skipped (epoch ms). */
+  completedAt?: number;
+  /** Which brain the user picked: a model on this computer, or cloud members on their subscriptions. */
+  path?: 'local' | 'cloud';
+  skipped?: boolean;
+}
+
+/** One local model server found by the setup scan (LM Studio, Ollama, or another OpenAI-compatible server). */
+export interface LocalServerScan {
+  baseUrl: string;
+  /** Display name, e.g. "LM Studio". */
+  label: string;
+  kind: 'lmstudio' | 'ollama' | 'openai';
+  ok: boolean;
+  models: ModelInfo[];
+  error?: string;
+  /** This is the server in Settings → Model (baseUrl). */
+  current: boolean;
+}
+
+/** npm packages for the members that run as a CLI. Cursor runs through @cursor/sdk, installed with LocalDex itself. */
+export const MEMBER_NPM_PACKAGES: Partial<Record<MemberId, string>> = {
+  claude: '@anthropic-ai/claude-code',
+  codex: '@openai/codex',
+  gemini: '@google/gemini-cli',
+};
 
 export const DEFAULT_COUNCIL: CouncilSettings = {
   enabled: false,
@@ -700,7 +731,8 @@ export type ServerEvent =
   | { type: 'mcp_status'; servers: McpServerStatus[] }
   | { type: 'skills'; skills: SkillInfo[] }
   | { type: 'council_status'; members: MemberStatus[] }
-  | { type: 'council_login'; member: MemberId; url?: string; done?: boolean; error?: string }
+  /** needsCode: the vendor showed a code in the browser that must be pasted back (council_login_code). */
+  | { type: 'council_login'; member: MemberId; url?: string; done?: boolean; error?: string; needsCode?: boolean }
   | { type: 'council_stats'; stats: CouncilStats }
   | { type: 'agent_status'; sessionId: string; agent: AgentId; status: AgentStatus; detail?: string }
   | { type: 'assistant_delta'; sessionId: string; agent: AgentId; delta: string }
@@ -737,6 +769,9 @@ export type ClientEvent =
   /** deep: also list each member's models (the health check). */
   | { type: 'council_refresh'; deep?: boolean }
   | { type: 'council_login'; member: MemberId }
+  /** Paste the code the vendor's sign-in page showed into the sign-in that is waiting for it. */
+  | { type: 'council_login_code'; member: MemberId; code: string }
+  | { type: 'council_login_cancel' }
   | { type: 'council_stats_reset' }
   /** Forget every member's own session for this LocalDex session; the next message starts fresh with chat history. */
   | { type: 'council_new_conversation'; sessionId: string }

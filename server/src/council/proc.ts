@@ -56,7 +56,37 @@ function extraBinDirs(): string[] {
     path.join(home, '.bun/bin'),
     path.join(home, '.volta/bin'),
     path.join(home, 'bin'),
+    ...npmGlobalBin(),
   ];
+}
+
+let npmBinCache: string[] | undefined;
+
+/** Where `npm i -g` puts executables (e.g. ~/.nvm/versions/node/v22/bin), which may not be on LocalDex's PATH. */
+function npmGlobalBin(): string[] {
+  if (npmBinCache) return npmBinCache;
+  npmBinCache = [path.dirname(process.execPath)];
+  try {
+    const npm = npmCommand();
+    const r = spawnSync(npm, ['prefix', '-g'], { encoding: 'utf8', timeout: 5000, stdio: ['ignore', 'pipe', 'ignore'], shell: process.platform === 'win32' });
+    const prefix = (r.stdout ?? '').trim();
+    if (r.status === 0 && prefix) npmBinCache.push(process.platform === 'win32' ? prefix : path.join(prefix, 'bin'));
+  } catch {
+    /* npm not available */
+  }
+  return npmBinCache;
+}
+
+/** Forget the cached npm folder (after an install changed things). */
+export function resetNpmBinCache(): void {
+  npmBinCache = undefined;
+}
+
+/** The npm that belongs to the node running LocalDex, else whatever `npm` is on PATH. */
+export function npmCommand(): string {
+  const name = process.platform === 'win32' ? 'npm.cmd' : 'npm';
+  const beside = path.join(path.dirname(process.execPath), name);
+  return isExecutable(beside) ? beside : name;
 }
 
 /** Resolve an executable: an explicit path (from config.json), else PATH, else common install folders. */
@@ -225,5 +255,104 @@ export function runJsonl(
       finish(null, null);
     });
     child.on('close', finish);
+  });
+}
+
+/**
+ * Environment for a vendor's own sign-in command. Like memberEnv (API-key variables removed, so the login is the
+ * subscription one), but without CI=1: several CLIs refuse to open a browser when they think they run in CI.
+ */
+export function loginEnv(extra: Record<string, string> = {}): NodeJS.ProcessEnv {
+  const env = memberEnv(extra);
+  delete env.CI;
+  return env;
+}
+
+const ANSI_RE = /\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b\][^\x07]*\x07/g;
+const URL_RE = /https:\/\/[^\s"'<>`]+/;
+
+/** The last few meaningful lines of a sign-in's output, for an error message. */
+export function lastLines(output: string, n = 3): string {
+  return output
+    .replace(ANSI_RE, '')
+    .split(/\r?\n/)
+    .map((l) => l.trim())
+    .filter((l) => l && !/^at\s/.test(l) && !/^[{}()[\],]+$|^exitCode:|^\w*Error: /.test(l))
+    .slice(-n)
+    .join(' ')
+    .slice(0, 400);
+}
+
+export interface LoginRunOptions {
+  env: NodeJS.ProcessEnv;
+  cwd?: string;
+  signal: AbortSignal;
+  hooks: import('./types.js').LoginHooks;
+  /** Written to stdin right away (e.g. a "y" to a consent question). */
+  input?: string;
+  /** Keep stdin open so a pasted code can be sent later. */
+  keepInputOpen?: boolean;
+  /** Output that means the vendor waits for a pasted code. */
+  codePrompt?: RegExp;
+  /** Which https link is the sign-in page (default: the first one printed). */
+  urlFilter?: RegExp;
+}
+
+/**
+ * Run a vendor's sign-in command without a terminal. The vendor opens the browser itself; the first sign-in link it
+ * prints is passed to the UI as a fallback. Resolves when the command exits (or is aborted). Never throws.
+ */
+export function runLogin(bin: string, args: string[], o: LoginRunOptions): Promise<{ code: number | null; output: string }> {
+  return new Promise((resolve) => {
+    let output = '';
+    let sentUrl = false;
+    let askedCode = false;
+    let child: ReturnType<typeof spawn>;
+    try {
+      child = spawn(bin, args, { env: o.env, cwd: o.cwd, stdio: ['pipe', 'pipe', 'pipe'] });
+    } catch (e) {
+      return resolve({ code: null, output: (e as Error).message });
+    }
+    const onAbort = () => child.kill('SIGTERM');
+    o.signal.addEventListener('abort', onAbort, { once: true });
+    child.stdin!.on('error', () => undefined);
+    if (o.input) child.stdin!.write(o.input);
+    if (o.keepInputOpen) {
+      o.hooks.setInput((text) => {
+        if (child.stdin!.writable) child.stdin!.write(`${text.trim()}\n`);
+      });
+    } else {
+      child.stdin!.end();
+    }
+    const onData = (chunk: Buffer) => {
+      const text = chunk.toString('utf8').replace(ANSI_RE, '');
+      output = (output + text).slice(-20_000);
+      if (!sentUrl) {
+        for (const m of output.matchAll(new RegExp(URL_RE, 'g'))) {
+          const url = m[0].replace(/[).,;]+$/, '');
+          if (!o.urlFilter || o.urlFilter.test(url)) {
+            sentUrl = true;
+            o.hooks.onUrl(url);
+            break;
+          }
+        }
+      }
+      if (!askedCode && o.codePrompt?.test(output)) {
+        askedCode = true;
+        o.hooks.onNeedsCode();
+      }
+    };
+    child.stdout!.on('data', onData);
+    child.stderr!.on('data', onData);
+    const done = (code: number | null) => {
+      o.signal.removeEventListener('abort', onAbort);
+      o.hooks.setInput(null);
+      resolve({ code, output });
+    };
+    child.on('error', (e) => {
+      output += `\n${e.message}`;
+      done(null);
+    });
+    child.on('close', (code) => done(code));
   });
 }

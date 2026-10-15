@@ -4,6 +4,7 @@ import { RightPanel } from './components/RightPanel';
 import { SettingsModal, type SettingsTab } from './components/Settings';
 import { Sidebar } from './components/Sidebar';
 import { TopBar } from './components/TopBar';
+import { Onboarding, needsOnboarding } from './components/Onboarding';
 import { useStore } from './store';
 
 export default function App() {
@@ -15,11 +16,17 @@ export default function App() {
   };
   const settings = useStore((s) => s.settings);
 
-  // First run: open settings so the user approves a folder.
+  // First run (or ?setup in the URL, or "Run setup again" in Settings): the setup guide.
+  const [setup, setSetup] = useState<'auto' | 'open' | 'closed'>(() => (new URLSearchParams(location.search).has('setup') ? 'open' : 'auto'));
+  const showSetup = setup === 'open' || (setup === 'auto' && needsOnboarding(settings));
+  // Once the guide is up it stays up until it is finished or skipped (its own steps make needsOnboarding false).
   useEffect(() => {
-    if (settings && settings.approvedFolders.length === 0) setSettingsOpen(true);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [settings === null]);
+    if (setup === 'auto' && needsOnboarding(settings)) setSetup('open');
+  }, [setup, settings]);
+  const closeSetup = () => {
+    setSetup('closed');
+    if (new URLSearchParams(location.search).has('setup')) history.replaceState(null, '', location.pathname);
+  };
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -43,7 +50,17 @@ export default function App() {
           <RightPanel onOpenSettings={openSettings} />
         </div>
       </div>
-      {settingsOpen && <SettingsModal initialTab={settingsTab} onClose={() => setSettingsOpen(false)} />}
+      {settingsOpen && (
+        <SettingsModal
+          initialTab={settingsTab}
+          onClose={() => setSettingsOpen(false)}
+          onRunSetup={() => {
+            setSettingsOpen(false);
+            setSetup('open');
+          }}
+        />
+      )}
+      {showSetup && settings && <Onboarding onClose={closeSetup} />}
     </div>
   );
 }

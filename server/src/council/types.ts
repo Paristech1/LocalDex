@@ -75,8 +75,18 @@ export interface MemberAdapter {
    * 'suggested' = known aliases when the vendor offers no listing. Called off the status path, with a timeout.
    */
   listModels?(status: MemberStatusBase, signal: AbortSignal): Promise<ModelList>;
-  /** Cursor only: open the vendor's sign-in page from LocalDex. */
-  login?(onUrl: (url: string) => void, signal: AbortSignal): Promise<{ ok: boolean; account?: string; error?: string }>;
+  /** Sign in from LocalDex: opens the vendor's own browser sign-in (subscription login, never an API key). */
+  login?(hooks: LoginHooks, signal: AbortSignal): Promise<{ ok: boolean; account?: string; error?: string }>;
+}
+
+/** Callbacks a member's sign-in uses to talk to the UI while it waits for the browser. */
+export interface LoginHooks {
+  /** The sign-in page, shown as a fallback link when no browser tab opened. */
+  onUrl(url: string): void;
+  /** The vendor waits for a code its sign-in page shows (pasted back with council_login_code). */
+  onNeedsCode(): void;
+  /** Registers how to send a pasted code to the waiting sign-in; null once it is over. */
+  setInput(write: ((text: string) => void) | null): void;
 }
 
 /** Usage/rate-limit wording across vendors. */
