@@ -58,7 +58,7 @@ export interface State {
   skills: SkillInfo[];
   council: MemberStatus[];
   councilStats: CouncilStats | null;
-  councilLogin: { member: MemberId; url?: string; done?: boolean; error?: string } | null;
+  councilLogin: { member: MemberId; url?: string; done?: boolean; error?: string; needsCode?: boolean } | null;
   error: string | null;
 }
 
@@ -207,7 +207,13 @@ function handle(ev: ServerEvent): void {
       set({ councilStats: ev.stats });
       return;
     case 'council_login':
-      set({ councilLogin: { member: ev.member, url: ev.url, done: ev.done, error: ev.error } });
+      set((s) => {
+        // Updates for a sign-in in progress add to what we know (the link, then maybe a code prompt).
+        const prev = s.councilLogin && s.councilLogin.member === ev.member && !s.councilLogin.done && !ev.done ? s.councilLogin : null;
+        return {
+          councilLogin: { member: ev.member, url: ev.url ?? prev?.url, done: ev.done, error: ev.error, needsCode: ev.needsCode ?? prev?.needsCode },
+        };
+      });
       return;
     case 'agent_status':
       if (ev.sessionId !== state.session?.id) return;

@@ -8,7 +8,7 @@ import { CouncilSettingsTab } from './Council';
 export type SettingsTab = 'workspace' | 'model' | 'capabilities' | 'skills' | 'mcp' | 'council' | 'prompt';
 type Tab = SettingsTab;
 
-export function SettingsModal({ onClose, initialTab }: { onClose: () => void; initialTab?: SettingsTab }) {
+export function SettingsModal({ onClose, initialTab, onRunSetup }: { onClose: () => void; initialTab?: SettingsTab; onRunSetup?: () => void }) {
   const settings = useStore((s) => s.settings);
   const models = useStore((s) => s.models);
   const [tab, setTab] = useState<Tab>(initialTab ?? (settings?.approvedFolders.length ? 'model' : 'workspace'));
@@ -52,7 +52,14 @@ export function SettingsModal({ onClose, initialTab }: { onClose: () => void; in
             {tab === 'council' && <CouncilSettingsTab settings={settings} patch={patch} />}
             {tab === 'prompt' && <PromptTab settings={settings} patch={patch} />}
           </div>
-          <div className="border-t border-ink-700 px-5 py-3 flex justify-end">
+          <div className="border-t border-ink-700 px-5 py-3 flex items-center justify-between">
+            {onRunSetup ? (
+              <Button variant="ghost" size="sm" onClick={onRunSetup} title="Walk through choosing a model or cloud account and a folder again">
+                Run setup again
+              </Button>
+            ) : (
+              <span />
+            )}
             <Button onClick={onClose}>Done</Button>
           </div>
         </div>

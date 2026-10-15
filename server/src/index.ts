@@ -23,6 +23,7 @@ import { closeAllMcp, mcpStatuses, reloadMcp } from './mcp/client.js';
 import { LIMITS, listSkills, removeSkill, setSkillEnabled } from './skills/store.js';
 import { BIND_HOST, checkRequest, checkUpgrade } from './security.js';
 import { importFromGithub, importFromUpload } from './skills/import.js';
+import { ensurePlayground, installMember, scanLocalServers } from './setup.js';
 
 const PORT = Number(process.env.PORT ?? 7331);
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -55,6 +56,31 @@ app.get('/api/fs/dirs', (c) => {
     return c.json({ path: dir, parent: path.dirname(dir), dirs: entries });
   } catch (e) {
     return c.json({ error: (e as Error).message, path: dir, parent: path.dirname(dir), dirs: [] }, 400);
+  }
+});
+
+// ---------- First-run setup ----------
+
+/** Local model servers LocalDex can reach (configured one, LM Studio, Ollama, plus ?url=). */
+app.get('/api/setup/scan', async (c) => c.json({ servers: await scanLocalServers(c.req.query('url') || undefined) }));
+
+/** Install a council member's official CLI with npm (fixed package list), then re-check every member. */
+app.post('/api/setup/install', async (c) => {
+  const body = (await c.req.json().catch(() => ({}))) as { member?: string };
+  const member = MEMBER_IDS.find((m) => m === body.member);
+  if (!member) return c.json({ ok: false, output: 'Unknown member.' }, 400);
+  const r = await installMember(member);
+  bus.log(r.ok ? 'info' : 'warn', `[setup] npm install for ${member} ${r.ok ? 'finished' : 'failed'}`);
+  await memberStatuses(true).catch(() => undefined);
+  return c.json(r, r.ok ? 200 : 500);
+});
+
+/** Make (or reuse) ~/LocalDex Playground and return its path. Approving it is a separate settings change. */
+app.post('/api/setup/playground', (c) => {
+  try {
+    return c.json({ ok: true, path: ensurePlayground() });
+  } catch (e) {
+    return c.json({ ok: false, error: (e as Error).message }, 500);
   }
 });
 
@@ -142,6 +168,8 @@ const wss = new WebSocketServer({
 });
 let modelsCache: Awaited<ReturnType<typeof listModels>> = [];
 let loginAbort: AbortController | null = null;
+/** Sends a pasted code to the sign-in that is waiting for one. */
+let loginInput: { member: string; write: (text: string) => void } | null = null;
 
 function send(ws: WebSocket, ev: ServerEvent): void {
   if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(ev));
@@ -297,19 +325,45 @@ async function handle(ws: WebSocket, ev: ClientEvent): Promise<void> {
       return;
     }
     case 'council_login': {
-      // Only members with an official in-app sign-in (Cursor SDK). CLIs sign in from Terminal.
-      const adapter = MEMBER_IDS.includes(ev.member) ? MEMBERS[ev.member] : undefined;
-      if (!adapter?.login) return send(ws, { type: 'error', message: `${adapter?.label ?? ev.member} signs in from Terminal; see Settings → Council.` });
+      // The vendor's own browser sign-in (subscription login). One at a time: a new one cancels the last.
+      const member = MEMBER_IDS.find((m) => m === ev.member);
+      const adapter = member ? MEMBERS[member] : undefined;
+      if (!member || !adapter?.login) return send(ws, { type: 'error', message: `${adapter?.label ?? ev.member} signs in from Terminal; see Settings → Council.` });
       loginAbort?.abort();
       const ac = new AbortController();
       loginAbort = ac;
       setTimeout(() => ac.abort(), 5 * 60_000).unref();
-      const r = await adapter.login((url) => bus.emit({ type: 'council_login', member: ev.member, url }), ac.signal);
+      let url: string | undefined;
+      bus.emit({ type: 'council_login', member });
+      const r = await adapter.login(
+        {
+          onUrl: (u) => {
+            url = u;
+            bus.emit({ type: 'council_login', member, url: u });
+          },
+          onNeedsCode: () => bus.emit({ type: 'council_login', member, url, needsCode: true }),
+          setInput: (write) => {
+            if (write) loginInput = { member, write };
+            else if (loginInput?.member === member) loginInput = null;
+          },
+        },
+        ac.signal,
+      );
       if (loginAbort === ac) loginAbort = null;
-      bus.emit({ type: 'council_login', member: ev.member, done: true, error: r.ok ? undefined : r.error });
+      bus.emit({ type: 'council_login', member, done: true, error: r.ok ? undefined : r.error });
       void memberStatuses(true).catch(() => undefined);
       return;
     }
+    case 'council_login_code': {
+      const code = typeof ev.code === 'string' ? ev.code.trim() : '';
+      if (!code || code.length > 2000 || /[\r\n]/.test(code)) return send(ws, { type: 'error', message: 'Paste the code exactly as the sign-in page shows it.' });
+      if (!loginInput || loginInput.member !== ev.member) return send(ws, { type: 'error', message: 'That sign-in is no longer waiting for a code. Start it again.' });
+      loginInput.write(code);
+      return;
+    }
+    case 'council_login_cancel':
+      loginAbort?.abort();
+      return;
     case 'list_models':
       return void refreshModels();
     case 'set_model': {

@@ -1,5 +1,5 @@
 import { getSettings } from '../../config.js';
-import { memberEnv, resolveBinary, runCapture, runJsonl, runQuick } from '../proc.js';
+import { lastLines, loginEnv, memberEnv, resolveBinary, runCapture, runJsonl, runLogin, runQuick } from '../proc.js';
 import { RESUME_FAILED_RE, detectLimit, parseResetAt, stringify, type MemberAdapter, type MemberResult, type MemberRunOptions } from '../types.js';
 import type { MemberBilling } from '@localdex/shared';
 
@@ -42,7 +42,7 @@ export const claudeMember: MemberAdapter = {
 
   async status() {
     const b = bin();
-    const base = { id: 'claude' as const, label: 'Claude', loginCommand: 'claude auth login', canLoginInApp: false };
+    const base = { id: 'claude' as const, label: 'Claude', loginCommand: 'claude auth login', canLoginInApp: true };
     if (!b) return { ...base, installed: false, signedIn: false, billing: 'unknown' as MemberBilling };
     const v = runQuick(b, ['--version']);
     const version = (v.stdout || v.stderr).trim().split('\n')[0]?.slice(0, 60);
@@ -60,6 +60,18 @@ export const claudeMember: MemberAdapter = {
       signedIn = /logged in|signed in/i.test(s.stdout) && !/not logged in/i.test(s.stdout);
     }
     return { ...base, installed: true, version, path: b, signedIn, billing, account };
+  },
+
+  /**
+   * `claude auth login --claudeai` (subscription, never Console/API billing). It opens the browser; when it can't
+   * finish through the browser it asks for the code the sign-in page shows, which the UI pastes back.
+   */
+  async login(hooks, signal) {
+    const b = bin();
+    if (!b) return { ok: false, error: 'Install Claude Code first.' };
+    const r = await runLogin(b, ['auth', 'login', '--claudeai'], { env: loginEnv(), signal, hooks, keepInputOpen: true, codePrompt: /paste (the )?code/i, urlFilter: /claude\.(ai|com)/ });
+    if (r.code === 0) return { ok: true };
+    return { ok: false, error: signal.aborted ? 'Sign-in cancelled.' : lastLines(r.output) || `claude auth login exited with ${r.code}` };
   },
 
   async listModels(st) {

@@ -835,13 +835,24 @@ export function CouncilSettingsTab({ settings, patch }: TabProps) {
               )}
               {st && (!st.installed || !st.signedIn || st.billing === 'api') && (
                 <div className="text-xs">
-                  {st.canLoginInApp ? (
-                    <div className="flex items-center gap-2">
-                      <Button size="sm" variant="primary" disabled={!st.installed} onClick={() => send({ type: 'council_login', member: id })}>
-                        Sign in to {MEMBER_META[id].label}
-                      </Button>
-                      {login?.member === id && !login.done && <span className="text-ink-400 pulse">waiting for the browser…</span>}
-                      {login?.member === id && login.error && <span className="text-danger">{login.error}</span>}
+                  {st.canLoginInApp && st.installed ? (
+                    <div className="space-y-1">
+                      <div className="flex items-center gap-2">
+                        <Button size="sm" variant="primary" onClick={() => send({ type: 'council_login', member: id })}>
+                          Sign in to {MEMBER_META[id].label}
+                        </Button>
+                        {login?.member === id && !login.done && (
+                          <>
+                            <span className="text-ink-400 pulse">waiting for the browser…</span>
+                            <Button size="sm" variant="ghost" onClick={() => send({ type: 'council_login_cancel' })}>
+                              Cancel
+                            </Button>
+                          </>
+                        )}
+                        {login?.member === id && login.error && <span className="text-danger">{login.error}</span>}
+                      </div>
+                      {login?.member === id && !login.done && login.needsCode && <LoginCode member={id} />}
+                      {id !== 'cursor' && <div className="text-[11px] text-ink-400">Or in Terminal: <span className="font-mono">{st.loginCommand}</span></div>}
                     </div>
                   ) : (
                     <div>
@@ -1118,6 +1129,26 @@ function ModelInput({ label, value, placeholder, suggestions, onCommit }: { labe
         </datalist>
       )}
     </label>
+  );
+}
+
+/** The code some sign-in pages show, pasted back into the waiting sign-in. */
+function LoginCode({ member }: { member: MemberId }) {
+  const [code, setCode] = useState('');
+  return (
+    <form
+      className="flex gap-2"
+      onSubmit={(e) => {
+        e.preventDefault();
+        if (code.trim()) send({ type: 'council_login_code', member, code: code.trim() });
+        setCode('');
+      }}
+    >
+      <input className={inputCls} value={code} onChange={(e) => setCode(e.target.value)} placeholder="Paste the code the sign-in page shows" autoComplete="off" aria-label="Sign-in code" />
+      <Button size="sm" variant="primary" type="submit" disabled={!code.trim()}>
+        Submit
+      </Button>
+    </form>
   );
 }
 

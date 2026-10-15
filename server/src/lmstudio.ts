@@ -175,12 +175,25 @@ async function probeNativeTools(model: string): Promise<boolean> {
 const modelCache = new Map<string, ModelInfo>();
 
 export async function listModels(): Promise<ModelInfo[]> {
-  const base = getSettings().baseUrl.replace(/\/+$/, '');
+  const { models } = await probeModels(getSettings().baseUrl);
+  for (const m of models) modelCache.set(m.id, m);
+  return models;
+}
+
+/** What kind of local server answered: LM Studio's native API, Ollama's, or a plain OpenAI-compatible one. */
+export type LocalServerKind = 'lmstudio' | 'ollama' | 'openai';
+
+/**
+ * List the chat models an OpenAI-compatible server offers, without touching settings.
+ * LM Studio's native API adds load state and context length; Ollama's /api/ps says which models are in memory.
+ * Throws when nothing answers.
+ */
+export async function probeModels(baseUrl: string, timeoutMs = 4000): Promise<{ kind: LocalServerKind; models: ModelInfo[] }> {
+  const base = baseUrl.replace(/\/+$/, '');
   const root = base.replace(/\/v1$/, '');
-  let models: ModelInfo[] | null = null;
   // LM Studio's native REST API exposes load state and context length.
   try {
-    const res = await fetch(`${root}/api/v0/models`, { signal: AbortSignal.timeout(4000) });
+    const res = await fetch(`${root}/api/v0/models`, { signal: AbortSignal.timeout(timeoutMs) });
     if (res.ok) {
       const data = (await res.json()) as {
         data: Array<{
@@ -191,23 +204,39 @@ export async function listModels(): Promise<ModelInfo[]> {
           loaded_context_length?: number;
         }>;
       };
-      models = data.data
-        .filter((m) => m.type === 'llm' || m.type === 'vlm')
-        .map((m) => ({
-          id: m.id,
-          loaded: m.state === 'loaded',
-          contextLength: m.loaded_context_length ?? m.max_context_length,
-        }));
+      if (Array.isArray(data?.data)) {
+        const models = data.data
+          .filter((m) => m.type === 'llm' || m.type === 'vlm')
+          .map((m) => ({
+            id: m.id,
+            loaded: m.state === 'loaded',
+            contextLength: m.loaded_context_length ?? m.max_context_length,
+          }));
+        return { kind: 'lmstudio', models };
+      }
     }
   } catch {
-    /* fall through */
+    /* not LM Studio, or not running */
   }
-  if (!models) {
-    const list = await client().models.list();
-    models = list.data.map((m) => ({ id: m.id }));
+  const res = await fetch(`${base}/models`, { headers: { authorization: 'Bearer lm-studio' }, signal: AbortSignal.timeout(timeoutMs) });
+  if (!res.ok) throw new Error(`${base}/models answered ${res.status}`);
+  const list = (await res.json()) as { data?: Array<{ id?: string }> };
+  if (!Array.isArray(list?.data)) throw new Error(`${base}/models is not an OpenAI-compatible model list`);
+  const models: ModelInfo[] = list.data.filter((m) => typeof m.id === 'string' && m.id).map((m) => ({ id: m.id! }));
+  // Ollama: /api/ps lists the models currently loaded in memory.
+  try {
+    const ps = await fetch(`${root}/api/ps`, { signal: AbortSignal.timeout(Math.min(timeoutMs, 2000)) });
+    if (ps.ok) {
+      const j = (await ps.json()) as { models?: Array<{ name?: string; model?: string; context_length?: number }> };
+      if (Array.isArray(j?.models)) {
+        const loaded = new Map(j.models.map((m) => [m.name ?? m.model ?? '', m.context_length]));
+        return { kind: 'ollama', models: models.map((m) => ({ ...m, loaded: loaded.has(m.id), contextLength: loaded.get(m.id) || undefined })) };
+      }
+    }
+  } catch {
+    /* plain OpenAI-compatible server */
   }
-  for (const m of models) modelCache.set(m.id, m);
-  return models;
+  return { kind: 'openai', models };
 }
 
 /** Best-known context window for a model: user override, then LM Studio metadata, else 0 (unknown). */
