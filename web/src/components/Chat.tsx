@@ -28,7 +28,11 @@ export function Chat() {
   if (!session) return <div className="flex-1 grid place-items-center text-ink-400">No session</div>;
 
   const knownCallIds = new Set(session.messages.filter((m) => m.role === 'tool').map((m) => (m as { tool_call_id: string }).tool_call_id));
-  const liveTools = (live?.tools ?? []).filter((t) => !knownCallIds.has(t.callId));
+  // Calls already in the transcript (an assistant message with tool_calls) render there, with their live state;
+  // only calls the transcript does not know yet get a card in the live bubble. Showing both drew every call twice.
+  const transcriptCallIds = new Set(session.messages.flatMap((m) => (m.role === 'assistant' ? (m.tool_calls ?? []).map((c) => c.id) : [])));
+  const pendingTools = (live?.tools ?? []).filter((t) => !knownCallIds.has(t.callId) && transcriptCallIds.has(t.callId));
+  const liveTools = (live?.tools ?? []).filter((t) => !knownCallIds.has(t.callId) && !transcriptCallIds.has(t.callId));
   const showLive = live && (live.content || live.reasoning || liveTools.length > 0);
   const noFolders = settings && settings.approvedFolders.length === 0;
   const councilMode = !!settings?.council.enabled && session.mode === 'council';
@@ -49,7 +53,7 @@ export function Chat() {
       >
         <div className="max-w-3xl mx-auto">
           {session.messages.length <= 1 && !showLive && !liveRun && <Welcome noFolders={!!noFolders} council={councilMode} />}
-          <MessageList messages={session.messages} />
+          <MessageList messages={session.messages} pending={pendingTools} running={running} />
           {afterAnswer && !picker && (
             <div className="-mt-1 mb-2">
               <button type="button" onClick={() => setPicker(true)} className="text-[11px] text-ink-400 hover:text-[#7cc0f2]" title="Send your latest request, with a summary of what the local agent did, to the cloud council. The chat stays in Solo.">
@@ -346,6 +350,8 @@ function hasRequest(messages: ChatMessage[]): boolean {
 /** The last message is a finished assistant answer (not a tool call in progress). */
 function lastIsAnswer(messages: ChatMessage[]): boolean {
   const last = messages.at(-1);
+  // A run that stopped (stuck / LM Studio error / limits) ends on LocalDex's own note: offer the hand-over there too.
+  if (last?.role === 'user' && /^\[(system\] (Run stopped|Step limit)|Goal paused)/.test(last.content)) return true;
   return last?.role === 'assistant' && !!last.content?.trim() && !last.tool_calls?.length;
 }
 

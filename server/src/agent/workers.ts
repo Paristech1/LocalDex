@@ -116,6 +116,7 @@ export class WorkerManager {
       if (result.reason === 'max_steps') report += `\n\n[worker hit the step limit (${getSettings().maxSteps}) before finishing]`;
       if (result.reason === 'error') report = `[worker error] ${result.error}\n${report}`;
       if (result.reason === 'aborted') report = `[worker cancelled]\n${report}`;
+      if (result.reason === 'stuck') report = `[worker got stuck: ${result.error}. Its work may be incomplete; check the files before relying on it.]\n${report}`;
       if (!report) report = '(worker finished without a report)';
 
       w.lastResult = report;

@@ -2,6 +2,7 @@ import OpenAI from 'openai';
 import type { ChatMessage, ModelInfo, ToolCall, ToolSchema } from '@localdex/shared';
 import { getSettings } from './config.js';
 import { bus } from './agent/bus.js';
+import { parseLenientJson } from './jsonRepair.js';
 
 export interface StreamResult {
   content: string;
@@ -11,6 +12,10 @@ export interface StreamResult {
   finishReason: string | null;
   /** true when tool calls were recovered from plain text rather than native tool_calls */
   parsedFromText: boolean;
+  /** The model kept thinking past the runaway limit without answering or calling a tool; LocalDex cut the reply off. */
+  runaway?: boolean;
+  /** LM Studio's native tool-call parser failed on this model, so LocalDex switched it to the text protocol and retried. */
+  switchedToText?: boolean;
 }
 
 export interface StreamOptions {
@@ -21,6 +26,10 @@ export interface StreamOptions {
   signal?: AbortSignal;
   onDelta?: (text: string) => void;
   onReasoning?: (text: string) => void;
+  /** Called when LocalDex throws away a partial reply and asks again (native → text fallback): clear live output. */
+  onRestart?: () => void;
+  /** Override the Reasoning setting for this call ('off' for summaries and checkpoints when the setting is 'auto'). */
+  reasoning?: 'off' | 'setting';
 }
 
 function client(): OpenAI {
@@ -72,7 +81,8 @@ Rules:
 - You may put several <tool_call> blocks in one reply when the calls are independent.
 - After writing tool calls, STOP and wait. The results arrive in the next user message inside <tool_result> tags.
 - Never invent results. Never show calls as code examples; a <tool_call> block is always executed.
-- Arguments must be valid JSON (escape newlines in strings as \\n).
+- Arguments must be valid JSON (escape newlines in strings as \\n).${tools.some((t) => t.function.name === 'update_plan') ? `
+- update_plan takes the whole list every time, e.g. {"steps": [{"title": "Write the file", "status": "done"}, {"title": "Run the tests", "status": "in_progress"}]}. Statuses: pending, in_progress, done, skipped.` : ''}
 - When the task is finished, reply in plain prose without any <tool_call> block.`;
 }
 
@@ -159,7 +169,8 @@ async function probeNativeTools(model: string): Promise<boolean> {
         ],
         temperature: 0,
         max_tokens: 400,
-      },
+        ...reasoningParams(model, true),
+      } as OpenAI.ChatCompletionCreateParamsNonStreaming,
       { timeout: 120_000 },
     );
     const calls = res.choices[0]?.message?.tool_calls ?? [];
@@ -206,8 +217,97 @@ export async function listModels(): Promise<ModelInfo[]> {
     const list = await client().models.list();
     models = list.data.map((m) => ({ id: m.id }));
   }
+  // LM Studio 0.4+ REST API v1: per-instance load config (the real context window) and the reasoning switch.
+  try {
+    const res = await fetch(`${root}/api/v1/models`, { signal: AbortSignal.timeout(4000) });
+    if (res.ok) {
+      const data = (await res.json()) as {
+        models?: Array<{
+          key: string;
+          type?: string;
+          max_context_length?: number;
+          loaded_instances?: Array<{ id: string; config?: { context_length?: number } }>;
+          capabilities?: { reasoning?: { allowed_options?: string[] } };
+        }>;
+      };
+      for (const v of data.models ?? []) {
+        const m = models.find((x) => x.id === v.key);
+        if (!m) continue;
+        const inst = v.loaded_instances?.[0];
+        if (inst) {
+          m.loaded = true;
+          if (inst.config?.context_length) m.contextLength = inst.config.context_length;
+        }
+        if (v.max_context_length) m.maxContextLength = v.max_context_length;
+        const opts = v.capabilities?.reasoning?.allowed_options;
+        m.reasoningSwitch = Array.isArray(opts) ? opts.includes('off') : false;
+      }
+    }
+  } catch {
+    /* older LM Studio: no v1 API */
+  }
   for (const m of models) modelCache.set(m.id, m);
   return models;
+}
+
+/**
+ * Unload a model and load it again with a bigger (or smaller) context window, through LM Studio's REST API v1.
+ * Returns the context LM Studio actually loaded.
+ */
+export async function reloadModel(model: string, contextLength: number): Promise<number> {
+  const root = getSettings().baseUrl.replace(/\/+$/, '').replace(/\/v1$/, '');
+  const post = async (p: string, body: unknown, timeoutMs: number) => {
+    const res = await fetch(`${root}${p}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(timeoutMs),
+    });
+    const text = await res.text();
+    if (!res.ok) throw new Error(`${p} → HTTP ${res.status}: ${text.slice(0, 300)}`);
+    return text ? (JSON.parse(text) as Record<string, unknown>) : {};
+  };
+  await listModels().catch(() => []);
+  if (modelCache.get(model)?.loaded) {
+    await post('/api/v1/models/unload', { instance_id: model }, 60_000).catch((e) => {
+      // Not loaded under that instance id: loading below still works.
+      bus.log('warn', `unload ${model}: ${(e as Error).message}`);
+    });
+  }
+  const loaded = await post('/api/v1/models/load', { model, context_length: contextLength, echo_load_config: true }, 600_000);
+  const ctx = Number((loaded.load_config as { context_length?: number } | undefined)?.context_length ?? contextLength);
+  await listModels().catch(() => []);
+  bus.log('info', `Reloaded ${model} in LM Studio with a ${ctx}-token context window.`);
+  return ctx;
+}
+
+/** Models where LM Studio rejected reasoning_effort: never send it again. */
+const reasoningUnsupported = new Set<string>();
+
+/** Whether this call should ask LM Studio to switch the model's reasoning off. */
+export function wantsReasoningOff(model: string, hasTools: boolean, override?: 'off' | 'setting'): boolean {
+  if (reasoningUnsupported.has(model)) return false;
+  const info = modelCache.get(model);
+  // Only send the switch to models that LM Studio says have one; others may reject the parameter.
+  if (!info?.reasoningSwitch) return false;
+  const mode = getSettings().reasoning ?? 'auto';
+  if (mode === 'on') return false;
+  if (mode === 'off') return true;
+  return hasTools || override === 'off';
+}
+
+function reasoningParams(model: string, hasTools: boolean, override?: 'off' | 'setting'): Record<string, unknown> {
+  return wantsReasoningOff(model, hasTools, override) ? { reasoning_effort: 'none' } : {};
+}
+
+/** A thinking model that writes this much reasoning, with tools available and no answer yet, is cut off and nudged. */
+export const RUNAWAY_REASONING_CHARS = 6000;
+const RUNAWAY_REASONING_CHARS_ON = 16000;
+
+/** LM Studio's own tool-call parser blew up on the model's output (e.g. Gemma: "Invalid diff: now finding less tool calls"). */
+export function isEngineToolParseError(e: unknown): boolean {
+  const m = String((e as Error)?.message ?? e);
+  return /invalid diff|tool call|tool_call|function call|parse.*tool|tool.*parse|predict stream returned an error/i.test(m);
 }
 
 /** Best-known context window for a model: user override, then LM Studio metadata, else 0 (unknown). */
@@ -231,20 +331,40 @@ export function estimateTokens(messages: ChatMessage[]): number {
 }
 
 export async function streamChat(opts: StreamOptions): Promise<StreamResult> {
-  const settings = getSettings();
   const mode = opts.tools.length ? await resolveToolMode(opts.model) : 'native';
-  const textMode = mode === 'text';
-  const stream = await client().chat.completions.create(
-    {
-      model: opts.model,
-      messages: textMode ? toWireText(opts.messages, opts.tools) : toWire(opts.messages),
-      tools: !textMode && opts.tools.length ? (opts.tools as OpenAI.ChatCompletionTool[]) : undefined,
-      temperature: opts.temperature ?? settings.temperature,
-      stream: true,
-      stream_options: { include_usage: true },
-    },
-    { signal: opts.signal },
-  );
+  try {
+    return await streamOnce(opts, mode === 'text');
+  } catch (e) {
+    if (opts.signal?.aborted) throw e;
+    // A model can claim native tool support (the probe passed) and still produce tool-call output that LM Studio's
+    // parser chokes on mid-stream. In auto mode, switch that model to the text protocol for good and ask again.
+    if (mode === 'native' && opts.tools.length && getSettings().toolMode === 'auto' && isEngineToolParseError(e)) {
+      nativeSupport.set(opts.model, false);
+      bus.log('warn', `LM Studio could not parse ${opts.model}'s native tool calls (${String((e as Error).message).slice(0, 160)}). Switched this model to the text tool protocol and retried.`);
+      opts.onRestart?.();
+      const r = await streamOnce(opts, true);
+      return { ...r, switchedToText: true };
+    }
+    // The model rejected reasoning_effort: remember and retry without it.
+    if (/reasoning/i.test(String((e as Error).message)) && wantsReasoningOff(opts.model, opts.tools.length > 0, opts.reasoning)) {
+      reasoningUnsupported.add(opts.model);
+      bus.log('warn', `${opts.model} rejected the reasoning switch; sending requests without it.`);
+      opts.onRestart?.();
+      return streamOnce(opts, mode === 'text');
+    }
+    throw e;
+  }
+}
+
+async function streamOnce(opts: StreamOptions, textMode: boolean): Promise<StreamResult> {
+  const settings = getSettings();
+  // Our own controller, so a runaway think can be cut off without looking like the user pressed Stop.
+  const ac = new AbortController();
+  const onOuterAbort = () => ac.abort();
+  opts.signal?.addEventListener('abort', onOuterAbort, { once: true });
+  if (opts.signal?.aborted) ac.abort();
+  let runaway = false;
+  const runawayLimit = (settings.reasoning ?? 'auto') === 'on' ? RUNAWAY_REASONING_CHARS_ON : RUNAWAY_REASONING_CHARS;
 
   let content = '';
   let reasoning = '';
@@ -252,47 +372,77 @@ export async function streamChat(opts: StreamOptions): Promise<StreamResult> {
   let usage: StreamResult['usage'] = null;
   const toolAcc = new Map<number, { id: string; name: string; args: string }>();
 
-  for await (const chunk of stream) {
-    if (chunk.usage) {
-      usage = {
-        promptTokens: chunk.usage.prompt_tokens ?? 0,
-        completionTokens: chunk.usage.completion_tokens ?? 0,
-      };
-    }
-    const choice = chunk.choices?.[0];
-    if (!choice) continue;
-    if (choice.finish_reason) finishReason = choice.finish_reason;
-    const delta = choice.delta as OpenAI.ChatCompletionChunk.Choice.Delta & {
-      reasoning_content?: string;
-      reasoning?: string;
-    };
-    if (!delta) continue;
+  try {
+    const stream = await client().chat.completions.create(
+      {
+        model: opts.model,
+        messages: textMode ? toWireText(opts.messages, opts.tools) : toWire(opts.messages),
+        tools: !textMode && opts.tools.length ? (opts.tools as OpenAI.ChatCompletionTool[]) : undefined,
+        temperature: opts.temperature ?? settings.temperature,
+        stream: true,
+        stream_options: { include_usage: true },
+        ...reasoningParams(opts.model, opts.tools.length > 0, opts.reasoning),
+      } as OpenAI.ChatCompletionCreateParamsStreaming,
+      { signal: ac.signal },
+    );
 
-    const r = delta.reasoning_content ?? delta.reasoning;
-    if (r) {
-      reasoning += r;
-      opts.onReasoning?.(r);
-    }
-    if (delta.content) {
-      const before = content;
-      content += delta.content;
-      // In text mode, hide the <tool_call> markup from the live stream; the parsed calls are shown as cards.
-      if (!textMode || !before.includes('<tool_call')) {
-        const cut = textMode ? delta.content.indexOf('<tool_call') : -1;
-        const visible = cut >= 0 ? delta.content.slice(0, cut) : delta.content;
-        if (visible) opts.onDelta?.(visible);
+    for await (const chunk of stream) {
+      if (chunk.usage) {
+        usage = {
+          promptTokens: chunk.usage.prompt_tokens ?? 0,
+          completionTokens: chunk.usage.completion_tokens ?? 0,
+        };
+      }
+      const choice = chunk.choices?.[0];
+      if (!choice) continue;
+      if (choice.finish_reason) finishReason = choice.finish_reason;
+      const delta = choice.delta as OpenAI.ChatCompletionChunk.Choice.Delta & {
+        reasoning_content?: string;
+        reasoning?: string;
+      };
+      if (!delta) continue;
+
+      const r = delta.reasoning_content ?? delta.reasoning;
+      if (r) {
+        reasoning += r;
+        opts.onReasoning?.(r);
+        // Thinking forever without acting: cut it off; the loop nudges the model to act or answer.
+        if (opts.tools.length && !content.trim() && toolAcc.size === 0 && reasoning.length > runawayLimit) {
+          runaway = true;
+          ac.abort();
+          break;
+        }
+      }
+      if (delta.content) {
+        const before = content;
+        content += delta.content;
+        // In text mode, hide the <tool_call> markup from the live stream; the parsed calls are shown as cards.
+        if (!textMode || !before.includes('<tool_call')) {
+          const cut = textMode ? delta.content.indexOf('<tool_call') : -1;
+          const visible = cut >= 0 ? delta.content.slice(0, cut) : delta.content;
+          if (visible) opts.onDelta?.(visible);
+        }
+      }
+      if (delta.tool_calls) {
+        for (const tc of delta.tool_calls) {
+          const idx = tc.index ?? 0;
+          const cur = toolAcc.get(idx) ?? { id: '', name: '', args: '' };
+          if (tc.id) cur.id = tc.id;
+          if (tc.function?.name) cur.name += tc.function.name;
+          if (tc.function?.arguments) cur.args += tc.function.arguments;
+          toolAcc.set(idx, cur);
+        }
       }
     }
-    if (delta.tool_calls) {
-      for (const tc of delta.tool_calls) {
-        const idx = tc.index ?? 0;
-        const cur = toolAcc.get(idx) ?? { id: '', name: '', args: '' };
-        if (tc.id) cur.id = tc.id;
-        if (tc.function?.name) cur.name += tc.function.name;
-        if (tc.function?.arguments) cur.args += tc.function.arguments;
-        toolAcc.set(idx, cur);
-      }
-    }
+  } catch (e) {
+    if (!runaway) throw e;
+  } finally {
+    opts.signal?.removeEventListener('abort', onOuterAbort);
+  }
+
+  if (runaway) {
+    bus.log('warn', `${opts.model} thought for ${reasoning.length} characters without acting; cut it off.`);
+    return { content: '', reasoning, toolCalls: [], usage, finishReason: 'runaway', parsedFromText: false, runaway: true };
   }
 
   let toolCalls: ToolCall[] = Array.from(toolAcc.entries())
@@ -553,16 +703,8 @@ function parsePythonValue(s: string, i: number): { value: unknown; end: number }
 }
 
 function tryParseJson(raw: string): unknown {
-  try {
-    return JSON.parse(raw);
-  } catch {
-    // Attempt to repair common mistakes: trailing commas, single quotes.
-    try {
-      return JSON.parse(raw.replace(/,\s*([}\]])/g, '$1'));
-    } catch {
-      return null;
-    }
-  }
+  const v = parseLenientJson(raw);
+  return v === undefined ? null : v;
 }
 
 function normalizeCall(item: unknown, allowed: Set<string>): ToolCall | null {

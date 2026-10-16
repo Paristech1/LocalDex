@@ -17,6 +17,8 @@ export class SessionRunner {
   private abort: AbortController | null = null;
   /** Messages sent while a run is in flight, each with the access picked for it (Council mode). */
   private corrections: QueuedMessage[] = [];
+  /** Set when a Solo run got stuck and Settings → Council says to hand it over automatically. */
+  private pendingEscalation: string | null = null;
   readonly workers: WorkerManager;
 
   constructor(readonly session: Session) {
@@ -297,11 +299,15 @@ export class SessionRunner {
           },
         });
 
-        if (result.reason === 'aborted' || result.reason === 'error') break;
+        if (result.reason === 'aborted') break;
+        if (result.reason === 'error' || result.reason === 'stuck') {
+          this.noteStopped(result.reason === 'error' ? `LM Studio returned an error: ${result.error}` : `the local model got stuck: ${result.error}`);
+          break;
+        }
         if (result.reason === 'max_steps') {
           s.messages.push({
             role: 'user',
-            content: `[system] Step limit (${getSettings().maxSteps}) reached; run paused. Send a message to continue.`,
+            content: `[system] Step limit (${getSettings().maxSteps}) reached; run paused. Send a message to continue.${this.councilHint()}`,
             ts: Date.now(),
           });
           break;
@@ -319,7 +325,7 @@ export class SessionRunner {
           bus.log('info', `Goal stopped: reached ${goal.maxIterations} iterations.`);
           s.messages.push({
             role: 'user',
-            content: `[Goal paused] Reached the iteration cap (${goal.maxIterations}). Raise it or clear the goal to continue.`,
+            content: `[Goal paused] Reached the iteration cap (${goal.maxIterations}). Raise it or clear the goal to continue.${this.councilHint()}`,
             ts: Date.now(),
           });
           break;
@@ -351,14 +357,44 @@ export class SessionRunner {
       bus.emit({ type: 'agent_status', sessionId: sid, agent: 'main', status: 'idle' });
       this.persist();
       this.sync();
+      const why = this.pendingEscalation;
+      this.pendingEscalation = null;
       // A correction that arrived too late to be injected becomes a new turn.
       if (this.corrections.length) {
         const pending = this.corrections;
         this.corrections = [];
         for (const c of pending) s.messages.push({ role: 'user', content: c.content, ts: Date.now() });
         void this.run();
+      } else if (why && !ac.signal.aborted) {
+        bus.log('info', `[council] handing the stuck request over automatically (${why})`);
+        void this.escalate({ pattern: 'auto', note: `LocalDex's local model could not finish this (${why}). Pick it up from what it already did.` });
       }
     }
+  }
+
+  /**
+   * The local run stopped without finishing (LM Studio error, or the loop decided the model is stuck). Say so in the
+   * chat, where it stays visible, and route the request to the council when Settings → Council allows it.
+   */
+  private noteStopped(why: string): void {
+    const c = getSettings().council;
+    const route = c.enabled && (c.autoEscalate ?? 'suggest') !== 'off';
+    let text = `[system] Run stopped: ${why}.`;
+    if (route && c.autoEscalate === 'auto') {
+      text += '\nHanding the request to the council, together with what the local agent already did.';
+      this.pendingEscalation = why.slice(0, 300);
+    } else {
+      text += this.councilHint() || '\nTry again, load a stronger local model, or turn on the model council (Settings → Council) so LocalDex can hand requests like this to a cloud model.';
+    }
+    this.session.messages.push({ role: 'user', content: text, ts: Date.now() });
+    bus.log('warn', `Run stopped: ${why}`);
+  }
+
+  /** Suffix pointing at Hand to council, when the council is on and suggestions are not switched off. */
+  private councilHint(): string {
+    const c = getSettings().council;
+    if (!c.enabled || (c.autoEscalate ?? 'suggest') === 'off') return '';
+    return '\nPress "Hand to council ☁" below to send the request, with what the local agent already did, to a cloud model (Claude and the other members you have signed in).';
   }
 
   private ensureSystemPrompt(): void {

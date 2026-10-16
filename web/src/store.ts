@@ -132,6 +132,8 @@ export function connect(): void {
 }
 
 export function send(ev: ClientEvent): void {
+  // A new request starts fresh: clear the last error banner.
+  if (ev.type === 'send_message' || ev.type === 'council_escalate') set({ error: null });
   if (ws?.readyState === WebSocket.OPEN) ws.send(JSON.stringify(ev));
   else set({ error: 'Not connected to the LocalDex server.' });
 }
@@ -181,7 +183,9 @@ function handle(ev: ServerEvent): void {
         for (const [k, v] of Object.entries(s.live)) {
           live[k] = v.done ? { ...v, content: '', reasoning: '' } : v;
         }
-        return { session: ev.session, live, sessions, error: null };
+        // Keep any error banner: the runner syncs the session right after a run fails, which used to wipe the
+        // message before anyone could read it. It clears on dismiss, on a new message, or on switching sessions.
+        return { session: ev.session, live, sessions };
       });
       return;
     }
