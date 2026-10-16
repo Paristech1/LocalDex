@@ -89,8 +89,20 @@ export function AssistantBubble({
   );
 }
 
-/** Render a full message list (main or worker), pairing tool calls with their results. */
-export function MessageList({ messages, label }: { messages: ChatMessage[]; label?: string }) {
+export interface PendingTool {
+  callId: string;
+  result?: string;
+  ok?: boolean;
+  startedAt?: number;
+}
+
+/**
+ * Render a full message list (main or worker), pairing tool calls with their results.
+ * `pending`: live state of calls that have no result in `messages` yet; `running`: a run is in flight, so a call
+ * without a result is still executing (not "failed").
+ */
+export function MessageList({ messages, label, pending, running }: { messages: ChatMessage[]; label?: string; pending?: PendingTool[]; running?: boolean }) {
+  const live = new Map((pending ?? []).map((t) => [t.callId, t]));
   const toolResults = new Map<string, Extract<ChatMessage, { role: 'tool' }>>();
   for (const m of messages) if (m.role === 'tool') toolResults.set(m.tool_call_id, m);
 
@@ -103,6 +115,7 @@ export function MessageList({ messages, label }: { messages: ChatMessage[]; labe
           <AssistantBubble key={i} content={m.content} reasoning={m.reasoning} label={label} via={m.via} councilRunId={m.councilRunId}>
             {m.tool_calls?.map((tc) => {
               const r = toolResults.get(tc.id);
+              const p = r ? undefined : live.get(tc.id);
               let args: unknown = tc.function.arguments;
               try {
                 args = JSON.parse(tc.function.arguments);
@@ -114,8 +127,9 @@ export function MessageList({ messages, label }: { messages: ChatMessage[]; labe
                   key={tc.id}
                   name={tc.function.name}
                   args={args}
-                  result={r?.content ?? '(no result recorded)'}
-                  ok={r ? r.ok !== false : false}
+                  result={r ? r.content : p ? p.result : running ? undefined : '(no result recorded)'}
+                  ok={r ? r.ok !== false : p ? p.ok : running ? undefined : false}
+                  startedAt={p?.startedAt}
                 />
               );
             })}

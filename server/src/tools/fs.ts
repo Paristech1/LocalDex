@@ -3,6 +3,7 @@ import path from 'node:path';
 import fg from 'fast-glob';
 import { resolvePath, defaultCwd } from './permissions.js';
 import { fail, ok, optNum, optStr, str, truncate, type ToolDef } from './types.js';
+import { describeTextLine, fixDoubleEscapedText } from '../jsonRepair.js';
 
 const MAX_READ = 200_000;
 
@@ -59,14 +60,18 @@ export const write_file: ToolDef = {
   },
   async run(args) {
     const p = resolvePath(str(args.path, 'path'));
-    const content = str(args.content, 'content');
+    const repaired = fixDoubleEscapedText(str(args.content, 'content'), p);
+    const content = repaired.text;
     await fs.mkdir(path.dirname(p), { recursive: true });
     const existed = await fs
       .access(p)
       .then(() => true)
       .catch(() => false);
     await fs.writeFile(p, content, 'utf8');
-    return ok(`${existed ? 'Overwrote' : 'Created'} ${p} (${content.split('\n').length} lines).`);
+    const note = repaired.fixed
+      ? ` LocalDex turned ${repaired.fixed} literal "\\n" sequence(s) into real line breaks (the content looked double-escaped). Send real newlines in JSON as \\n, not \\\\n.`
+      : '';
+    return ok(`${existed ? 'Overwrote' : 'Created'} ${p} (${describeTextLine(content)}).${note}`);
   },
 };
 
@@ -101,9 +106,13 @@ export const edit_file: ToolDef = {
     if (count > 1 && !replaceAll) {
       return fail(`old_string appears ${count} times in ${p}. Add more context or set replace_all=true.`);
     }
-    const updated = replaceAll ? content.split(oldStr).join(newStr) : content.replace(oldStr, () => newStr);
+    // Same double-escape repair as write_file, but only when the file itself uses real line breaks.
+    const repaired = content.includes('\n') ? fixDoubleEscapedText(newStr, p) : { text: newStr, fixed: 0 };
+    const replacement = repaired.text;
+    const updated = replaceAll ? content.split(oldStr).join(replacement) : content.replace(oldStr, () => replacement);
     await fs.writeFile(p, updated, 'utf8');
-    return ok(`Edited ${p}: replaced ${replaceAll ? count : 1} occurrence(s).`);
+    const note = repaired.fixed ? ` (turned ${repaired.fixed} literal "\\n" into real line breaks)` : '';
+    return ok(`Edited ${p}: replaced ${replaceAll ? count : 1} occurrence(s)${note}. File now: ${describeTextLine(updated)}.`);
   },
 };
 

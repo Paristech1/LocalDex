@@ -8,7 +8,8 @@
     "build": "tsc --noEmit -p tsconfig.json",
     "start": "tsx src/index.ts",
     "typecheck": "tsc --noEmit -p tsconfig.json",
-    "test:council": "bash test/council/run.sh"
+    "test:council": "bash test/council/run.sh",
+    "test:local": "bash test/local/run.sh"
   },
   "dependencies": {
     "@hono/node-server": "^1.13.7",

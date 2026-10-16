@@ -201,6 +201,26 @@ Install the CLIs you want (`npm i -g @anthropic-ai/claude-code @openai/codex @go
 
 The task, and any files a member reads, go to that vendor. Every message written by the council is marked with ☁ in the chat, and the **Council** tab in the right panel shows each run step by step: who did what, live output, tool calls, timing and tokens.
 
+## When a small local model can't call tools
+
+Small local models fail at tool calling in a handful of predictable ways. LocalDex handles each one in a fixed order, and only reaches for the cloud at the end:
+
+| # | What goes wrong | What LocalDex does |
+|---|---|---|
+| 1 | **Thinking breaks tool calls.** Reasoning models (Gemma 4, Qwen 3…) write a plan or pseudo-code instead of calling the tool, open their thought channel inside the call (which crashes LM Studio's parser), and take several times longer per step. | **Settings → Model & Agent → Reasoning: Auto** sends `reasoning_effort: "none"` while tools are available, for models LM Studio reports a reasoning switch for. Measured on Gemma 4 12B: native tool calls went from 0/3 to 3/3, and a step from ~9.5 s to ~2.5 s. |
+| 2 | **LM Studio can't parse the native tool call** (e.g. `Invalid diff: now finding less tool calls`). | In Auto tool mode the model is switched to the text protocol for good and the same step is asked again. Nothing is lost and the switch is logged. |
+| 3 | **Malformed arguments**: raw newlines inside JSON strings, Gemma's `<\|"\|>` string tokens, trailing commas, smart quotes, plan steps sent as plain strings. | Lenient parsing and argument normalisation repair these before the tool runs. |
+| 4 | **Content double-escaped** (`one\\ntwo` written as one line), or a file left **without a final newline** while the model thinks `wc -l` should agree with it. | `write_file` turns unambiguous literal `\n` into line breaks and says so. Every write and edit reports lines in `wc -l` terms ("3 lines; no newline at end, so `wc -l` reports 2"). |
+| 5 | **Retrying a command the user denied.** | The same command is refused without asking again for the rest of the request, and the model is told plainly not to retry it. |
+| 6 | **Loops**: the same call with the same arguments and the same result, over and over. | A warning after 3, and the run stops as *stuck* at 5. |
+| 7 | **Thinking forever** without acting. | The reply is cut off after ~6000 characters of reasoning and the model is told to act or answer. Three cut-offs in a row means stuck. |
+| 8 | **Wrong memory of the files** in Compact & Resume summaries and Goal checkpoints. | LocalDex appends a *Files on disk right now* block it checks itself (exists, lines, bytes), and tells the model to trust it over the summary. |
+| 9 | **Still stuck**: LM Studio errors, stuck loops, failures after two warnings, step or goal limits. | The run stops with a visible `[system] Run stopped: …` note. With the council on, **Settings → Council → When the local model gets stuck** decides what happens next: *Suggest* shows **Hand to council ☁**, *Auto* hands the request plus everything the local agent did to the council by itself (same access rules as Hand to council), *Off* does nothing. |
+
+Also useful on small machines: **Settings → Model & Agent → Context window → Reload in LM Studio** unloads the model and loads it again with a bigger context (LM Studio 0.4+). On 16 GB, 32k is a safe size for a 12B model.
+
+Run the recovery tests (a mock LM Studio replays each failure above) with `npm run test:local -w server`.
+
 ## Choosing a model
 
 Agentic work depends almost entirely on how reliably the model calls tools and tells the truth
@@ -211,7 +231,7 @@ about results. Rough guidance for LM Studio:
 - Load with at least 16k context; 32k+ is comfortable for multi-file work. Auto-compact will keep
   the conversation inside whatever you load.
 - Uncensored/"heretic" fine-tunes often break the tool-calling template. LocalDex still works with
-  them through the text protocol and call recovery, but expect more hallucinated results. The
+  them (see *When a small local model can't call tools* above), but expect more hallucinated results. The
   system prompt tells the model never to claim results it did not observe, and worker reports are
   annotated when a worker made no tool calls.
 - LM Studio serves one request per loaded model at a time, so worker concurrency > 1 only helps

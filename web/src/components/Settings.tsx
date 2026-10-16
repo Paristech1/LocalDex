@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { ALL_TOOL_NAMES, type Settings, type ShellApprovalMode, type ToolMode } from '@localdex/shared';
+import { ALL_TOOL_NAMES, type ReasoningMode, type Settings, type ShellApprovalMode, type ToolMode } from '@localdex/shared';
 import { send, useStore } from '../store';
 import { collectDropped, fromInput, importGithub, removeSkill, setSkillEnabled, summarize, uploadSkills, type UploadEntry } from '../skills';
 import { Button, Field, Toggle, cx, inputCls } from './ui';
@@ -190,6 +190,13 @@ function ModelTab({ settings, patch, models }: TabProps & { models: string[] }) 
             <option value="text">Text protocol</option>
           </select>
         </Field>
+        <Field label="Reasoning (thinking)" hint="Auto switches thinking off while the agent uses tools, for models that support it (Gemma 4, Qwen 3…). Small models call tools far more reliably, and several times faster, without it.">
+          <select className={inputCls} value={settings.reasoning ?? 'auto'} onChange={(e) => patch({ reasoning: e.target.value as ReasoningMode })}>
+            <option value="auto">Auto: off while using tools (recommended)</option>
+            <option value="on">On (model default)</option>
+            <option value="off">Always off</option>
+          </select>
+        </Field>
         <Field label="Temperature">
           <input type="number" step={0.1} min={0} max={2} className={inputCls} value={settings.temperature} onChange={(e) => patch({ temperature: Number(e.target.value) })} />
         </Field>
@@ -206,7 +213,50 @@ function ModelTab({ settings, patch, models }: TabProps & { models: string[] }) 
           <input type="number" min={1} max={8} className={inputCls} value={settings.workerConcurrency} onChange={(e) => patch({ workerConcurrency: Number(e.target.value) })} />
         </Field>
       </div>
+      <ReloadModel settings={settings} patch={patch} />
     </>
+  );
+}
+
+/** Reload the default model in LM Studio with a bigger context window (LM Studio REST API v1). */
+function ReloadModel({ settings, patch }: TabProps) {
+  const infos = useStore((s) => s.models);
+  const [busy, setBusy] = useState(false);
+  const [want, setWant] = useState(settings.loadContextLength || 32768);
+  const info = infos.find((m) => m.id === settings.model);
+  const current = info?.contextLength ?? 0;
+  // The models list refreshes when the reload finishes (or fails); either way stop showing "Reloading".
+  useEffect(() => setBusy(false), [infos]);
+  if (!settings.model) return null;
+  const max = info?.maxContextLength;
+  return (
+    <div className="mt-4 rounded-lg border border-ink-700 p-3 space-y-2">
+      <div className="text-sm font-medium">Context window</div>
+      <p className="text-[11px] text-ink-400">
+        {settings.model} is loaded with {current ? `${current.toLocaleString()} tokens` : 'an unknown context'}
+        {max ? ` (supports up to ${max.toLocaleString()})` : ''}. More context means longer conversations before Compact & Resume, at the cost of memory: on 16 GB, 32k is a safe size for a 12B model.
+      </p>
+      <div className="flex gap-2 items-center">
+        <select className={inputCls} value={want} onChange={(e) => setWant(Number(e.target.value))}>
+          {[8192, 16384, 32768, 49152, 65536, 98304, 131072].filter((n) => !max || n <= max).map((n) => (
+            <option key={n} value={n}>
+              {n.toLocaleString()} tokens
+            </option>
+          ))}
+        </select>
+        <Button
+          disabled={busy || want === current}
+          onClick={() => {
+            setBusy(true);
+            patch({ loadContextLength: want });
+            send({ type: 'reload_model', model: settings.model!, contextLength: want });
+          }}
+        >
+          {busy ? 'Reloading…' : 'Reload in LM Studio'}
+        </Button>
+      </div>
+      <p className="text-[11px] text-ink-400">Unloads the model and loads it again with this context (needs LM Studio 0.4+). Runs in progress on this model will fail, so wait for them to finish.</p>
+    </div>
   );
 }
 

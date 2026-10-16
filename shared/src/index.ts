@@ -282,6 +282,12 @@ export interface CouncilSettings {
    * You review the diff and apply or discard it. Needs a git repo with at least one commit; otherwise edits go to the folder.
    */
   builderWorktree: boolean;
+  /**
+   * Solo mode, when the local model gets stuck (tool calls keep failing, it repeats itself, thinks without acting,
+   * or LM Studio errors): 'suggest' adds a note with a Hand to council button, 'auto' hands the request to the
+   * council by itself (same access rules as Hand to council), 'off' does nothing.
+   */
+  autoEscalate: AutoEscalateMode;
 }
 
 /** How risky a request looks, from explainable keyword rules. */
@@ -556,14 +562,28 @@ export type ShellApprovalMode = 'always' | 'dangerous' | 'never';
  */
 export type ToolMode = 'auto' | 'native' | 'text';
 
+/**
+ * Reasoning ("thinking") for local models that support switching it off (LM Studio reasoning_effort "none").
+ * auto: off while the agent is using tools (small reasoning models often skip or mangle tool calls while thinking,
+ *       and thinking makes every step several times slower); on for plain chat without tools.
+ * on:   leave the model's own default. off: always off.
+ */
+export type ReasoningMode = 'auto' | 'on' | 'off';
+
+/** Solo mode: what LocalDex does when the local model gets stuck and cannot finish the request. */
+export type AutoEscalateMode = 'off' | 'suggest' | 'auto';
+
 export interface Settings {
   baseUrl: string;
   model: string | null;
   workerModel: string | null;
   toolMode: ToolMode;
+  reasoning: ReasoningMode;
   temperature: number;
   maxSteps: number;
   contextLength: number; // 0 = unknown/auto
+  /** Context window LocalDex asks LM Studio for when it (re)loads a model (Settings → Reload model). 0 = LM Studio's own default. */
+  loadContextLength: number;
   autoCompactThreshold: number; // fraction of contextLength (0 disables)
   approvedFolders: string[];
   capabilities: Record<ToolName, boolean>;
@@ -618,6 +638,7 @@ export const DEFAULT_COUNCIL: CouncilSettings = {
   qaStep: true,
   continueSessions: true,
   builderWorktree: true,
+  autoEscalate: 'suggest',
 };
 
 export const DEFAULT_CAPABILITIES: Record<ToolName, boolean> = {
@@ -645,9 +666,11 @@ export const DEFAULT_SETTINGS: Settings = {
   model: null,
   workerModel: null,
   toolMode: 'auto',
+  reasoning: 'auto',
   temperature: 0.2,
   maxSteps: 40,
   contextLength: 0,
+  loadContextLength: 32768,
   autoCompactThreshold: 0.8,
   approvedFolders: [],
   capabilities: DEFAULT_CAPABILITIES,
@@ -684,6 +707,10 @@ export interface ModelInfo {
   id: string;
   loaded?: boolean;
   contextLength?: number;
+  /** Largest context the model supports (LM Studio metadata). */
+  maxContextLength?: number;
+  /** The model can switch reasoning off (LM Studio reports a reasoning "off" option). */
+  reasoningSwitch?: boolean;
 }
 
 // ---------- WebSocket protocol ----------
@@ -727,6 +754,8 @@ export type ClientEvent =
   | { type: 'stop'; sessionId: string }
   | { type: 'set_settings'; patch: Partial<Settings> }
   | { type: 'list_models' }
+  /** Unload and reload a model in LM Studio with this context window (LM Studio REST API v1). */
+  | { type: 'reload_model'; model: string; contextLength: number }
   | { type: 'set_model'; sessionId: string; model: string }
   | { type: 'approval_response'; id: string; approved: boolean }
   | { type: 'ask_user_response'; id: string; answer: string }

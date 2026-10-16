@@ -902,6 +902,13 @@ export function CouncilSettingsTab({ settings, patch }: TabProps) {
             <option value="vote">Council vote</option>
           </select>
         </Field>
+        <Field label="When the local model gets stuck (Solo)" hint="Stuck = LM Studio errors, tool calls keep failing, the same call repeats, or it thinks without acting. Auto sends the request, with what the local agent already did, to the council using the access rules below.">
+          <select className={inputCls} value={c.autoEscalate ?? 'suggest'} onChange={(e) => setC({ autoEscalate: e.target.value as CouncilSettings['autoEscalate'] })}>
+            <option value="suggest">Suggest Hand to council</option>
+            <option value="auto">Hand it to the council automatically</option>
+            <option value="off">Do nothing</option>
+          </select>
+        </Field>
         <Field label="Router" hint="Rules are instant and free. The local model can classify fuzzier requests.">
           <select className={inputCls} value={c.routing} onChange={(e) => setC({ routing: e.target.value as CouncilSettings['routing'] })}>
             <option value="rules">Keyword rules</option>
