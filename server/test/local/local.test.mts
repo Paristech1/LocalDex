@@ -141,7 +141,11 @@ console.log('\n# JSON repair');
 check('raw newline inside a string parses', (parseLenientJson('{"path":"a.txt","content":"one\ntwo\n"}') as any)?.content === 'one\ntwo\n');
 check('Gemma <|"|> string tokens parse', (parseLenientJson('{<|"|>path<|"|>:<|"|>a.txt<|"|>}') as any)?.path === 'a.txt');
 check('trailing comma parses', (parseLenientJson('{"a":1,}') as any)?.a === 1);
+check('extra closing brace (}}}) parses', (parseLenientJson('{"name":"update_plan","arguments":{"steps":[{"status":"done","title":"x"}]}}}') as any)?.name === 'update_plan');
+check('missing closing brace parses', (parseLenientJson('{"name":"a","arguments":{"p":"}"') as any)?.arguments?.p === '}');
 const tools = enabledTools('main');
+const extra = lm.parseTextToolCalls('<tool_call>{"name":"update_plan","arguments":{"steps":[{"status":"done","title":"A"}]}}}</tool_call>', tools);
+check('text call ending in }}} is recovered', extra.calls.length === 1 && extra.calls[0].function.name === 'update_plan');
 const rec = lm.parseTextToolCalls('<tool_call>{"name": "write_file", "arguments": {"path": "x.md", "content": "# T\nbody\n"}}</tool_call>', tools);
 check('text call with raw newline in content is recovered', rec.calls.length === 1 && JSON.parse(rec.calls[0].function.arguments).content === '# T\nbody\n');
 

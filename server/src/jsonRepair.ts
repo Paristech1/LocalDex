@@ -29,7 +29,39 @@ function candidates(raw: string): string[] {
   s = s.replace(/,\s*([}\]])/g, '$1');
   out.push(s);
   out.push(s.replace(/[“”]/g, '"'));
+  out.push(balanceBrackets(s.replace(/[“”]/g, '"')));
   return [...new Set(out)];
+}
+
+/**
+ * Fix unbalanced brackets: Gemma often ends a call with one `}` too many (`}}}`) or forgets one.
+ * Closers with no matching opener are dropped, and missing closers are appended. Strings are respected.
+ */
+export function balanceBrackets(s: string): string {
+  const stack: string[] = [];
+  let out = '';
+  let inString = false;
+  for (let i = 0; i < s.length; i++) {
+    const ch = s[i];
+    if (inString) {
+      out += ch;
+      if (ch === '\\') {
+        out += s[i + 1] ?? '';
+        i++;
+      } else if (ch === '"') inString = false;
+      continue;
+    }
+    if (ch === '"') inString = true;
+    else if (ch === '{') stack.push('}');
+    else if (ch === '[') stack.push(']');
+    else if (ch === '}' || ch === ']') {
+      if (stack[stack.length - 1] === ch) stack.pop();
+      else continue; // stray closer: drop it
+    }
+    out += ch;
+  }
+  if (inString) out += '"';
+  return out + stack.reverse().join('');
 }
 
 /** Escape raw control characters that appear inside JSON string literals (outside strings they are just whitespace). */
