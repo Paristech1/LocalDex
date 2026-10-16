@@ -3,7 +3,7 @@ import path from 'node:path';
 import fg from 'fast-glob';
 import { resolvePath, defaultCwd } from './permissions.js';
 import { fail, ok, optNum, optStr, str, truncate, type ToolDef } from './types.js';
-import { describeTextLine, fixDoubleEscapedText } from '../jsonRepair.js';
+import { describeText, describeTextLine, fixDoubleEscapedText } from '../jsonRepair.js';
 
 const MAX_READ = 200_000;
 
@@ -31,13 +31,15 @@ export const read_file: ToolDef = {
     if (stat.isDirectory()) return fail(`"${p}" is a directory. Use list_dir.`);
     if (stat.size > 5_000_000) return fail(`File is too large (${stat.size} bytes).`);
     const raw = await fs.readFile(p, 'utf8');
-    const lines = raw.split('\n');
+    const lines = raw.endsWith('\n') ? raw.slice(0, -1).split('\n') : raw.split('\n');
     const start = Math.max(1, optNum(args.start_line) ?? 1);
     const end = Math.min(lines.length, optNum(args.end_line) ?? lines.length);
     const slice = lines.slice(start - 1, end);
     const width = String(end).length;
     const body = slice.map((l, i) => `${String(start + i).padStart(width)}| ${l}`).join('\n');
-    const header = `${p} (${lines.length} lines${start > 1 || end < lines.length ? `, showing ${start}-${end}` : ''})\n`;
+    // Same line count as write_file/edit_file and `wc -l` users expect: a final newline does not start a new line.
+    const total = describeText(raw).lines;
+    const header = `${p} (${describeTextLine(raw)}${start > 1 || end < total ? `, showing ${start}-${Math.min(end, total)}` : ''})\n`;
     return ok(header + truncate(body, MAX_READ));
   },
 };

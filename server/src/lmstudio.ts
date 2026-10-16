@@ -1,6 +1,8 @@
+import fs from 'node:fs';
+import path from 'node:path';
 import OpenAI from 'openai';
 import type { ChatMessage, ModelInfo, ToolCall, ToolSchema } from '@localdex/shared';
-import { getSettings } from './config.js';
+import { DATA_DIR, getSettings } from './config.js';
 import { bus } from './agent/bus.js';
 import { parseLenientJson } from './jsonRepair.js';
 
@@ -133,6 +135,34 @@ function safeParse(s: string): unknown {
 }
 
 const nativeSupport = new Map<string, boolean>();
+
+/**
+ * Models LocalDex moved to the text protocol because their native tool calls broke at runtime. Kept on disk: the
+ * probe passes again after every restart (one clean call), so without this the same breakage repeats each session.
+ */
+const TEXT_MODELS_FILE = path.join(DATA_DIR, 'text-tool-models.json');
+const textModels = new Set<string>(
+  (() => {
+    try {
+      const v = JSON.parse(fs.readFileSync(TEXT_MODELS_FILE, 'utf8')) as unknown;
+      return Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string') : [];
+    } catch {
+      return [];
+    }
+  })(),
+);
+for (const m of textModels) nativeSupport.set(m, false);
+
+function rememberTextModel(model: string): void {
+  nativeSupport.set(model, false);
+  if (textModels.has(model)) return;
+  textModels.add(model);
+  try {
+    fs.writeFileSync(TEXT_MODELS_FILE, JSON.stringify([...textModels], null, 2));
+  } catch (e) {
+    bus.log('warn', `Could not save the text tool mode for ${model}: ${(e as Error).message}`);
+  }
+}
 
 /** Resolve the effective tool mode for a model, probing once when the setting is 'auto'. */
 export async function resolveToolMode(model: string): Promise<'native' | 'text'> {
@@ -304,6 +334,40 @@ function reasoningParams(model: string, hasTools: boolean, override?: 'off' | 's
 export const RUNAWAY_REASONING_CHARS = 6000;
 const RUNAWAY_REASONING_CHARS_ON = 16000;
 
+/** Chat-template control tokens (Gemma <|"|>, <channel|>, <|tool_call>, ChatML <|im_end|> …) inside an argument mean the call is broken. */
+const CONTROL_TOKEN = /<\|[^|<>\s]{0,24}\|?>|<[a-z_]{2,24}\|>/i;
+
+/** A tool call whose arguments are not a JSON object, or carry chat-template control tokens. */
+export function isCorruptCall(call: ToolCall): boolean {
+  const raw = call.function.arguments ?? '';
+  if (CONTROL_TOKEN.test(raw)) return true;
+  if (!raw.trim()) return false;
+  const v = parseLenientJson(raw);
+  if (v === undefined || v === null || typeof v !== 'object' || Array.isArray(v)) return true;
+  return hasLeak(v, '');
+}
+
+/**
+ * JSON structure spilled into a string value ("Create notes2 folder**},{status:") or prose in a path: the model's
+ * call format broke mid-argument. Valid JSON, so only this catches it.
+ */
+const STRUCTURE_LEAK = /\*\*\s*[}\]]|[}\]]\s*,\s*[{\[]\s*"?[a-z_]{2,20}"?\s*:/i;
+/** Short identifier-like fields. File contents, edits and commands can legitimately contain JSON, so they are not checked. */
+const SHORT_KEYS = new Set(['path', 'file', 'file_path', 'cwd', 'dir', 'directory', 'pattern', 'name', 'title', 'status', 'step', 'label']);
+const PATH_KEYS = new Set(['path', 'file', 'file_path', 'cwd', 'dir', 'directory']);
+function hasLeak(v: unknown, key: string, depth = 0): boolean {
+  if (depth > 6) return false;
+  if (typeof v === 'string') return SHORT_KEYS.has(key) && (STRUCTURE_LEAK.test(v) || (PATH_KEYS.has(key) && v.includes('\n')));
+  if (Array.isArray(v)) return v.some((x) => hasLeak(x, key, depth + 1));
+  if (v && typeof v === 'object') {
+    const o = v as Record<string, unknown>;
+    // Plan steps with a non-string status ("status": 1395674847) are garbage too.
+    if (key === 'steps' && 'status' in o && typeof o.status !== 'string' && typeof o.status !== 'boolean') return true;
+    return Object.entries(o).some(([k, x]) => hasLeak(x, k, depth + 1));
+  }
+  return false;
+}
+
 /** LM Studio's own tool-call parser blew up on the model's output (e.g. Gemma: "Invalid diff: now finding less tool calls"). */
 export function isEngineToolParseError(e: unknown): boolean {
   const m = String((e as Error)?.message ?? e);
@@ -333,13 +397,27 @@ export function estimateTokens(messages: ChatMessage[]): number {
 export async function streamChat(opts: StreamOptions): Promise<StreamResult> {
   const mode = opts.tools.length ? await resolveToolMode(opts.model) : 'native';
   try {
-    return await streamOnce(opts, mode === 'text');
+    const r = await streamOnce(opts, mode === 'text');
+    // The native call "worked" but its arguments are garbage: the model's own tool-call format broke down mid-call
+    // (seen with Gemma 4 fine-tunes after a few turns: control tokens and the final answer leak into a string argument).
+    // Never execute such a call. In auto mode, move the model to the text protocol for good and ask again.
+    if (mode === 'native' && !r.parsedFromText && r.toolCalls.some(isCorruptCall)) {
+      const bad = r.toolCalls.find(isCorruptCall)!;
+      if (getSettings().toolMode === 'auto') {
+        rememberTextModel(opts.model);
+        bus.log('warn', `${opts.model} produced a corrupted native tool call (${bad.function.name}: ${bad.function.arguments.slice(0, 120)}…). Switched this model to the text tool protocol and retried.`);
+        opts.onRestart?.();
+        const t = await streamOnce(opts, true);
+        return { ...t, switchedToText: true };
+      }
+    }
+    return r;
   } catch (e) {
     if (opts.signal?.aborted) throw e;
     // A model can claim native tool support (the probe passed) and still produce tool-call output that LM Studio's
     // parser chokes on mid-stream. In auto mode, switch that model to the text protocol for good and ask again.
     if (mode === 'native' && opts.tools.length && getSettings().toolMode === 'auto' && isEngineToolParseError(e)) {
-      nativeSupport.set(opts.model, false);
+      rememberTextModel(opts.model);
       bus.log('warn', `LM Studio could not parse ${opts.model}'s native tool calls (${String((e as Error).message).slice(0, 160)}). Switched this model to the text tool protocol and retried.`);
       opts.onRestart?.();
       const r = await streamOnce(opts, true);

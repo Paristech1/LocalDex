@@ -267,6 +267,57 @@ check('LM Studio load called with the context', loads.at(-1)?.context_length ===
 const after = (await lm.listModels()).find((m: any) => m.id === 'gemma-mock');
 check('model list shows the new context', after?.contextLength === 65536, String(after?.contextLength));
 
+// ---------- K: corrupted native call (Gemma format breaks mid-run) → never executed, switch to text ----------
+console.log('\n# K. Corrupted native call');
+lm.toolModeCache(); // gemma-mock is in text mode after A; use a fresh model id for native
+models.v0.data.push({ id: 'gemma-mock-2', type: 'llm', state: 'loaded', max_context_length: 262144, loaded_context_length: 32768 });
+models.v1.models.push({ key: 'gemma-mock-2', type: 'llm', max_context_length: 262144, loaded_instances: [{ id: 'gemma-mock-2', config: { context_length: 32768 } }], capabilities: { reasoning: { allowed_options: ['off', 'on'], default: 'on' } } } as any);
+await lm.listModels();
+r = await runWith(
+  [
+    () => ({ kind: 'stream', deltas: [{ tool_calls: [{ index: 0, id: 'bad1', type: 'function', function: { name: 'read_file', arguments: '{"path":"live/hello.txt**\n\nThe plan was updated after each step.\n<channel|><|tool_cal' } }] }], finish: 'tool_calls' }),
+    textCalls({ name: 'read_file', arguments: { path: 'hello.txt' } }),
+    say('Read it.'),
+  ],
+  'Read hello.txt.',
+  'gemma-mock-2',
+);
+check('corrupted native call is not executed; retried in text mode', r.res.reason === 'done' && toolResults(r.messages).length === 1 && toolResults(r.messages)[0].ok === true, JSON.stringify(toolResults(r.messages).map((m: any) => m.content.slice(0, 60))));
+check('model switched to text after the corrupt call', lm.toolModeCache()['gemma-mock-2'] === 'text');
+r = await runWith([raw('<tool_call>{"name": "read_file", "arguments": {"path": "a<|\\"|>b"}}</tool_call>'), say('ok')], 'read', 'gemma-mock-2');
+check('corrupt call in text mode is refused, not run', toolResults(r.messages)[0]?.ok === false && /malformed/.test(toolResults(r.messages)[0]?.content ?? ''));
+
+// ---------- K2: structure leaked into short fields (valid JSON, still broken) ----------
+console.log('\n# K2. Structure leaks');
+const call = (name: string, args: unknown) => ({ id: 'x', type: 'function' as const, function: { name, arguments: typeof args === 'string' ? args : JSON.stringify(args) } });
+check('leaked "**},{status:" in a plan title is corrupt', lm.isCorruptCall(call('update_plan', { steps: [{ status: 'done', title: 'Create notes2 folder**},{status:' }] })));
+check('numeric plan status is corrupt', lm.isCorruptCall(call('update_plan', { steps: [{ status: 1395674847 }] })));
+check('newline in a path is corrupt', lm.isCorruptCall(call('read_file', { path: 'a.txt\n\nThe plan was updated' })));
+check('JSON inside file content is fine', !lm.isCorruptCall(call('write_file', { path: 'a.json', content: '[{"a":1}, {"name": "x"}]' })));
+check('normal plan is fine', !lm.isCorruptCall(call('update_plan', { steps: [{ title: 'Write file', status: 'done' }, { title: 'Test', status: 'pending' }] })));
+check('switch to text is remembered on disk', JSON.parse(fs.readFileSync(path.join(process.env.LOCALDEX_HOME!, 'text-tool-models.json'), 'utf8')).includes('gemma-mock-2'));
+
+// ---------- L2: finishing with plan steps open gets pushed back once ----------
+console.log('\n# L2. Unfinished plan gate');
+r = await runWith(
+  [
+    textCalls({ name: 'update_plan', arguments: { steps: [{ title: 'Write a.txt', status: 'pending' }, { title: 'Run cat', status: 'pending' }] } }),
+    say('All done: wrote a.txt and ran cat.'),
+    textCalls({ name: 'write_file', arguments: { path: 'gate.txt', content: 'x\n' } }),
+    say('Wrote gate.txt; did not run cat.'),
+  ],
+  'Plan then do.',
+);
+check('premature "done" with open plan steps is challenged', userNotes(r.messages).some((n) => /plan still has unfinished steps/.test(n)) && fs.existsSync(path.join(DEMO, 'gate.txt')), r.res.text);
+
+// ---------- L: finishing right after a failure gets pushed back once ----------
+console.log('\n# L. Finish gate');
+r = await runWith(
+  [textCalls({ name: 'read_file', arguments: { path: 'does-not-exist.txt' } }), say('All steps done!'), say('The read failed: does-not-exist.txt is missing.')],
+  'Read does-not-exist.txt.',
+);
+check('false "done" after a failed call is challenged', userNotes(r.messages).some((n) => /last tool call failed/.test(n)) && /failed/.test(r.res.text), r.res.text);
+
 // ---------- J: runner notes a stuck run and offers / performs the hand-over ----------
 console.log('\n# J. Runner: stuck → council');
 const { runnerFor } = await import(`${SRC}/agent/runner.ts`);

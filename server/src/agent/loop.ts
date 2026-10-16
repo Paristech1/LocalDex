@@ -1,5 +1,5 @@
 import type { AgentId, ChatMessage, PlanStep, ToolCall, ToolSchema } from '@localdex/shared';
-import { streamChat } from '../lmstudio.js';
+import { isCorruptCall, streamChat } from '../lmstudio.js';
 import { executeTool } from '../tools/index.js';
 import type { CouncilRequest, ToolContext } from '../tools/types.js';
 import { bus } from './bus.js';
@@ -108,6 +108,12 @@ export async function runLoop(p: LoopParams): Promise<LoopResult> {
   let failureWarnings = 0;
   let nudges = 0;
   let runaways = 0;
+  let finishGateUsed = false;
+  let planGateUsed = false;
+  let planTouched = false;
+  let planSteps: PlanStep[] = [];
+  let lastRoundFailed = false;
+  let lastFailure = '';
   const repeats = new RepeatTracker();
   // Commands the user denied during this run: the same command is refused without asking again.
   const denied = new Set<string>();
@@ -194,6 +200,29 @@ export async function runLoop(p: LoopParams): Promise<LoopResult> {
     if (result.parsedFromText) bus.log('warn', `[${agent}] recovered tool call(s) from plain text output`);
 
     if (result.toolCalls.length === 0) {
+      // Finishing right after a failed tool call: small models often announce success anyway. Push back once.
+      if (!finishGateUsed && lastRoundFailed) {
+        finishGateUsed = true;
+        bus.log('warn', `[${agent}] tried to finish right after a failed tool call; asked it to deal with the failure first`);
+        p.messages.push({
+          role: 'user',
+          content: `[system] Your last tool call failed (${lastFailure}), so that step did not happen. Do not report it as done. Fix the call and continue, or tell the user plainly what failed and what is still not done.`,
+          ts: Date.now(),
+        });
+        continue;
+      }
+      // Finishing with plan steps still open: small models declare victory early. Push back once.
+      const open = planSteps.filter((s) => s.status === 'pending' || s.status === 'in_progress');
+      if (!planGateUsed && planTouched && open.length) {
+        planGateUsed = true;
+        bus.log('warn', `[${agent}] tried to finish with ${open.length} plan step(s) still open; asked it to finish or explain`);
+        p.messages.push({
+          role: 'user',
+          content: `[system] Your plan still has unfinished steps: ${open.map((s) => `"${s.title}"`).join(', ')}. Do them now (call the tools; do not just describe them), then update the plan. If a step cannot be done, say which one and why. Do not claim a step happened unless a tool result shows it.`,
+          ts: Date.now(),
+        });
+        continue;
+      }
       if (result.finishReason === 'length') {
         bus.log('warn', `[${agent}] response was cut off (finish_reason=length)`);
       }
@@ -232,7 +261,13 @@ export async function runLoop(p: LoopParams): Promise<LoopResult> {
       },
       askUser: (q) => bus.askUser(sessionId, agent, q, p.signal),
       delegate: p.delegate,
-      updatePlan: p.updatePlan,
+      updatePlan: p.updatePlan
+        ? (steps) => {
+            planTouched = true;
+            planSteps = steps;
+            p.updatePlan!(steps);
+          }
+        : undefined,
       council: p.council,
     };
 
@@ -252,6 +287,9 @@ export async function runLoop(p: LoopParams): Promise<LoopResult> {
     p.onPersist?.();
     if (p.signal.aborted) return { text: lastText, steps: step + 1, reason: 'aborted' };
 
+    const failed = outcomes.filter((o) => !o.ok);
+    lastRoundFailed = failed.length > 0;
+    lastFailure = failed.length ? `${failed[0].call.function.name}: ${failed[0].content.split('\n')[0].slice(0, 160)}` : '';
     const repeatHint = consult.observe(outcomes.map((o) => ({ name: o.call.function.name, args: o.call.function.arguments, ok: o.ok })));
     let loopWarning: string | null = null;
     for (const o of outcomes) {
@@ -307,7 +345,10 @@ async function executeCalls(calls: ToolCall[], ctx: ToolContext): Promise<Outcom
       /* show raw */
     }
     bus.emit({ type: 'tool_start', sessionId: ctx.sessionId, agent: ctx.agent, callId: call.id, name: call.function.name, args });
-    const r = await executeTool(call, ctx);
+    // Never run a call whose arguments are broken (chat-template tokens, prose spilled into a path…).
+    const r = isCorruptCall(call)
+      ? { ok: false, content: `This ${call.function.name} call was malformed (its arguments contained chat-template tokens or were not a JSON object), so LocalDex did not run it. Send the call again with clean JSON arguments only.` }
+      : await executeTool(call, ctx);
     bus.emit({
       type: 'tool_end',
       sessionId: ctx.sessionId,
