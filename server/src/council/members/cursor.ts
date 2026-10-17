@@ -1,3 +1,4 @@
+import { execFile } from 'node:child_process';
 import { createRequire } from 'node:module';
 import { pathToFileURL } from 'node:url';
 import { getSettings } from '../../config.js';
@@ -84,6 +85,19 @@ function loadSdk(): Promise<CursorSdk | null> {
   return sdkPromise;
 }
 
+/**
+ * Open a sign-in page in a specific macOS app (`open -a`). No shell is involved (args are passed as an array), only
+ * https URLs are opened, and if the app can't be launched the system default browser is used instead.
+ */
+export function openInApp(app: string, url: string): void {
+  if (!/^https:\/\//i.test(url)) return;
+  const fallback = (): void => void execFile('open', [url], () => undefined);
+  if (process.platform !== 'darwin' || !/^[\w .+-]{1,60}$/.test(app)) return fallback();
+  execFile('open', ['-a', app, url], (err) => {
+    if (err) fallback();
+  });
+}
+
 /** Read-only roles: block every Cursor tool that changes files or runs commands. */
 const MUTATING_TOOLS = ['shell', 'edit', 'delete', 'applyAgentDiff', 'generateImage'];
 
@@ -120,7 +134,10 @@ export const cursorMember: MemberAdapter = {
     const sdk = await loadSdk();
     if (!sdk) return { ok: false, error: `@cursor/sdk could not be loaded${sdkLoadError ? `: ${sdkLoadError}` : ' (run npm install in the LocalDex folder)'}` };
     try {
-      const r = await sdk.Cursor.auth.login({ openBrowser: true, onLoginUrl: onUrl, signal, apiKeyName: 'LocalDex council' });
+      const app = getSettings().council.loginBrowser?.trim();
+      // With a chosen browser we open the page ourselves; otherwise the SDK uses the system default.
+      const openBrowser = app ? (url: string) => openInApp(app, url) : true;
+      const r = await sdk.Cursor.auth.login({ openBrowser, onLoginUrl: onUrl, signal, apiKeyName: 'LocalDex council' });
       return { ok: true, account: r.email };
     } catch (e) {
       return { ok: false, error: (e as Error).message };

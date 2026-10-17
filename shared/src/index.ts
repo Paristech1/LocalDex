@@ -288,6 +288,11 @@ export interface CouncilSettings {
    * council by itself (same access rules as Hand to council), 'off' does nothing.
    */
   autoEscalate: AutoEscalateMode;
+  /**
+   * macOS app that sign-in pages (Cursor) open in, e.g. "Comet" or "Google Chrome". Empty = the system default browser.
+   * The server runs `open -a <app> <url>`; if that fails it falls back to the default browser.
+   */
+  loginBrowser?: string;
 }
 
 /** How risky a request looks, from explainable keyword rules. */
@@ -639,6 +644,7 @@ export const DEFAULT_COUNCIL: CouncilSettings = {
   continueSessions: true,
   builderWorktree: true,
   autoEscalate: 'suggest',
+  loginBrowser: '',
 };
 
 export const DEFAULT_CAPABILITIES: Record<ToolName, boolean> = {
