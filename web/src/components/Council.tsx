@@ -840,6 +840,11 @@ export function CouncilSettingsTab({ settings, patch }: TabProps) {
                       <Button size="sm" variant="primary" disabled={!st.installed} onClick={() => send({ type: 'council_login', member: id })}>
                         Sign in to {MEMBER_META[id].label}
                       </Button>
+                      {!st.installed && (
+                        <span className="text-ink-400">
+                          The Cursor SDK isn’t loaded yet{st.lastError ? <>: <span className="text-danger break-words">{st.lastError}</span></> : ''}. Run <span className="font-mono">npm install</span> in the LocalDex folder, then press “Re-check members”.
+                        </span>
+                      )}
                       {login?.member === id && !login.done && <span className="text-ink-400 pulse">waiting for the browser…</span>}
                       {login?.member === id && login.error && <span className="text-danger">{login.error}</span>}
                     </div>

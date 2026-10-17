@@ -44,24 +44,42 @@ interface CursorSdk {
 
 let sdkPromise: Promise<CursorSdk | null> | null = null;
 let sdkPath: string | undefined;
+let sdkLoadError: string | undefined;
 
-/** Load @cursor/sdk lazily. LOCALDEX_CURSOR_SDK can point at another module (used by tests). */
+/**
+ * Load @cursor/sdk lazily. LOCALDEX_CURSOR_SDK can point at another module (used by tests).
+ * Only a successful load is cached: if the package is installed while LocalDex is running (or the first
+ * import fails), the next status check / sign-in tries again instead of reporting "not installed" until a restart.
+ */
 function loadSdk(): Promise<CursorSdk | null> {
   if (!sdkPromise) {
-    sdkPromise = (async () => {
+    const attempt = (async () => {
       try {
         const override = process.env.LOCALDEX_CURSOR_SDK;
+        let mod: unknown;
         if (override) {
           sdkPath = override;
-          return (await import(pathToFileURL(override).href)) as CursorSdk;
+          mod = await import(pathToFileURL(override).href);
+        } else {
+          const require = createRequire(import.meta.url);
+          sdkPath = require.resolve('@cursor/sdk');
+          mod = await import('@cursor/sdk' as string);
         }
-        const require = createRequire(import.meta.url);
-        sdkPath = require.resolve('@cursor/sdk');
-        return (await import('@cursor/sdk' as string)) as CursorSdk;
-      } catch {
+        // Some module shapes put the API under `default` (CJS interop).
+        const m = mod as Partial<CursorSdk> & { default?: Partial<CursorSdk> };
+        const api = (m.Cursor ? m : m.default?.Cursor ? m.default : null) as CursorSdk | null;
+        if (!api) throw new Error('@cursor/sdk loaded but does not export Cursor/Agent (unexpected version?)');
+        sdkLoadError = undefined;
+        return api;
+      } catch (e) {
+        sdkLoadError = (e as Error).message;
         return null;
       }
     })();
+    sdkPromise = attempt;
+    void attempt.then((r) => {
+      if (!r && sdkPromise === attempt) sdkPromise = null;
+    });
   }
   return sdkPromise;
 }
@@ -81,7 +99,7 @@ export const cursorMember: MemberAdapter = {
   async status() {
     const base = { id: 'cursor' as const, label: 'Cursor', loginCommand: 'Use "Sign in" here (opens Cursor in your browser)', canLoginInApp: true };
     const sdk = await loadSdk();
-    if (!sdk) return { ...base, installed: false, signedIn: false, billing: 'unknown' as MemberBilling };
+    if (!sdk) return { ...base, installed: false, signedIn: false, billing: 'unknown' as MemberBilling, lastError: sdkLoadError };
     try {
       const s = await sdk.Cursor.auth.status();
       const signedIn = s.status === 'logged-in' || !!process.env.CURSOR_API_KEY;
@@ -100,7 +118,7 @@ export const cursorMember: MemberAdapter = {
 
   async login(onUrl, signal) {
     const sdk = await loadSdk();
-    if (!sdk) return { ok: false, error: '@cursor/sdk is not installed (run npm install in the LocalDex folder).' };
+    if (!sdk) return { ok: false, error: `@cursor/sdk could not be loaded${sdkLoadError ? `: ${sdkLoadError}` : ' (run npm install in the LocalDex folder)'}` };
     try {
       const r = await sdk.Cursor.auth.login({ openBrowser: true, onLoginUrl: onUrl, signal, apiKeyName: 'LocalDex council' });
       return { ok: true, account: r.email };
