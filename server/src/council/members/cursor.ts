@@ -46,6 +46,8 @@ interface CursorSdk {
 let sdkPromise: Promise<CursorSdk | null> | null = null;
 let sdkPath: string | undefined;
 let sdkLoadError: string | undefined;
+/** Set once Cursor rejects `systemPrompt` for this account (the feature is access-gated). */
+let systemPromptGated = false;
 
 /**
  * Load @cursor/sdk lazily. LOCALDEX_CURSOR_SDK can point at another module (used by tests).
@@ -158,11 +160,21 @@ export const cursorMember: MemberAdapter = {
     const timer = setTimeout(onAbort, o.timeoutMs);
     o.signal.addEventListener('abort', onAbort, { once: true });
 
+    // Cursor gates `systemPrompt` server-side; accounts without access get "[invalid_argument] unknown option
+    // '--system-prompt'" on the first send. Once seen, send the instructions inside the prompt text instead.
+    const useSystemPrompt = !systemPromptGated && !!o.instructions?.trim();
+    const promptText = useSystemPrompt || !o.instructions?.trim() ? o.prompt : `${o.instructions}\n\n---\n\n${o.prompt}`;
+    const retryWithoutSystemPrompt = (msg: string): boolean => {
+      if (!useSystemPrompt || !/system-prompt|systemPrompt/i.test(msg)) return false;
+      systemPromptGated = true;
+      return true;
+    };
+
     // systemPrompt and disallowedTools are not persisted on the agent, so a resume passes them again.
     const options = {
       name: 'LocalDex council',
       model: { id: model },
-      systemPrompt: o.instructions,
+      ...(useSystemPrompt ? { systemPrompt: o.instructions } : {}),
       // Only the user's own Cursor settings unless the user opted in to project config (see trustProjectConfig).
       local: { cwd: o.cwd, dirs: o.extraDirs, settingSources: getSettings().council.trustProjectConfig ? ['user', 'project'] : ['user'] },
       ...(o.access === 'read' ? { disallowedTools: MUTATING_TOOLS } : { disallowedTools: ['delete'] }),
@@ -179,7 +191,7 @@ export const cursorMember: MemberAdapter = {
         }
       }
       agent ??= await sdk.Agent.create(options);
-      run = await agent.send(o.prompt);
+      run = await agent.send(promptText);
       if (o.signal.aborted) onAbort();
       for await (const m of run.stream()) {
         if (m.type === 'assistant') {
@@ -208,6 +220,7 @@ export const cursorMember: MemberAdapter = {
       }
       if (res.status === 'error') {
         const msg = res.error?.message ?? 'Cursor run failed';
+        if (retryWithoutSystemPrompt(msg)) return cursorMember.run(o);
         const limited = detectLimit(msg) || res.error?.code === 'resource_exhausted';
         return { ok: false, text: final, error: msg, limited, limitResetsAt: limited ? parseResetAt(msg) : undefined, billing, usage, model, sessionId: sessionId() };
       }
@@ -215,6 +228,7 @@ export const cursorMember: MemberAdapter = {
     } catch (e) {
       const err = e as Error & { name?: string; code?: string };
       const msg = err.message || String(e);
+      if (retryWithoutSystemPrompt(msg)) return cursorMember.run(o);
       const limited = err.name === 'RateLimitError' || detectLimit(msg);
       const notSignedIn = err.name === 'AuthenticationError' || /api key is required|unauthenticated/i.test(msg);
       return {
