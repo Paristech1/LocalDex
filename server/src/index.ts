@@ -27,6 +27,7 @@ import { forgetInstructions } from './agent/instructions.js';
 import { unavailableTools } from './tools/index.js';
 import { sandboxStatus } from './sandbox.js';
 import { feedbackStats, rateMessage } from './feedback.js';
+import { searchFiles } from './fileMentions.js';
 import { forkAt, isEditableUserMessage } from './fork.js';
 import { exportFileName, exportMarkdown, searchSessions } from './sessionTools.js';
 import { closeAllMcp, mcpStatuses, reloadMcp, restartMcp } from './mcp/client.js';
@@ -101,6 +102,8 @@ app.post('/api/setup/playground', (c) => {
 app.get('/api/skills', (c) => c.json({ skills: listSkills() }));
 
 // U1: search every session's title and messages; export one session as Markdown or JSON.
+// A6: path completion for @mentions in the composer (first approved folder, protected files skipped).
+app.get('/api/files/search', (c) => c.json({ files: searchFiles(c.req.query('q') ?? '') }));
 app.get('/api/sessions/search', (c) => c.json({ results: searchSessions(c.req.query('q') ?? '') }));
 app.get('/api/sessions/:id/export', (c) => {
   const s = getSession(c.req.param('id'));

@@ -5,6 +5,7 @@ import { saveSession } from '../store.js';
 import { bus } from './bus.js';
 import { compactMain, maybeCompactMain, verifiedFileFacts } from './compact.js';
 import { autoTitle, isDefaultTitle } from '../sessionTools.js';
+import { mentionHint, mentionedFiles } from '../fileMentions.js';
 import { assessGoal, goalCouncilAssessTask, parseAssessment } from './goal.js';
 import { beginTurn, endTurn } from '../checkpoints.js';
 import { forgetInstructions, pullInstructions } from './instructions.js';
@@ -113,6 +114,11 @@ export class SessionRunner {
       return;
     }
     this.session.messages.push({ role: 'user', content, ts: Date.now() });
+    // A6: @file mentions become a short read hint (Solo; council members read files themselves).
+    if (!this.councilMode) {
+      const hint = mentionHint(mentionedFiles(content));
+      if (hint) this.session.messages.push({ role: 'user', content: hint, ts: Date.now() });
+    }
     this.persist();
     this.sync();
     if (this.councilMode) await this.runCouncilTurn(content, access, notRisky);

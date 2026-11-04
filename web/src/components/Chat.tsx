@@ -3,6 +3,31 @@ import { MEMBER_IDS, RUN_ACCESS_LABELS, defaultRunAccess, type ChatMessage, type
 import { loadSession, send, useStore, type Prompt } from '../store';
 import { matchCommands, runIfDirect, type SlashCommand } from '../slash';
 
+/** A6: file suggestions for an @mention (debounced; empty when not typing a mention). */
+function useFileSearch(query: string | undefined): string[] {
+  const [hits, setHits] = useState<string[]>([]);
+  useEffect(() => {
+    if (query === undefined) {
+      setHits([]);
+      return;
+    }
+    const ac = new AbortController();
+    const t = setTimeout(async () => {
+      try {
+        const r = await fetch(`/api/files/search?q=${encodeURIComponent(query)}`, { signal: ac.signal });
+        setHits(((await r.json()) as { files: string[] }).files ?? []);
+      } catch {
+        /* aborted */
+      }
+    }, 120);
+    return () => {
+      clearTimeout(t);
+      ac.abort();
+    };
+  }, [query]);
+  return hits;
+}
+
 function downloadUrl(url: string): void {
   const a = document.createElement('a');
   a.href = url;
@@ -219,8 +244,25 @@ function Composer({
   const session = useStore((s) => s.session);
   const [slashError, setSlashError] = useState<string | null>(null);
   const [pick, setPick] = useState(0);
-  const matches = matchCommands(text, !!council);
-  useEffect(() => setPick(0), [text]);
+  const slashMatches = matchCommands(text, !!council);
+  // A6: "@par" before the caret → file suggestions from the approved folder.
+  const [caret, setCaret] = useState(0);
+  const mentionQuery = (text.slice(0, caret).match(/(?:^|\s)@([^\s]*)$/) ?? [])[1];
+  const fileHits = useFileSearch(mentionQuery);
+  const mentionOpen = mentionQuery !== undefined && fileHits.length > 0;
+  const matches: SlashCommand[] = mentionOpen ? [] : slashMatches;
+  const listLength = mentionOpen ? fileHits.length : matches.length;
+  useEffect(() => setPick(0), [text, mentionOpen]);
+  const insertFile = (file: string) => {
+    const before = text.slice(0, caret).replace(/@([^\s]*)$/, `@${file} `);
+    const next = before + text.slice(caret);
+    setText(next);
+    setCaret(before.length);
+    requestAnimationFrame(() => {
+      ref.current?.focus();
+      ref.current?.setSelectionRange(before.length, before.length);
+    });
+  };
 
   const submit = () => {
     const t = text.trim();
@@ -283,25 +325,38 @@ function Composer({
           ))}
         </ul>
       )}
+      {mentionOpen && (
+        <ul role="listbox" aria-label="Files" className="absolute bottom-full left-0 right-0 mb-1 max-h-72 overflow-y-auto rounded-lg border border-ink-600 bg-ink-900 py-1 shadow-xl z-20">
+          {fileHits.map((f, i) => (
+            <li key={f} role="option" aria-selected={i === pick} onMouseDown={(e) => (e.preventDefault(), insertFile(f))} onMouseEnter={() => setPick(i)} className={cx('px-3 py-1.5 cursor-pointer font-mono text-xs truncate', i === pick ? 'bg-ink-800 text-ink-100' : 'text-ink-300')}>
+              <span className="text-ink-500">@</span>
+              {f}
+            </li>
+          ))}
+        </ul>
+      )}
       {slashError && <div className="px-4 pt-2 text-[11px] text-warn">{slashError}</div>}
       <textarea
         ref={ref}
         value={text}
-        onChange={(e) => setText(e.target.value)}
+        onChange={(e) => (setText(e.target.value), setCaret(e.target.selectionStart ?? e.target.value.length))}
+        onSelect={(e) => setCaret((e.target as HTMLTextAreaElement).selectionStart ?? 0)}
         onKeyDown={(e) => {
-          if (matches.length) {
+          if (listLength) {
             if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
               e.preventDefault();
-              setPick((p) => (p + (e.key === 'ArrowDown' ? 1 : matches.length - 1)) % matches.length);
+              setPick((p) => (p + (e.key === 'ArrowDown' ? 1 : listLength - 1)) % listLength);
               return;
             }
             if (e.key === 'Tab' || (e.key === 'Enter' && !e.shiftKey)) {
               e.preventDefault();
-              complete(matches[Math.min(pick, matches.length - 1)]);
+              if (mentionOpen) insertFile(fileHits[Math.min(pick, fileHits.length - 1)]);
+              else complete(matches[Math.min(pick, matches.length - 1)]);
               return;
             }
             if (e.key === 'Escape') {
-              setText('');
+              if (mentionOpen) setCaret(0);
+              else setText('');
               return;
             }
           }

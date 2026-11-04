@@ -133,6 +133,8 @@ npm start            # http://localhost:7331
 
 Keyboard: `Enter` send, `Shift+Enter` newline, `Cmd/Ctrl+,` settings, `Esc` close.
 
+**File mentions**: type `@` in the composer to pick a file from your first approved folder (fuzzy match; `node_modules`, `.git`, build folders and protected files like `.env` are left out). Mentioned files are named to the model as a short read hint; their content is not pasted in, so it costs almost no context.
+
 **Slash commands**: type `/` in the composer for a palette (↑/↓, Tab or Enter to pick). Commands marked *runs now* act directly and send nothing to the model: `/goal <done-when>`, `/loop <brief>`, `/compact`, `/undo` (last Solo turn that changed files), `/export [md|json]`, `/new`, `/council` / `/solo`. `/plan <task>` and the council commands (`/ask`, `/build`, `/second`, `/review`, `/vote`, `/frontend`, `/backend`, `/vision`, `/arena`) are sent as the message.
 
 Slash commands in Solo: `/plan <task>` (plan first, read-only until approved; **not** the same as Council mode’s `/plan …`, which asks the cloud planner). The council

@@ -1269,6 +1269,29 @@ console.log('\n# AD. 👍/👎 on answers: local model and council members');
   check('council answer: not counted for the local model', m().up === 0);
 }
 
+// ---------- AE: @file mentions (A6) ----------
+console.log('\n# AE. @file mentions: completion and read hint');
+{
+  const fm = await import(`${SRC}/fileMentions.ts`);
+  fs.mkdirSync(path.join(DEMO, 'src/components'), { recursive: true });
+  fs.writeFileSync(path.join(DEMO, 'src/components/Button.tsx'), 'export {}');
+  fs.writeFileSync(path.join(DEMO, 'src/buttonUtils.ts'), 'export {}');
+  fs.writeFileSync(path.join(DEMO, '.env'), 'SECRET=1');
+  fs.mkdirSync(path.join(DEMO, 'node_modules/pkg'), { recursive: true });
+  fs.writeFileSync(path.join(DEMO, 'node_modules/pkg/button.js'), '');
+  check('fuzzy: file-name hits beat path hits', fm.fuzzyScore('button', 'src/components/Button.tsx') > fm.fuzzyScore('button', 'b/u/t/t/o/n.txt') && fm.fuzzyScore('xyz', 'src/a.ts') < 0);
+  const hits = fm.searchFiles('button');
+  check('search: finds files in the approved folder, best first; node_modules skipped', hits[0] === 'src/components/Button.tsx' && hits.includes('src/buttonUtils.ts') && !hits.some((h: string) => h.includes('node_modules')), JSON.stringify(hits));
+  check('search: protected files (.env) are never offered', !fm.searchFiles('env').includes('.env') && !fm.searchFiles('').includes('.env'));
+  const found = fm.mentionedFiles('look at @src/components/Button.tsx, and @src/nope.ts and @/etc/passwd and @.env');
+  check('mentions: only existing, allowed files count', found.length === 1 && found[0] === path.join(DEMO, 'src/components/Button.tsx'), JSON.stringify(found));
+  const sess = createSession('gemma-mock');
+  script = [say('Looked.')];
+  await runnerFor(sess).handleUserMessage('what does @src/buttonUtils.ts export?');
+  const hint = sess.messages.find((m: any) => m.role === 'user' && /Files the user mentioned/.test(m.content));
+  check('runner: a read hint follows the message; the file content is not inlined', !!hint && /src\/buttonUtils\.ts/.test(hint.content) && !/export \{\}/.test(hint.content), hint?.content);
+}
+
 server.close();
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);
