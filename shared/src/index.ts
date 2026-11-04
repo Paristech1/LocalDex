@@ -84,7 +84,9 @@ export type ToolName =
   | 'block_goal'
   | 'job_output'
   | 'job_list'
-  | 'job_kill';
+  | 'job_kill'
+  | 'web_fetch'
+  | 'web_search';
 
 export const ALL_TOOL_NAMES: ToolName[] = [
   'read_file',
@@ -111,6 +113,8 @@ export const ALL_TOOL_NAMES: ToolName[] = [
   'job_output',
   'job_list',
   'job_kill',
+  'web_fetch',
+  'web_search',
 ];
 
 export interface ToolSchema {
@@ -701,6 +705,8 @@ export interface Settings {
   requireReadBeforeEdit: boolean;
   /** Load ~/.localdex/AGENTS.md and the project's AGENTS.md / CLAUDE.md / LOCALDEX.md into the system prompt. Default on. */
   projectInstructions: boolean;
+  /** SearXNG base URL for web_search (empty = no search provider). */
+  webSearchUrl: string;
   workerConcurrency: number;
   systemPrompt: string;
   /** MCP servers keyed by a short name. Edit ~/.localdex/config.json to add servers; the UI can only toggle them. */
@@ -812,6 +818,9 @@ export const DEFAULT_CAPABILITIES: Record<ToolName, boolean> = {
   job_output: true,
   job_list: true,
   job_kill: true,
+  // Web access is opt-in.
+  web_fetch: false,
+  web_search: false,
 };
 
 /**
@@ -843,6 +852,7 @@ export const DEFAULT_SETTINGS: Settings = {
   shellApproval: 'dangerous',
   requireReadBeforeEdit: true,
   projectInstructions: true,
+  webSearchUrl: '',
   workerConcurrency: 2,
   systemPrompt: '',
   disabledSkills: [],

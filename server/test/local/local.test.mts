@@ -861,6 +861,105 @@ console.log('\n# V. Background jobs: notice on finish, job_output, job_kill');
   check('a killed job does not wake the agent', !sess.messages.some((m: any) => m.role === 'user' && /^\[job job\d+ killed/.test(m.content)) && !rn.running);
 }
 
+// ---------- W: web_fetch / web_search (A1) ----------
+console.log('\n# W. web_fetch: text only, same-origin redirects, size cap, untrusted wrapper; web_search via SearXNG JSON');
+{
+  const { fetchPage, FETCH_MAX_BYTES } = await import(`${SRC}/tools/web.ts`);
+  const { htmlToMarkdown } = await import(`${SRC}/tools/htmlToMarkdown.ts`);
+  const WEB_PORT = PORT + 1;
+  const OTHER_PORT = PORT + 2;
+  const base = `http://127.0.0.1:${WEB_PORT}`;
+  const web = http.createServer((req, res) => {
+    const u = new URL(req.url ?? '/', base);
+    switch (u.pathname) {
+      case '/page':
+        res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+        return res.end(`<html><head><title>Docs &amp; Guides</title><script>evil()</script><style>p{}</style></head><body><nav><a href="/x">skip me</a></nav><main><h1>Install</h1><p>Run <code>npm i</code> &mdash; see <a href="/more">more</a>.</p><ul><li>one</li><li><b>two</b></li></ul><pre><code class="language-sh">npm test\n</code></pre><table><tr><th>A</th><th>B</th></tr><tr><td>1</td><td>2</td></tr></table></main></body></html>`);
+      case '/redir':
+        res.writeHead(302, { Location: '/page' });
+        return res.end();
+      case '/offsite':
+        res.writeHead(302, { Location: `http://127.0.0.1:${OTHER_PORT}/page` });
+        return res.end();
+      case '/loop':
+        res.writeHead(302, { Location: '/loop' });
+        return res.end();
+      case '/bin':
+        res.writeHead(200, { 'Content-Type': 'application/octet-stream' });
+        return res.end(Buffer.from([0, 1, 2, 3]));
+      case '/sneaky':
+        res.writeHead(200, { 'Content-Type': 'text/plain' });
+        return res.end(Buffer.concat([Buffer.from('PK'), Buffer.alloc(100, 0)]));
+      case '/big': {
+        res.writeHead(200, { 'Content-Type': 'text/plain' });
+        const line = Buffer.from(`${'x'.repeat(99)}\n`);
+        let sent = 0;
+        const pump = () => {
+          while (sent < 3 * 1024 * 1024) {
+            sent += line.length;
+            if (!res.write(line)) return void res.once('drain', pump);
+          }
+          res.end();
+        };
+        return pump();
+      }
+      case '/json':
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        return res.end('{"ok":true}');
+      case '/search':
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        return res.end(JSON.stringify({ query: u.searchParams.get('q'), results: [{ title: 'Result One', url: 'https://example.com/1', content: 'First   snippet.' }, { title: 'Result Two', url: 'https://example.com/2', content: 'Second.' }] }));
+      default:
+        res.writeHead(404, { 'Content-Type': 'text/plain' });
+        return res.end('nope');
+    }
+  });
+  await new Promise<void>((r) => web.listen(WEB_PORT, '127.0.0.1', () => r()));
+
+  const md = htmlToMarkdown('<p>Hi <a href="/a">there</a> &amp; <em>you</em></p>', 'https://ex.org/base/');
+  check('html → markdown: links resolved, entities decoded, emphasis', md === 'Hi [there](https://ex.org/a) & *you*', md);
+  const page = await fetchPage(`${base}/page`);
+  check('page: title, headings, lists, code block, table; nav/script/style dropped', page.title === 'Docs & Guides' && /^# Install/m.test(page.text) && /- one\n- \*\*two\*\*/.test(page.text) && /```sh\nnpm test\n```/.test(page.text) && /\| A \| B \|\n\| --- \| --- \|\n\| 1 \| 2 \|/.test(page.text) && !/skip me|evil|p\{\}/.test(page.text), page.text);
+  check('relative links become absolute', new RegExp(`\\[more\\]\\(${base}/more\\)`).test(page.text));
+  const redir = await fetchPage(`${base}/redir`);
+  check('same-origin redirect followed, final URL reported', redir.finalUrl === `${base}/page` && redir.status === 200);
+  const off = await fetchPage(`${base}/offsite`).catch((e: Error) => e.message);
+  check('cross-origin redirect refused', typeof off === 'string' && /Redirect to another origin refused/.test(off), String(off));
+  const loop = await fetchPage(`${base}/loop`).catch((e: Error) => e.message);
+  check('redirect loop stops', typeof loop === 'string' && /Too many redirects/.test(loop), String(loop));
+  const bin = await fetchPage(`${base}/bin`).catch((e: Error) => e.message);
+  check('binary content type refused', typeof bin === 'string' && /Not text: the server sent application\/octet-stream/.test(bin), String(bin));
+  const sneaky = await fetchPage(`${base}/sneaky`).catch((e: Error) => e.message);
+  check('binary bytes behind a text content type refused', typeof sneaky === 'string' && /looks binary/.test(sneaky), String(sneaky));
+  const big = await fetchPage(`${base}/big`);
+  check(`3 MB body cut at the ${FETCH_MAX_BYTES / 1024 / 1024} MB cap`, big.truncated && big.bytes === FETCH_MAX_BYTES && big.text.length === FETCH_MAX_BYTES, `${big.bytes} truncated=${big.truncated}`);
+  const ftp = await fetchPage('ftp://example.com/x').catch((e: Error) => e.message);
+  check('non-http scheme refused', typeof ftp === 'string' && /Only http\(s\)/.test(ftp));
+  const json = await fetchPage(`${base}/json`);
+  check('json comes back as-is', json.text === '{"ok":true}' && json.contentType === 'application/json');
+
+  // Through the agent: off by default; on → wrapped as untrusted; search hidden until a server is set.
+  const names0 = enabledTools('main').map((t) => t.function.name);
+  check('web tools are off by default', !names0.includes('web_fetch') && !names0.includes('web_search'));
+  updateSettings({ capabilities: { web_fetch: true, web_search: true } as any });
+  const names1 = enabledTools('main').map((t) => t.function.name);
+  check('web_fetch on; web_search still hidden without a search server', names1.includes('web_fetch') && !names1.includes('web_search'), names1.join(','));
+  updateSettings({ webSearchUrl: base });
+  check('web_search appears once a server is configured', enabledTools('main').some((t) => t.function.name === 'web_search'));
+  r = await runWith([
+    textCalls({ name: 'web_fetch', arguments: { url: `${base}/page` } }),
+    textCalls({ name: 'web_search', arguments: { query: 'localdex docs', limit: 5 } }),
+    textCalls({ name: 'web_fetch', arguments: { url: `${base}/missing` } }),
+    say('Fetched.'),
+  ], 'read the docs page');
+  const wr = toolResults(r.messages).map((m) => m.content as string);
+  check('fetched page is wrapped as untrusted <web_result>', /^<web_result url="[^"]+\/page" status="200" type="text\/html">\nUntrusted content from the web[\s\S]*# Install[\s\S]*<\/web_result>$/.test(wr[0]), wr[0]?.slice(0, 200));
+  check('search results list title, url, snippet (whitespace collapsed)', /<web_result query="localdex docs" results="2">[\s\S]*1\. Result One\n   https:\/\/example\.com\/1\n   First snippet\./.test(wr[1]), wr[1]);
+  check('a 404 is a failed tool call with the body', /^web_fetch failed|<web_result[^>]*status="404"/.test(wr[2]) && r.messages.some((m: any) => m.role === 'tool' && /404/.test(m.content)), wr[2]?.slice(0, 120));
+  updateSettings({ capabilities: { web_fetch: false, web_search: false } as any, webSearchUrl: '' });
+  web.close();
+}
+
 server.close();
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

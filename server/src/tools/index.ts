@@ -9,6 +9,7 @@ import { load_skill } from './skillTool.js';
 import { ask_member, council } from './councilTools.js';
 import { block_goal, complete_goal, get_goal, update_goal } from './goalTools.js';
 import { job_kill, job_list, job_output } from './jobTools.js';
+import { web_fetch, web_search } from './web.js';
 import { enabledSkills } from '../skills/store.js';
 import { PermissionError } from './permissions.js';
 import { isMcpTool, mcpToolSchemas, runMcpTool } from '../mcp/client.js';
@@ -41,6 +42,8 @@ export const registry: ToolRegistry = {
   job_output,
   job_list,
   job_kill,
+  web_fetch,
+  web_search,
 };
 /** Offered once the session has started a background job (shell_run with background: true). */
 export const JOB_TOOLS = new Set<ToolName>(['job_output', 'job_list', 'job_kill']);
@@ -72,6 +75,8 @@ export function enabledTools(kind: 'main' | 'worker', opts: ToolSetOptions = {})
     .filter((name) => councilOn || !COUNCIL_TOOLS.has(name))
     .filter((name) => (opts.goal && kind === 'main') || !GOAL_TOOLS.has(name))
     .filter((name) => opts.jobs || !JOB_TOOLS.has(name))
+    // No search server configured: the tool would only ever fail, so it is not shown.
+    .filter((name) => name !== 'web_search' || !!getSettings().webSearchUrl?.trim())
     // Without node-pty (optional on Linux) the terminal tools can't work, so the model isn't shown them.
     .filter((name) => !TERMINAL_TOOLS.has(name) || ptyAvailable().ok)
     .filter((name) => !opts.planMode || isPlanTool(name))

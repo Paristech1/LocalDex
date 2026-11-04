@@ -41,6 +41,13 @@ Browser (React UI)  <-- WebSocket -->  LocalDex server (Node)  -->  LM Studio :1
   LocalDex checks itself, and the plan. The old transcript is archived, so quality does not slide as
   the context fills up. *Model experience:* the goal tools are only in the tool list while a goal
   runs (about 250 tokens); a fresh round's seed is typically well under 4k tokens.
+- **Web access (opt-in)** – `web_fetch(url)` reads one http(s) page as Markdown: text only, a 2 MB
+  cap, redirects only within the same site, binary files refused (by content type and by sniffing),
+  and every result wrapped in `<web_result>` tags that tell the model it is untrusted data, like MCP
+  results. `web_search(query)` goes through a SearXNG server you set in Settings → Capabilities and is
+  hidden until one is configured. Both are **off by default**. *Model experience:* `web_fetch` costs
+  about 60 tokens of schema; a long page is saved to disk with head, tail and path inline (see
+  oversized output below) rather than flooding the context.
 - **Background jobs** – `shell_run` with `background: true` returns a job id at once and keeps the
   command running (dev servers, watchers, long test runs). `job_output` reads what it printed so far
   (with a bounded wait of up to 60 s that ends early when you send a message), `job_list` lists the

@@ -35,6 +35,8 @@ const ICONS: Record<string, string> = {
   job_output: '📜',
   job_list: '📜',
   job_kill: '⏹',
+  web_fetch: '🌐',
+  web_search: '🔎',
 };
 
 function summarizeArgs(name: string, args: unknown): string {
@@ -66,6 +68,10 @@ function summarizeArgs(name: string, args: unknown): string {
       return a.file ? `${a.name} / ${a.file}` : String(a.name ?? '');
     case 'update_plan':
       return Array.isArray(a.steps) ? `${a.steps.length} steps` : '';
+    case 'web_fetch':
+      return String(a.url ?? '').slice(0, 120);
+    case 'web_search':
+      return String(a.query ?? '').slice(0, 120);
     case 'ask_member':
       return `→ ${String(a.member ?? 'auto')}${a.access === 'write' ? ' (edits)' : ''}: ${String(a.task ?? '').slice(0, 90)}`;
     case 'council':

@@ -291,6 +291,15 @@ function CapabilitiesTab({ settings, patch }: TabProps) {
           </div>
         ))}
       </div>
+      <div className="border-t border-ink-700 pt-4">
+        <h3 className="font-medium">Web access</h3>
+        <p className="text-xs text-ink-400 mt-1">
+          <span className="font-mono">web_fetch</span> and <span className="font-mono">web_search</span> are off by default. Fetch reads one http(s) page as Markdown (text only, 2 MB cap, same-site redirects only); every result is marked as untrusted content for the model. Search needs a SearXNG server you run or trust; the tool stays hidden until one is set.
+        </p>
+        <Field label="Web search server (SearXNG URL)" hint="e.g. http://localhost:8080 — its JSON format must be enabled.">
+          <input className={inputCls} value={settings.webSearchUrl ?? ''} onChange={(e) => patch({ webSearchUrl: e.target.value })} placeholder="http://localhost:8080" />
+        </Field>
+      </div>
     </>
   );
 }
