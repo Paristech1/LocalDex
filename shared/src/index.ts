@@ -607,6 +607,11 @@ export interface Settings {
   approvedFolders: string[];
   capabilities: Record<ToolName, boolean>;
   shellApproval: ShellApprovalMode;
+  /**
+   * edit_file, and write_file on an existing file, need a read_file of that file first in the same context, and the
+   * file must not have changed since (so the model never edits blind or overwrites outside changes). Default on.
+   */
+  requireReadBeforeEdit: boolean;
   workerConcurrency: number;
   systemPrompt: string;
   /** MCP servers keyed by a short name. Edit ~/.localdex/config.json to add servers; the UI can only toggle them. */
@@ -740,6 +745,7 @@ export const DEFAULT_SETTINGS: Settings = {
   approvedFolders: [],
   capabilities: DEFAULT_CAPABILITIES,
   shellApproval: 'dangerous',
+  requireReadBeforeEdit: true,
   workerConcurrency: 2,
   systemPrompt: '',
   disabledSkills: [],

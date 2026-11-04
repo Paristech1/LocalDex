@@ -22,7 +22,7 @@ function toolList(kind: 'main' | 'worker'): string {
 }
 
 const SHARED_RULES = `Working rules:
-- Use tools to inspect before you change anything. Read a file before editing it.
+- Use tools to inspect before you change anything. Read a file before editing it: edit_file and write_file refuse files you have not read (or that changed since), and the refusal tells you what to do.
 - Every action on files or the shell must be a real tool call; never just describe or print code that "would" do it. Never claim a result you did not observe in a tool result.
 - Prefer edit_file for small changes and write_file for new files or rewrites.
 - Run commands with shell_run; use terminal_* only for long-lived processes.

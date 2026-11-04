@@ -1,10 +1,12 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import { createHash } from 'node:crypto';
 import fg from 'fast-glob';
 import { resolvePath, defaultCwd } from './permissions.js';
 import { fail, ok, optNum, optStr, str, truncate, type ToolDef } from './types.js';
 import { describeText, describeTextLine, fixDoubleEscapedText } from '../jsonRepair.js';
 import { inlineBudgetChars } from '../spill.js';
+import { editRefusal, fingerprint, recordRead } from './readTracker.js';
 
 export const read_file: ToolDef = {
   schema: {
@@ -27,10 +29,19 @@ export const read_file: ToolDef = {
   async run(args, ctx) {
     // Saved tool output (LocalDex's spill folder) may be read back; everything else must be in an approved folder.
     const p = resolvePath(str(args.path, 'path'), { read: true });
-    const stat = await fs.stat(p);
+    const stat = await fs.stat(p).catch((e: NodeJS.ErrnoException) => {
+      if (e.code !== 'ENOENT') throw e;
+      return null;
+    });
+    if (!stat) {
+      // Reading a path that doesn't exist is how the agent earns the right to create it.
+      recordRead(ctx.sessionId, ctx.agent, p, null);
+      return fail(`${p} does not exist. You may create it with write_file.`);
+    }
     if (stat.isDirectory()) return fail(`"${p}" is a directory. Use list_dir.`);
     if (stat.size > 5_000_000) return fail(`File is too large (${stat.size} bytes).`);
     const raw = await fs.readFile(p, 'utf8');
+    recordRead(ctx.sessionId, ctx.agent, p, { mtimeMs: stat.mtimeMs, size: stat.size, sha1: createHash('sha1').update(raw).digest('hex') });
     const lines = raw.endsWith('\n') ? raw.slice(0, -1).split('\n') : raw.split('\n');
     const start = Math.max(1, optNum(args.start_line) ?? 1);
     let end = Math.min(lines.length, optNum(args.end_line) ?? lines.length);
@@ -75,16 +86,19 @@ export const write_file: ToolDef = {
       },
     },
   },
-  async run(args) {
+  async run(args, ctx) {
     const p = resolvePath(str(args.path, 'path'));
     const repaired = fixDoubleEscapedText(str(args.content, 'content'), p);
     const content = repaired.text;
+    const refused = await editRefusal(ctx.sessionId, ctx.agent, p);
+    if (refused) return fail(refused);
     await fs.mkdir(path.dirname(p), { recursive: true });
     const existed = await fs
       .access(p)
       .then(() => true)
       .catch(() => false);
     await fs.writeFile(p, content, 'utf8');
+    recordRead(ctx.sessionId, ctx.agent, p, await fingerprint(p));
     const note = repaired.fixed
       ? ` LocalDex turned ${repaired.fixed} literal "\\n" sequence(s) into real line breaks (the content looked double-escaped). Send real newlines in JSON as \\n, not \\\\n.`
       : '';
@@ -111,12 +125,14 @@ export const edit_file: ToolDef = {
       },
     },
   },
-  async run(args) {
+  async run(args, ctx) {
     const p = resolvePath(str(args.path, 'path'));
     const oldStr = str(args.old_string, 'old_string');
     const newStr = str(args.new_string, 'new_string');
     const replaceAll = args.replace_all === true || args.replace_all === 'true';
     if (oldStr === '') return fail('old_string must not be empty.');
+    const refused = await editRefusal(ctx.sessionId, ctx.agent, p);
+    if (refused) return fail(refused);
     const content = await fs.readFile(p, 'utf8');
     const count = content.split(oldStr).length - 1;
     if (count === 0) return fail(`old_string not found in ${p}. Read the file and copy the text exactly.`);
@@ -128,6 +144,7 @@ export const edit_file: ToolDef = {
     const replacement = repaired.text;
     const updated = replaceAll ? content.split(oldStr).join(replacement) : content.replace(oldStr, () => replacement);
     await fs.writeFile(p, updated, 'utf8');
+    recordRead(ctx.sessionId, ctx.agent, p, await fingerprint(p));
     const note = repaired.fixed ? ` (turned ${repaired.fixed} literal "\\n" into real line breaks)` : '';
     return ok(`Edited ${p}: replaced ${replaceAll ? count : 1} occurrence(s)${note}. File now: ${describeTextLine(updated)}.`);
   },

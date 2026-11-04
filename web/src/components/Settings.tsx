@@ -155,6 +155,9 @@ function WorkspaceTab({ settings, patch }: TabProps) {
             <option value="never">Never ask</option>
           </select>
         </Field>
+        <div className="mt-3">
+          <Toggle label="Files must be read before they are edited (and re-read if they changed meanwhile)" checked={settings.requireReadBeforeEdit !== false} onChange={(v) => patch({ requireReadBeforeEdit: v })} />
+        </div>
       </div>
     </>
   );

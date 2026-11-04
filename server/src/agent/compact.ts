@@ -6,6 +6,7 @@ import { resolvePath } from '../tools/permissions.js';
 import { contextLengthFor, estimateTokens, streamChat } from '../lmstudio.js';
 import { bus } from './bus.js';
 import { compactPrompt, mainSystemPrompt, workerSystemPrompt } from './prompts.js';
+import { resetReads } from '../tools/readTracker.js';
 
 const MAX_TRANSCRIPT_CHARS = 160_000;
 const MIN_MESSAGES_TO_COMPACT = 4;
@@ -118,6 +119,8 @@ export async function compactMain(session: Session, signal?: AbortSignal, reason
   session.archive.push(session.messages.slice());
   session.compactSummary = summary;
   session.compactions += 1;
+  // The reads that allowed edits are no longer in the context.
+  resetReads(session.id, 'main');
   session.usage.lastPromptTokens = 0;
   session.messages.splice(
     0,
@@ -142,6 +145,7 @@ export async function compactWorker(session: Session, w: WorkerState, signal?: A
     { role: 'system', content: workerSystemPrompt(w.name) },
     { role: 'user', content: resumeMessage(summary), ts: Date.now() },
   );
+  resetReads(session.id, `worker:${w.name}`);
   w.updatedAt = Date.now();
 }
 

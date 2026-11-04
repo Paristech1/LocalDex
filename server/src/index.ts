@@ -20,6 +20,7 @@ import { bus } from './agent/bus.js';
 import { dropRunner, runnerFor } from './agent/runner.js';
 import { PTY_UNAVAILABLE_NOTE, closeAllTerminals, ptyAvailable } from './tools/terminal.js';
 import { deleteSpill } from './spill.js';
+import { resetReads } from './tools/readTracker.js';
 import { unavailableTools } from './tools/index.js';
 import { closeAllMcp, mcpStatuses, reloadMcp } from './mcp/client.js';
 import { LIMITS, listSkills, removeSkill, setSkillEnabled } from './skills/store.js';
@@ -433,6 +434,7 @@ async function handle(ws: WebSocket, ev: ClientEvent): Promise<void> {
       if (w.messages.length) w.archive.push(w.messages.slice());
       w.messages = [];
       w.lastResult = null;
+      resetReads(s.id, `worker:${ev.name}`);
       saveSession(s);
       bus.emit({ type: 'session', session: s });
       return;

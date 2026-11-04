@@ -400,6 +400,60 @@ console.log('\n# M. Spill');
   updateSettings({ contextLength: prevCtxLen });
 }
 
+// ---------- N: read before edit + stale check (S1) ----------
+console.log('\n# N. Read before edit');
+{
+  const { resetReads } = await import(`${SRC}/tools/readTracker.ts`);
+  const { getSettings } = await import(`${SRC}/config.ts`);
+  check('setting defaults to on', getSettings().requireReadBeforeEdit === true);
+  fs.writeFileSync(path.join(DEMO, 'guarded.txt'), 'alpha\nbeta\n');
+  resetReads('t');
+  const first = (x: any) => toolResults(x.messages)[0]?.content ?? '';
+  // Edit without a read: refused with the exact wording.
+  r = await runWith([textCalls({ name: 'edit_file', arguments: { path: 'guarded.txt', old_string: 'beta', new_string: 'gamma' } }), say('ok')], 'edit');
+  check('edit without a read is refused', first(r) === `cannot modify "${path.join(DEMO, 'guarded.txt')}": file has not been read — read the file, then retry` && read('guarded.txt') === 'alpha\nbeta\n', first(r));
+  r = await runWith([textCalls({ name: 'write_file', arguments: { path: 'guarded.txt', content: 'zzz\n' } }), say('ok')], 'write');
+  check('overwrite without a read is refused', /has not been read/.test(first(r)) && read('guarded.txt') === 'alpha\nbeta\n', first(r));
+  // Read → edit → edit works (the first edit refreshes the record).
+  r = await runWith([
+    textCalls({ name: 'read_file', arguments: { path: 'guarded.txt' } }),
+    textCalls({ name: 'edit_file', arguments: { path: 'guarded.txt', old_string: 'beta', new_string: 'gamma' } }),
+    textCalls({ name: 'edit_file', arguments: { path: 'guarded.txt', old_string: 'alpha', new_string: 'omega' } }),
+    say('ok'),
+  ], 'edit twice');
+  check('read → edit → edit succeeds', toolResults(r.messages).every((m: any) => m.ok) && read('guarded.txt') === 'omega\ngamma\n', toolResults(r.messages).map((m: any) => m.content.slice(0, 60)).join(' | '));
+  // Changed outside LocalDex after the read: refused until re-read.
+  r = await runWith([
+    textCalls({ name: 'read_file', arguments: { path: 'guarded.txt' } }),
+    (() => { fs.writeFileSync(path.join(DEMO, 'guarded.txt'), 'omega\ngamma\nouter edit\n'); return textCalls({ name: 'edit_file', arguments: { path: 'guarded.txt', old_string: 'gamma', new_string: 'delta' } })(); }) as Step,
+    textCalls({ name: 'read_file', arguments: { path: 'guarded.txt' } }),
+    textCalls({ name: 'edit_file', arguments: { path: 'guarded.txt', old_string: 'gamma', new_string: 'delta' } }),
+    say('ok'),
+  ], 'edit after outside change');
+  const tr = toolResults(r.messages);
+  check('file changed externally is refused with the exact wording', tr[1]?.content === `cannot modify "${path.join(DEMO, 'guarded.txt')}": file changed since it was read — re-read the file, then retry`, tr[1]?.content);
+  check('re-read, then the edit goes through', tr[3]?.ok === true && read('guarded.txt') === 'omega\ndelta\nouter edit\n');
+  // New files need no read; reading a missing path also allows creating it; same-size edits are caught (sha1, not size).
+  r = await runWith([textCalls({ name: 'write_file', arguments: { path: 'fresh.txt', content: 'new\n' } }), say('ok')], 'create');
+  check('creating a new file needs no read', first(r).startsWith('Created') && read('fresh.txt') === 'new\n', first(r));
+  r = await runWith([
+    textCalls({ name: 'read_file', arguments: { path: 'fresh.txt' } }),
+    (() => { fs.writeFileSync(path.join(DEMO, 'fresh.txt'), 'old\n'); return textCalls({ name: 'write_file', arguments: { path: 'fresh.txt', content: 'mine\n' } })(); }) as Step,
+    say('ok'),
+  ], 'same size');
+  check('a same-size outside change is still caught', /changed since it was read/.test(toolResults(r.messages)[1]?.content ?? '') && read('fresh.txt') === 'old\n');
+  // Compact & Resume forgets the reads.
+  r = await runWith([textCalls({ name: 'read_file', arguments: { path: 'fresh.txt' } }), say('ok')], 'read');
+  resetReads('t', 'main');
+  r = await runWith([textCalls({ name: 'edit_file', arguments: { path: 'fresh.txt', old_string: 'old', new_string: 'x' } }), say('ok')], 'edit after compact');
+  check('records reset (compact) → read again first', /has not been read/.test(first(r)));
+  // Off switch.
+  updateSettings({ requireReadBeforeEdit: false });
+  r = await runWith([textCalls({ name: 'edit_file', arguments: { path: 'fresh.txt', old_string: 'old', new_string: 'x' } }), say('ok')], 'edit with the check off');
+  check('setting off: blind edits allowed', first(r).startsWith('Edited') && read('fresh.txt') === 'x\n', first(r));
+  updateSettings({ requireReadBeforeEdit: true });
+}
+
 server.close();
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);
