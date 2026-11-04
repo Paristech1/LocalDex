@@ -143,11 +143,6 @@ export function AssistantBubble({
 }) {
   return (
     <div className={cx('group relative my-2', via && 'border-l-2 border-[#7cc0f2]/40 pl-3')}>
-      {onFork && (
-        <button type="button" onClick={onFork} title="Copy the conversation up to here into a new session" className="absolute right-0 top-0 opacity-0 group-hover:opacity-100 focus:opacity-100 text-[11px] text-ink-400 hover:text-ink-100">
-          Fork from here
-        </button>
-      )}
       {label && <div className="text-[11px] text-ink-400 mb-1 font-mono">{label}</div>}
       {via && <ViaBadge via={via} />}
       {councilRunId && <WorktreeChip runId={councilRunId} />}
@@ -159,17 +154,30 @@ export function AssistantBubble({
         </div>
       )}
       {children}
-      {onRate && content && !streaming && <RateAnswer feedback={feedback} onRate={onRate} />}
+      {content && !streaming && (onRate || onFork) && <AnswerActions feedback={feedback} onRate={onRate} onFork={onFork} />}
     </div>
   );
 }
 
-/** U3: 👍/👎 under a finished answer; a 👎 offers a reason. Click the same thumb again to clear it. */
-function RateAnswer({ feedback, onRate }: { feedback?: MessageFeedback; onRate: (rating: 'up' | 'down' | null, category?: FeedbackCategory) => void }) {
+/** U3/U4: under a finished answer — 👍/👎 (a 👎 offers a reason; click the same thumb again to clear) and Fork from here. */
+function AnswerActions({ feedback, onRate, onFork }: { feedback?: MessageFeedback; onRate?: (rating: 'up' | 'down' | null, category?: FeedbackCategory) => void; onFork?: () => void }) {
   const [asking, setAsking] = useState(false);
   const r = feedback?.rating;
   return (
     <div className={cx('mt-1 flex flex-wrap items-center gap-1 text-[11px] text-ink-400', !r && !asking && 'opacity-0 group-hover:opacity-100 focus-within:opacity-100')}>
+      {onRate && <RateButtons r={r} feedback={feedback} asking={asking} setAsking={setAsking} onRate={onRate} />}
+      {onFork && (
+        <button type="button" onClick={onFork} title="Copy the conversation up to here into a new session" className="ml-1 px-1 rounded hover:text-ink-100">
+          Fork from here
+        </button>
+      )}
+    </div>
+  );
+}
+
+function RateButtons({ r, feedback, asking, setAsking, onRate }: { r?: 'up' | 'down'; feedback?: MessageFeedback; asking: boolean; setAsking: (v: boolean) => void; onRate: (rating: 'up' | 'down' | null, category?: FeedbackCategory) => void }) {
+  return (
+    <>
       <button type="button" aria-label="Good answer" aria-pressed={r === 'up'} className={cx('px-1 rounded hover:text-ink-100', r === 'up' && 'text-accent')} onClick={() => (setAsking(false), onRate(r === 'up' ? null : 'up'))}>
         👍
       </button>
@@ -183,7 +191,7 @@ function RateAnswer({ feedback, onRate }: { feedback?: MessageFeedback; onRate: 
             {FEEDBACK_LABELS[c]}
           </button>
         ))}
-    </div>
+    </>
   );
 }
 
