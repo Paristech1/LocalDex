@@ -41,7 +41,14 @@ Browser (React UI)  <-- WebSocket -->  LocalDex server (Node)  -->  LM Studio :1
   survive restarts. Pattern borrowed from DeepSeek Harness `workspace-changes` (reimplemented).
 - **Compact & Resume** – manual or automatic (at a configurable fraction of the context window):
   the model summarizes decisions, files changed, open items and worker state, and a fresh context
-  is seeded with the summary. The full transcript is archived in the session file.
+  is seeded with the summary. The full transcript is archived in the session file. Before
+  summarizing, old tool results over 8 KB are pruned to their first 4 KB + last 1 KB (the latest
+  turn is left alone, originals stay in the session log); when that alone brings the context under
+  the threshold, no summary call is made.
+- **Stable prompt prefix** – the system prompt is frozen per session and only rebuilt when the tool
+  set, skills or MCP servers really change (logged as a cache reset), so LM Studio can reuse its
+  KV cache across steps. The date and time arrive as an appended `[context]` line at most every
+  10 minutes instead of living in the system prompt.
 - **Works with models that have no native tool support** – LocalDex probes the model once; if it
   does not emit OpenAI `tool_calls`, it switches to a text protocol and parses calls from the reply.
   It also recovers Python-style calls (`write_file(path="a", content="b")`), fenced JSON, and

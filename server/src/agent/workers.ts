@@ -78,11 +78,10 @@ export class WorkerManager {
       if (!model) return 'No model selected.';
       w.model = model;
 
-      if (w.messages.length === 0) {
-        w.messages.push({ role: 'system', content: workerSystemPrompt(name) });
-      } else {
-        w.messages[0] = { role: 'system', content: workerSystemPrompt(name) };
-      }
+      // Same prompt, same bytes: only replace it when it really changed (keeps LM Studio's prompt cache warm).
+      const sys = workerSystemPrompt(name);
+      if (w.messages.length === 0 || w.messages[0].role !== 'system') w.messages.unshift({ role: 'system', content: sys });
+      else if (w.messages[0].content !== sys) w.messages[0] = { role: 'system', content: sys };
       w.messages.push({ role: 'user', content: task, ts: Date.now() });
       const startIndex = w.messages.length;
 

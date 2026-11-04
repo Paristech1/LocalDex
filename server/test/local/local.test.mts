@@ -529,6 +529,72 @@ console.log('\n# O. Checkpoints and undo');
   approve = false;
 }
 
+// ---------- P: prune old tool results before summarizing (C2) ----------
+console.log('\n# P. Prune before summarize');
+{
+  const { maybeCompactMain, pruneToolResults, PRUNE_MARK } = await import(`${SRC}/agent/compact.ts`);
+  const { getSettings } = await import(`${SRC}/config.ts`);
+  const prevCtxLen = getSettings().contextLength;
+  const prevThreshold = getSettings().autoCompactThreshold;
+  const sess = createSession('gemma-mock');
+  sess.messages.push({ role: 'system', content: 'sys' }, { role: 'user', content: 'start', ts: 1 });
+  const big = (n: number) => `${'result line\n'.repeat(1_200)}END-${n}`; // ~14.4k chars each
+  for (let i = 0; i < 6; i++) {
+    sess.messages.push({ role: 'assistant', content: null, tool_calls: [{ id: `c${i}`, type: 'function', function: { name: 'shell_run', arguments: '{}' } }], ts: 2 });
+    sess.messages.push({ role: 'tool', tool_call_id: `c${i}`, name: 'shell_run', content: big(i), ts: 3 });
+  }
+  sess.messages.push({ role: 'user', content: 'latest request', ts: 4 });
+  sess.messages.push({ role: 'assistant', content: null, tool_calls: [{ id: 'c9', type: 'function', function: { name: 'shell_run', arguments: '{}' } }], ts: 5 });
+  sess.messages.push({ role: 'tool', tool_call_id: 'c9', name: 'shell_run', content: big(9), ts: 6 });
+  // ~100k chars ≈ 29k tokens estimated; a 32k window at 0.8 → threshold ~26k tokens → over. After pruning ≈ 10k tokens → under.
+  updateSettings({ contextLength: 32768, autoCompactThreshold: 0.8 });
+  const before = requests.length;
+  script = [say('SUMMARY (should not be asked)')];
+  await maybeCompactMain(sess, new AbortController().signal);
+  const tools = sess.messages.filter((m: any) => m.role === 'tool') as any[];
+  check('prune: old results shortened to head + marker + tail', tools.slice(0, 6).every((m) => m.content.includes(PRUNE_MARK) && m.content.startsWith('result line') && m.content.endsWith(`END-${tools.indexOf(m)}`) && m.content.length < 5_300), String(tools[0].content.length));
+  check('prune: the latest turn is left alone', !tools[6].content.includes(PRUNE_MARK) && tools[6].content.length > 14_000);
+  check('prune: originals kept in the session log', tools.slice(0, 6).every((m) => typeof m.original === 'string' && m.original.length > 14_000));
+  check('prune: no summary call was made and no compaction', requests.length === before && sess.compactions === 0 && sess.messages.some((m: any) => m.role === 'user' && m.content === 'start'));
+  check('prune: logged the saving', logs.some((l) => /pruned 6 old tool results, saved ~\d+ tokens; no summary needed/.test(l)));
+  // Second pass: nothing new to prune, and already-pruned results are not pruned again.
+  check('prune: idempotent', pruneToolResults(sess.messages).pruned === 0);
+  script = [];
+  updateSettings({ contextLength: prevCtxLen, autoCompactThreshold: prevThreshold });
+}
+
+// ---------- Q: stable system prompt + appended clock (C3) ----------
+console.log('\n# Q. Stable prompt prefix');
+{
+  const { createHash } = await import('node:crypto');
+  const { mainSystemPrompt, CLOCK_PREFIX } = await import(`${SRC}/agent/prompts.ts`);
+  const h = (t: string) => createHash('sha1').update(t).digest('hex');
+  check('system prompt has no date', !/\bDate:/.test(mainSystemPrompt()));
+  check('system prompt is byte-identical across builds', h(mainSystemPrompt()) === h(mainSystemPrompt()));
+  const sess = createSession('gemma-mock');
+  const rn = runnerFor(sess);
+  script = [say('one')];
+  await rn.handleUserMessage('first');
+  const sysHash = h((sess.messages[0] as any).content);
+  const clocks = () => sess.messages.filter((m: any) => m.role === 'user' && m.content.startsWith(CLOCK_PREFIX));
+  check('clock appended once as a context line', clocks().length === 1 && /\d{4}/.test(clocks()[0].content), clocks()[0]?.content);
+  script = [textCalls({ name: 'read_file', arguments: { path: 'hello.txt' } }), say('two')];
+  await rn.handleUserMessage('second');
+  check('system prompt unchanged across steps and turns (hash)', h((sess.messages[0] as any).content) === sysHash && !logs.some((l) => /system prompt changed/.test(l)));
+  check('no second clock line within 10 minutes', clocks().length === 1);
+  (clocks()[0] as any).ts = Date.now() - 11 * 60_000;
+  script = [say('three')];
+  await rn.handleUserMessage('third');
+  check('a new clock line after 10 minutes', clocks().length === 2);
+  // Toggling a tool changes the prompt once, and says so.
+  const prevCaps = (await import(`${SRC}/config.ts`)).getSettings().capabilities;
+  updateSettings({ capabilities: { ...prevCaps, glob: false } });
+  script = [say('four')];
+  await rn.handleUserMessage('fourth');
+  check('tool set change rebuilds the prompt and logs the cache reset', h((sess.messages[0] as any).content) !== sysHash && logs.some((l) => /system prompt changed/.test(l)));
+  updateSettings({ capabilities: prevCaps });
+}
+
 server.close();
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

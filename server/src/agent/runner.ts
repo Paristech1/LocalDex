@@ -7,7 +7,7 @@ import { compactMain, maybeCompactMain, verifiedFileFacts } from './compact.js';
 import { assessGoal, goalCouncilAssessTask, parseAssessment } from './goal.js';
 import { beginTurn, endTurn } from '../checkpoints.js';
 import { runLoop } from './loop.js';
-import { goalContinuePrompt, mainSystemPrompt } from './prompts.js';
+import { CLOCK_EVERY_MS, CLOCK_PREFIX, clockLine, goalContinuePrompt, mainSystemPrompt } from './prompts.js';
 import { WorkerManager } from './workers.js';
 import { redactIfEnabled, runCouncil, runSummary, runVia, type CouncilContext } from '../council/orchestrator.js';
 import { classify, classifyWithLocal, domainBuilder, markNotRisky, parseCommand, settingsForAccess, withRisk, type Route } from '../council/router.js';
@@ -384,6 +384,7 @@ export class SessionRunner {
       }
       s.model = model;
       this.ensureSystemPrompt();
+      this.ensureClock();
       // Solo edits land on disk directly; the turn's checkpoint makes them visible and undoable.
       beginTurn(sid);
 
@@ -525,11 +526,34 @@ export class SessionRunner {
     return '\nPress "Hand to council ☁" below to send the request, with what the local agent already did, to a cloud model (Claude and the other members you have signed in).';
   }
 
+  /**
+   * The system prompt is frozen for the session: rebuilt only when its content really changes (tools toggled, skills
+   * installed, MCP servers switched), because any byte change at the top of the prompt resets LM Studio's KV cache.
+   */
   private ensureSystemPrompt(): void {
     const prompt = mainSystemPrompt();
     const first = this.session.messages[0];
-    if (first?.role === 'system') first.content = prompt;
-    else this.session.messages.unshift({ role: 'system', content: prompt });
+    if (first?.role === 'system') {
+      if (first.content !== prompt) {
+        first.content = prompt;
+        bus.log('info', '[main] system prompt changed (tools, skills or MCP servers differ): prompt cache reset');
+      }
+    } else this.session.messages.unshift({ role: 'system', content: prompt });
+  }
+
+  /** Append the date and time as a context message, at most every CLOCK_EVERY_MS, instead of editing the system prompt. */
+  private ensureClock(): void {
+    const msgs = this.session.messages;
+    let last: ChatMessage | undefined;
+    for (let i = msgs.length - 1; i >= 0; i--) {
+      const m = msgs[i];
+      if (m.role === 'user' && m.content.startsWith(CLOCK_PREFIX)) {
+        last = m;
+        break;
+      }
+    }
+    if (last && last.role === 'user' && Date.now() - (last.ts ?? 0) < CLOCK_EVERY_MS) return;
+    msgs.push({ role: 'user', content: clockLine(), ts: Date.now() });
   }
 }
 

@@ -9,12 +9,22 @@ function environment(): string {
   const folders = approvedFolders();
   return [
     `OS: ${process.platform} (${os.release()}), shell: ${process.env.SHELL ?? 'sh'}`,
-    `Date: ${new Date().toDateString()}`,
     folders.length
       ? `Approved folders (you may only read/write inside these): ${folders.join(', ')}\nDefault working directory: ${folders[0]}`
       : 'No folders are approved yet. Ask the user to add one in Settings → Workspace before using file or shell tools.',
   ].join('\n');
 }
+
+/**
+ * The date and time go into an appended context line, never into the system prompt: a prompt whose prefix changes
+ * every step throws LM Studio's KV cache away (pattern from DeepSeek Harness `time-context`, reimplemented).
+ */
+export const CLOCK_EVERY_MS = 10 * 60_000;
+export function clockLine(now = new Date()): string {
+  const tz = Intl.DateTimeFormat().resolvedOptions().timeZone;
+  return `[context] Date and time: ${now.toLocaleString(undefined, { weekday: 'short', year: 'numeric', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })} (${tz})`;
+}
+export const CLOCK_PREFIX = '[context] Date and time: ';
 
 function toolList(kind: 'main' | 'worker'): string {
   const names = enabledTools(kind).map((t) => t.function.name);
