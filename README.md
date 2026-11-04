@@ -119,6 +119,29 @@ npm run build
 npm start            # http://localhost:7331
 ```
 
+## Headless (command line)
+
+Run one task without the web UI. The answer goes to stdout, logs to stderr:
+
+```bash
+npx localdex run "fix the failing test in src/date.ts" --folder ~/code/app        # inside the LocalDex repo
+npm run cli -- run "summarize what this repo does" --access read --json
+npm link -w server && localdex run "…"                                          # install `localdex` globally
+```
+
+| Option | Meaning |
+|---|---|
+| `--folder <dir>` | Project folder (default: current folder). Approved for this run only |
+| `--model <id>` | LM Studio model (default: Settings) |
+| `--council` | Send the task to the model council |
+| `--access read\|ask\|edit` | `read`: nothing may change files · `ask` (default): normal rules, anything that would ask is denied · `edit`: council builders may edit |
+| `--yes-safe` | Approve prompts for commands not on the dangerous list. Dangerous commands (`rm -rf`, `sudo`, force-push…) are always denied |
+| `--max-steps <n>` | Step cap |
+| `--json` | Print `{"status","answer","session","steps","error"}` |
+| `--verbose` | Tool calls on stderr |
+
+Exit code 0 = done, 1 = stopped or failed, 2 = bad usage. Questions from the agent are answered with "no user is available". Options apply to that run only and are never saved to `config.json`. The session is saved like any other, so you can open it in the UI afterwards. MCP servers are not started in headless runs.
+
 ## Using it
 
 | Panel | What it does |

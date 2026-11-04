@@ -9,7 +9,8 @@
     "start": "tsx src/index.ts",
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "test:council": "bash test/council/run.sh",
-    "test:local": "bash test/local/run.sh"
+    "test:local": "bash test/local/run.sh",
+    "cli": "node bin/localdex.mjs"
   },
   "dependencies": {
     "@hono/node-server": "^1.13.7",
@@ -32,5 +33,8 @@
   "optionalDependencies": {
     "@cursor/sdk": "^1.0.37",
     "node-pty": "^1.1.0-beta27"
+  },
+  "bin": {
+    "localdex": "bin/localdex.mjs"
   }
 }

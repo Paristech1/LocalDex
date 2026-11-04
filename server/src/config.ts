@@ -88,6 +88,18 @@ export function getSettings(): Settings {
   return settings;
 }
 
+/** E2: change settings for this process only, never written to config.json (headless runs: --folder, --model…). */
+export function overrideSettings(patch: Partial<Settings>): Settings {
+  settings = {
+    ...settings,
+    ...patch,
+    capabilities: { ...settings.capabilities, ...(patch.capabilities ?? {}) },
+    council: patch.council ? mergeCouncil(settings.council, patch.council) : settings.council,
+  };
+  if (patch.approvedFolders) settings.approvedFolders = Array.from(new Set(patch.approvedFolders.map((f) => path.resolve(expandHome(f)))));
+  return settings;
+}
+
 export function updateSettings(patch: Partial<Settings>): Settings {
   settings = {
     ...settings,

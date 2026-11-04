@@ -85,7 +85,7 @@ Each task lists **Why** (the evidence), **Where** (files), **Borrow** (the DeepS
 | 5 | U5 | Unified slash-command palette | P2 | S | ✅ done |
 | 5 | U6 | LM Studio request retry with backoff | P1 | S | ✅ done |
 | 6 | E1 | MCP manager UI + preset gallery (Playwright, Blender, …) | P1 | M | ✅ done |
-| 6 | E2 | Headless CLI: `localdex run "task"` | P2 | M |
+| 6 | E2 | Headless CLI: `localdex run "task"` | P2 | M | ✅ done |
 | 6 | E3 | "Open PR" from a council worktree (gh CLI) | P2 | S | ✅ done |
 | 6 | E4 | Model doctor (tool-calling probe + context-size advice) | P1 | M | ✅ done |
 | 6 | E5 | Scheduled goal runs | P3 | M |

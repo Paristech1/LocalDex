@@ -13,7 +13,8 @@
     "dev": "concurrently -n server,web -c blue,magenta \"npm run dev -w server\" \"npm run dev -w web\"",
     "build": "npm run build -w shared && npm run build -w server && npm run build -w web",
     "start": "npm run start -w server",
-    "typecheck": "npm run typecheck -w shared && npm run typecheck -w server && npm run typecheck -w web"
+    "typecheck": "npm run typecheck -w shared && npm run typecheck -w server && npm run typecheck -w web",
+    "cli": "node server/bin/localdex.mjs"
   },
   "devDependencies": {
     "concurrently": "^9.1.0",

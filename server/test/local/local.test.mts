@@ -1471,6 +1471,47 @@ console.log('\n# AI. lsp: read-only code navigation through a language server');
   check('files outside the approved folders are refused', !outside.ok && /outside the approved folders/.test(outside.content), outside.content);
 }
 
+// ---------- AJ: Headless CLI (E2) ----------
+console.log('\n# AJ. Headless CLI: localdex run "<task>"');
+{
+  const { spawn } = await import('node:child_process');
+  const bin = new URL('../../bin/localdex.mjs', import.meta.url).pathname;
+  const cfgBefore = fs.readFileSync(path.join(process.env.LOCALDEX_HOME!, 'config.json'), 'utf8');
+  const runCli = (args: string[]) =>
+    new Promise<{ code: number | null; out: string; err: string }>((resolve) => {
+      const p = spawn(process.execPath, [bin, ...args], { env: { ...process.env }, cwd: DEMO });
+      let out = '';
+      let err = '';
+      p.stdout.on('data', (d) => (out += d));
+      p.stderr.on('data', (d) => (err += d));
+      p.on('close', (code) => resolve({ code, out, err }));
+    });
+  const proj = fs.mkdtempSync(path.join(DEMO, 'cli-'));
+  script = [textCalls({ name: 'write_file', arguments: { path: path.join(proj, 'hello.txt'), content: 'hi\n' } }), say('Wrote hello.txt.')];
+  let r = await runCli(['run', 'create hello.txt saying hi', '--folder', proj, '--json']);
+  const j = JSON.parse(r.out.trim().split('\n').pop() || '{}');
+  check('stdout carries only the JSON (logs go to stderr)', r.out.trim().split('\n').length === 1 && r.out.trim().startsWith('{'), r.out.slice(0, 200));
+  check('done: exit 0, JSON answer, the file is written', r.code === 0 && j.status === 'done' && j.answer === 'Wrote hello.txt.' && fs.existsSync(path.join(proj, 'hello.txt')) && !!j.session, `${r.code} ${r.out} ${r.err.slice(-300)}`);
+
+  script = [textCalls({ name: 'write_file', arguments: { path: path.join(proj, 'nope.txt'), content: 'x' } }), say('I may not write files.'), say('I may not write files.')];
+  r = await runCli(['run', 'write nope.txt', '--folder', proj, '--access', 'read']);
+  check('--access read: nothing is written; plain answer on stdout', r.code === 0 && r.out.trim() === 'I may not write files.' && !fs.existsSync(path.join(proj, 'nope.txt')), `${r.code} ${r.out} ${r.err.slice(-200)}`);
+
+  fs.mkdirSync(path.join(proj, 'build'), { recursive: true });
+  script = [textCalls({ name: 'shell_run', arguments: { command: 'rm -rf ./build' } }), say('The deletion was not allowed.')];
+  r = await runCli(['run', 'clean up', '--folder', proj, '--yes-safe']);
+  check('dangerous commands are denied even with --yes-safe', r.code === 0 && /✗ denied \(headless\): rm -rf \.\/build/.test(r.err) && fs.existsSync(path.join(proj, 'build')), r.err.slice(-300));
+
+  script = [textCalls({ name: 'list_dir', arguments: { path: '.' } }), textCalls({ name: 'list_dir', arguments: { path: '.' } })];
+  r = await runCli(['run', 'keep going', '--folder', proj, '--max-steps', '1']);
+  check('a run that stops: exit 1 with the reason', r.code === 1 && /\[stopped\] .*max steps/.test(r.err), `${r.code} ${r.err.slice(-300)}`);
+  script = [];
+
+  r = await runCli(['run']);
+  check('bad usage: exit 2 with help', r.code === 2 && /Give the task in quotes/.test(r.err));
+  check('CLI options never touch config.json', fs.readFileSync(path.join(process.env.LOCALDEX_HOME!, 'config.json'), 'utf8') === cfgBefore);
+}
+
 server.close();
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);
