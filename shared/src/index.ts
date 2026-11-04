@@ -92,7 +92,8 @@ export type ToolName =
   | 'job_kill'
   | 'web_fetch'
   | 'web_search'
-  | 'read_image';
+  | 'read_image'
+  | 'lsp';
 
 export const ALL_TOOL_NAMES: ToolName[] = [
   'read_file',
@@ -122,6 +123,7 @@ export const ALL_TOOL_NAMES: ToolName[] = [
   'web_fetch',
   'web_search',
   'read_image',
+  'lsp',
 ];
 
 export interface ToolSchema {
@@ -853,6 +855,8 @@ export interface Settings {
   projectInstructions: boolean;
   /** After the first Solo run, the local model writes a short session title (one small call). Default on. */
   autoTitle: boolean;
+  /** A3: extra language servers for the lsp tool, keyed by file extension (".rb": { command, args }). Config file only. */
+  lspServers?: Record<string, { command: string; args?: string[]; languageId?: string }>;
   /** SearXNG base URL for web_search (empty = no search provider). */
   webSearchUrl: string;
   workerConcurrency: number;
@@ -970,6 +974,7 @@ export const DEFAULT_CAPABILITIES: Record<ToolName, boolean> = {
   web_fetch: false,
   web_search: false,
   read_image: true,
+  lsp: false,
 };
 
 /**

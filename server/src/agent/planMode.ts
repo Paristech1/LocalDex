@@ -7,7 +7,7 @@ import type { PlanStep, ToolName } from '@localdex/shared';
  */
 
 /** Tools a planning agent keeps. Everything else (writes, terminals, workers, council builds, MCP) is hidden. */
-export const PLAN_TOOLS = new Set<ToolName>(['read_file', 'list_dir', 'glob', 'grep', 'shell_run', 'update_plan', 'ask_user', 'load_skill']);
+export const PLAN_TOOLS = new Set<ToolName>(['read_file', 'list_dir', 'glob', 'grep', 'shell_run', 'update_plan', 'ask_user', 'load_skill', 'lsp', 'read_image']);
 
 export function isPlanTool(name: string): boolean {
   return PLAN_TOOLS.has(name as ToolName);

@@ -1437,6 +1437,40 @@ console.log('\n# AH. Images: attachments, vision models, read_image, image budge
   check('read_image: text files refused', !bad.ok && /not a PNG/.test(bad.content));
 }
 
+// ---------- AI: lsp tool (A3) ----------
+console.log('\n# AI. lsp: read-only code navigation through a language server');
+{
+  const L = await import(`${SRC}/lsp.ts`);
+  const { lsp } = await import(`${SRC}/tools/lspTool.ts`);
+  check('column from a symbol name (word boundary), 1-based', L.columnFor('const total = add(subtotal, tax);', 'add') === 15 && L.columnFor('  foo.bar()', 'bar') === 7 && L.columnFor('x', 'nope') === null && L.columnFor('abc', undefined, 2) === 2);
+  check('server chosen by extension', L.serverFor('a.tsx')?.command === 'typescript-language-server' && L.serverFor('a.py')?.command === 'pyright-langserver' && L.serverFor('a.txt') === null);
+  check('lsp is off by default and read-only in plan mode', !enabledTools('main').some((t: any) => t.function.name === 'lsp'));
+  const proj = path.join(DEMO, 'tsproj');
+  fs.mkdirSync(proj, { recursive: true });
+  fs.writeFileSync(path.join(proj, 'tsconfig.json'), JSON.stringify({ compilerOptions: { strict: true, module: 'esnext', target: 'es2022' }, include: ['*.ts'] }));
+  fs.writeFileSync(path.join(proj, 'math.ts'), '/** Adds two numbers. */\nexport function add(a: number, b: number): number {\n  return a + b;\n}\n');
+  fs.writeFileSync(path.join(proj, 'main.ts'), "import { add } from './math';\nconst total = add(1, 2);\nconst again = add(total, 3);\nconsole.log(again);\n");
+  const missing = await lsp.run({ operation: 'definition', path: 'tsproj/main.ts', line: 2, symbol: 'add' }, {} as any);
+  if (process.env.LOCALDEX_TEST_LSP_BIN) process.env.PATH = `${process.env.LOCALDEX_TEST_LSP_BIN}${path.delimiter}${process.env.PATH}`;
+  if (!L.onPath('typescript-language-server')) {
+    check('no server installed: clear install hint, no crash', !missing.ok && /not installed \(install: npm i -g typescript-language-server/.test(missing.content), missing.content);
+    console.log('  (typescript-language-server not on PATH: real-server checks skipped)');
+  } else {
+    updateSettings({ approvedFolders: [DEMO] });
+    const def = await lsp.run({ operation: 'definition', path: 'tsproj/main.ts', line: 2, symbol: 'add' }, {} as any);
+    check('definition: jumps to math.ts line 2', def.ok && /tsproj\/math\.ts\n\s+2: export function add/.test(def.content), def.content);
+    const refs = await lsp.run({ operation: 'references', path: 'tsproj/math.ts', line: 2, symbol: 'add' }, {} as any);
+    check('references: grouped by file with line text', refs.ok && /tsproj\/main\.ts/.test(refs.content) && /2: const total = add\(1, 2\);/.test(refs.content) && /3: const again = add\(total, 3\);/.test(refs.content), refs.content);
+    const hov = await lsp.run({ operation: 'hover', path: 'tsproj/main.ts', line: 2, symbol: 'add' }, {} as any);
+    check('hover: signature and docs', hov.ok && /add\(a: number, b: number\): number/.test(hov.content) && /Adds two numbers/.test(hov.content), hov.content);
+    const notThere = await lsp.run({ operation: 'definition', path: 'tsproj/main.ts', line: 2, symbol: 'subtract' }, {} as any);
+    check('a symbol not on the line is refused before asking the server', !notThere.ok && /"subtract" is not on line 2/.test(notThere.content));
+    L.closeAllLsp();
+  }
+  const outside = await lsp.run({ operation: 'hover', path: '/etc/hosts', line: 1, character: 1 }, {} as any).catch((e: Error) => ({ ok: false, content: e.message }));
+  check('files outside the approved folders are refused', !outside.ok && /outside the approved folders/.test(outside.content), outside.content);
+}
+
 server.close();
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

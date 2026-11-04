@@ -215,6 +215,10 @@ Add one in **Settings → Skills**:
 
 Only each skill's name and one-line description go into the system prompt. The model calls `load_skill` to read the full text (and `load_skill` with `file` for bundled files). Toggle or remove skills in the same tab. Skills that bundle scripts get a badge; scripts only run if the model calls `shell_run`, so your shell-approval setting still applies.
 
+## Code navigation (`lsp` tool)
+
+Off by default (**Settings → Capabilities → lsp**). When on, the agent can ask a language server where a symbol is defined, where it is used, its implementations, or its type and docs. It is read-only, and it's useful when `grep` would be ambiguous. The model names the symbol on a line (no column counting needed). Results are grouped by file, show the line text, and are capped at 50 locations. Servers are found on your PATH: `typescript-language-server` (TypeScript/JavaScript; LocalDex supplies TypeScript if the project has none), `pyright-langserver`, `gopls`, `rust-analyzer`. Add others in `~/.localdex/config.json` under `"lspServers": { ".rb": { "command": "solargraph", "args": ["stdio"] } }`. A server stays up for 5 idle minutes per project. Line text is only shown for files inside your approved folders.
+
 ## MCP servers (extra tools)
 
 LocalDex is an [MCP](https://modelcontextprotocol.io) client. Any stdio MCP server can add tools; the first one

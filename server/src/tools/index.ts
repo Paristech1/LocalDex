@@ -12,6 +12,7 @@ import { block_goal, complete_goal, get_goal, update_goal } from './goalTools.js
 import { job_kill, job_list, job_output } from './jobTools.js';
 import { web_fetch, web_search } from './web.js';
 import { read_image } from './image.js';
+import { lsp } from './lspTool.js';
 import { enabledSkills } from '../skills/store.js';
 import { PermissionError } from './permissions.js';
 import { isMcpTool, mcpToolSchemas, runMcpTool } from '../mcp/client.js';
@@ -47,6 +48,7 @@ export const registry: ToolRegistry = {
   web_fetch,
   web_search,
   read_image,
+  lsp,
 };
 /** Offered once the session has started a background job (shell_run with background: true). */
 export const JOB_TOOLS = new Set<ToolName>(['job_output', 'job_list', 'job_kill']);

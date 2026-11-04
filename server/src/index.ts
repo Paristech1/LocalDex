@@ -29,6 +29,7 @@ import { sandboxStatus } from './sandbox.js';
 import { forgeStatus, openPullRequest, refreshPullRequest } from './council/forge.js';
 import { feedbackStats, rateMessage } from './feedback.js';
 import { searchFiles } from './fileMentions.js';
+import { closeAllLsp } from './lsp.js';
 import { attachmentPath, isAttachmentId, saveImage } from './attachments.js';
 import { forkAt, isEditableUserMessage } from './fork.js';
 import { exportFileName, exportMarkdown, searchSessions } from './sessionTools.js';
@@ -402,8 +403,9 @@ async function handle(ws: WebSocket, ev: ClientEvent): Promise<void> {
     case 'set_settings': {
       // MCP server definitions run local programs, so only enable/disable toggles are accepted over the socket.
       // sandboxExtraWritable widens what a sandboxed shell may write: config file only, like MCP commands.
-      const { mcpServers, council, sandboxExtraWritable: _extra, ...rest } = ev.patch;
+      const { mcpServers, council, sandboxExtraWritable: _extra, lspServers: _lsp, ...rest } = ev.patch;
       void _extra;
+      void _lsp;
       if (rest.permissionPreset !== undefined && !['full', 'workspace', 'read-only'].includes(rest.permissionPreset)) delete rest.permissionPreset;
       let settings = updateSettings(council ? { ...rest, council: stripCouncilCommands(council) as typeof council } : rest);
       if (mcpServers) {
@@ -635,6 +637,7 @@ function shutdown(): void {
   flushAll();
   killAllJobs();
   // Stop MCP server processes (e.g. the browser) before exiting, but never hang on them.
+  closeAllLsp();
   void Promise.race([closeAllMcp(), new Promise((r) => setTimeout(r, 3000))]).finally(() => process.exit(0));
 }
 process.on('SIGINT', shutdown);
