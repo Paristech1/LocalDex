@@ -158,6 +158,16 @@ check('text with real newlines is left alone', fixDoubleEscapedText('a\nb\\nc', 
 check('missing final newline is spelled out in wc terms', describeTextLine('one\ntwo\nthree') === '3 lines, 13 bytes; no newline at end, so `wc -l` reports 2', describeTextLine('one\ntwo\nthree'));
 check('normal file reads plainly', describeTextLine('one\ntwo\nthree\n') === '3 lines, 14 bytes');
 
+// ---------- unit: optional node-pty (H3) ----------
+console.log('\n# node-pty optional');
+const { ptyAvailable } = await import(`${SRC}/tools/terminal.ts`);
+const { unavailableTools } = await import(`${SRC}/tools/index.ts`);
+const ptyOk = ptyAvailable().ok;
+const mainNames = enabledTools('main').map((t) => t.function.name);
+check(`terminal tools ${ptyOk ? 'shown' : 'hidden'} to match node-pty (${ptyOk ? 'present' : 'missing'})`, mainNames.includes('terminal_open') === ptyOk, mainNames.filter((n) => n.startsWith('terminal_')).join(','));
+check('shell_run stays available either way', mainNames.includes('shell_run'));
+check('unavailable tools are reported with a reason', ptyOk ? Object.keys(unavailableTools()).length === 0 : /node-pty/.test(unavailableTools().terminal_open ?? ''), JSON.stringify(unavailableTools()).slice(0, 120));
+
 // ---------- unit: plan shapes ----------
 console.log('\n# update_plan shapes');
 const p1 = normalizePlan({ steps: ['Create notes folder', 'Write notes/a.md', 'Remove notes directory'] })!;

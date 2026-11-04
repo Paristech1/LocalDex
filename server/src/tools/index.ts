@@ -3,7 +3,7 @@ import { getSettings } from '../config.js';
 import { edit_file, glob, list_dir, read_file, write_file } from './fs.js';
 import { grep } from './search.js';
 import { shell_run } from './shell.js';
-import { terminal_close, terminal_open, terminal_read, terminal_send } from './terminal.js';
+import { TERMINAL_TOOLS, ptyAvailable, terminal_close, terminal_open, terminal_read, terminal_send } from './terminal.js';
 import { ask_user, delegate_to_worker, update_plan } from './agentTools.js';
 import { load_skill } from './skillTool.js';
 import { ask_member, council } from './councilTools.js';
@@ -45,8 +45,18 @@ export function enabledTools(kind: 'main' | 'worker'): ToolSchema[] {
     // No point showing a small model a tool it can't use.
     .filter((name) => name !== 'load_skill' || enabledSkills().length > 0)
     .filter((name) => councilOn || !COUNCIL_TOOLS.has(name))
+    // Without node-pty (optional on Linux) the terminal tools can't work, so the model isn't shown them.
+    .filter((name) => !TERMINAL_TOOLS.has(name) || ptyAvailable().ok)
     .map((name) => registry[name].schema);
   return [...builtin, ...mcpToolSchemas(kind)];
+}
+
+/** Built-in tools that cannot work on this install, with the reason, for Settings → Capabilities. */
+export function unavailableTools(): Partial<Record<ToolName, string>> {
+  const pty = ptyAvailable();
+  if (pty.ok) return {};
+  const why = `node-pty is not installed (${pty.error ?? 'module not found'}).`;
+  return Object.fromEntries([...TERMINAL_TOOLS].map((t) => [t, why])) as Partial<Record<ToolName, string>>;
 }
 
 export function parseArgs(call: ToolCall): Record<string, unknown> {

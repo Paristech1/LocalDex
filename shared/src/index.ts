@@ -769,7 +769,15 @@ export interface ModelInfo {
 export type AgentId = 'main' | `worker:${string}` | `member:${string}`;
 
 export type ServerEvent =
-  | { type: 'hello'; settings: Settings; sessions: SessionSummary[]; session: Session | null; models: ModelInfo[] }
+  | {
+      type: 'hello';
+      settings: Settings;
+      sessions: SessionSummary[];
+      session: Session | null;
+      models: ModelInfo[];
+      /** Built-in tools this install can't run (e.g. terminal_* without node-pty) and why. */
+      unavailableTools?: Partial<Record<ToolName, string>>;
+    }
   | { type: 'session'; session: Session }
   | { type: 'sessions'; sessions: SessionSummary[] }
   | { type: 'settings'; settings: Settings }

@@ -36,6 +36,28 @@ function loadPty(): typeof import('node-pty') {
   return require('node-pty') as typeof import('node-pty');
 }
 
+/** What the user should do when the terminal tools are unavailable (shown in Settings → Capabilities). */
+export const PTY_UNAVAILABLE_NOTE = 'Persistent terminals need node-pty: install build tools, then run `npm rebuild node-pty`. shell_run keeps working.';
+
+let ptyCheck: { ok: boolean; error?: string } | null = null;
+
+/**
+ * node-pty is an optional dependency (it has no Linux prebuilt binary, so `npm ci` must not fail without it).
+ * Probed once, lazily; when it is missing the terminal_* tools are hidden from the model and Settings says why.
+ */
+export function ptyAvailable(): { ok: boolean; error?: string } {
+  if (ptyCheck) return ptyCheck;
+  try {
+    loadPty();
+    ptyCheck = { ok: true };
+  } catch (e) {
+    ptyCheck = { ok: false, error: (e as Error).message.split('\n')[0].slice(0, 200) };
+  }
+  return ptyCheck;
+}
+
+export const TERMINAL_TOOLS = new Set<string>(['terminal_open', 'terminal_send', 'terminal_read', 'terminal_close']);
+
 const ANSI = /[\u001b\u009b][[()#;?]*(?:[0-9]{1,4}(?:;[0-9]{0,4})*)?[0-9A-ORZcf-nqry=><]/g;
 function clean(s: string): string {
   return s.replace(ANSI, '').replace(/\r/g, '');
@@ -68,7 +90,7 @@ export const terminal_open: ToolDef = {
     try {
       pty = loadPty();
     } catch (e) {
-      return fail(`node-pty unavailable: ${(e as Error).message}. Use shell_run instead.`);
+      return fail(`node-pty unavailable: ${(e as Error).message}. ${PTY_UNAVAILABLE_NOTE}`);
     }
     const id = `term${++counter}`;
     const proc = pty.spawn(SHELL, ['-l'], {

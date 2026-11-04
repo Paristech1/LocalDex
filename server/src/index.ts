@@ -18,7 +18,8 @@ import { listModels, reloadModel } from './lmstudio.js';
 import { createSession, deleteSession, flushAll, getSession, listSessions, saveSession } from './store.js';
 import { bus } from './agent/bus.js';
 import { dropRunner, runnerFor } from './agent/runner.js';
-import { closeAllTerminals } from './tools/terminal.js';
+import { PTY_UNAVAILABLE_NOTE, closeAllTerminals, ptyAvailable } from './tools/terminal.js';
+import { unavailableTools } from './tools/index.js';
 import { closeAllMcp, mcpStatuses, reloadMcp } from './mcp/client.js';
 import { LIMITS, listSkills, removeSkill, setSkillEnabled } from './skills/store.js';
 import { BIND_HOST, checkRequest, checkUpgrade } from './security.js';
@@ -139,6 +140,7 @@ const server = serve({ fetch: app.fetch, port: PORT, hostname: BIND_HOST }, () =
   console.log(`LocalDex server  →  http://localhost:${PORT}${BIND_HOST === '127.0.0.1' ? '' : `  (listening on ${BIND_HOST})`}${webDist ? '' : '  (API only; UI dev server on :5173)'}`);
   console.log(`Data dir         →  ${DATA_DIR}`);
   console.log(`LM Studio        →  ${getSettings().baseUrl}`);
+  if (!ptyAvailable().ok) console.log(`Terminals        →  unavailable. ${PTY_UNAVAILABLE_NOTE}`);
   void reloadMcp();
   // Builder copies applied or discarded more than a week ago, and waiting copies whose session or run is gone.
   // Loading every session first also cancels runs a previous server left "running".
@@ -197,7 +199,7 @@ async function refreshModels(): Promise<void> {
 wss.on('connection', (ws) => {
   const sessions = listSessions();
   const current = sessions[0] ? getSession(sessions[0].id) : null;
-  send(ws, { type: 'hello', settings: getSettings(), sessions, session: current, models: modelsCache });
+  send(ws, { type: 'hello', settings: getSettings(), sessions, session: current, models: modelsCache, unavailableTools: unavailableTools() });
   send(ws, { type: 'mcp_status', servers: mcpStatuses() });
   send(ws, { type: 'skills', skills: listSkills() });
   const cached = cachedStatuses();

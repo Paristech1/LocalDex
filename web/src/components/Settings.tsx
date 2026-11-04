@@ -268,15 +268,24 @@ function ReloadModel({ settings, patch }: TabProps) {
 }
 
 function CapabilitiesTab({ settings, patch }: TabProps) {
+  const unavailable = useStore((s) => s.unavailableTools);
+  const terminalsOff = ALL_TOOL_NAMES.some((n) => n.startsWith('terminal_') && unavailable[n]);
   return (
     <>
       <div>
         <h3 className="font-medium">Tools available to the model</h3>
         <p className="text-xs text-ink-400 mt-1">Disable anything you don't want the agent to be able to do. Fewer tools also make small local models more reliable at tool calling.</p>
       </div>
+      {terminalsOff && (
+        <div className="text-xs text-warn bg-warn/10 border border-warn/30 rounded-md px-3 py-2">
+          Persistent terminals need <span className="font-mono">node-pty</span>, which is not installed on this machine: install build tools, then run <span className="font-mono">npm rebuild node-pty</span>. The terminal_* tools are hidden from the model until then; <span className="font-mono">shell_run</span> keeps working.
+        </div>
+      )}
       <div className="grid grid-cols-2 gap-x-6">
         {ALL_TOOL_NAMES.map((name) => (
-          <Toggle key={name} label={name} checked={settings.capabilities[name] !== false} onChange={(v) => patch({ capabilities: { ...settings.capabilities, [name]: v } })} />
+          <div key={name} className={unavailable[name] ? 'opacity-50' : undefined} title={unavailable[name]}>
+            <Toggle label={unavailable[name] ? `${name} (unavailable)` : name} checked={settings.capabilities[name] !== false} onChange={(v) => patch({ capabilities: { ...settings.capabilities, [name]: v } })} />
+          </div>
         ))}
       </div>
     </>

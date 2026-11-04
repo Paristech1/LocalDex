@@ -54,8 +54,8 @@ Each task lists **Why** (the evidence), **Where** (files), **Borrow** (the DeepS
 | Phase | ID | Task | Pri | Effort | Status |
 |---|---|---|---|---|---|
 | 0 | H1 | Merge the drifted branches into `dev/roadmap` | P0 | M | ✅ done: PR #2 and #3 merged to `main` |
-| 0 | H2 | CI workflow + LICENSE + THIRD_PARTY_NOTICES | P0 | S |
-| 0 | H3 | Make `node-pty` optional (Linux install) | P1 | S |
+| 0 | H2 | CI workflow + LICENSE + THIRD_PARTY_NOTICES | P0 | S | ✅ done |
+| 0 | H3 | Make `node-pty` optional (Linux install) | P1 | S | ✅ done |
 | 1 | F1 | Fix risk-classifier false positives + per-message override | P0 | S |
 | 1 | F2 | Goal/Loop should follow Council mode | P0 | M |
 | 1 | F3 | Reviewer grounding gate (no tool calls → no verdict) | P0 | S |

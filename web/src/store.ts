@@ -11,6 +11,7 @@ import type {
   ServerEvent,
   SkillInfo,
   Session,
+  ToolName,
   SessionSummary,
   Settings,
 } from '@localdex/shared';
@@ -56,6 +57,8 @@ export interface State {
   logs: LogEntry[];
   mcp: McpServerStatus[];
   skills: SkillInfo[];
+  /** Built-in tools this install can't run, with the reason (from hello). */
+  unavailableTools: Partial<Record<ToolName, string>>;
   council: MemberStatus[];
   councilStats: CouncilStats | null;
   councilLogin: { member: MemberId; url?: string; done?: boolean; error?: string; needsCode?: boolean } | null;
@@ -75,6 +78,7 @@ let state: State = {
   logs: [],
   mcp: [],
   skills: [],
+  unavailableTools: {},
   council: [],
   councilStats: null,
   councilLogin: null,
@@ -158,7 +162,7 @@ function liveFor(live: Record<string, LiveAgent>, agent: string): LiveAgent {
 function handle(ev: ServerEvent): void {
   switch (ev.type) {
     case 'hello':
-      set({ settings: ev.settings, sessions: ev.sessions, session: ev.session, models: ev.models, live: {}, status: {}, prompts: [] });
+      set({ settings: ev.settings, sessions: ev.sessions, session: ev.session, models: ev.models, unavailableTools: ev.unavailableTools ?? {}, live: {}, status: {}, prompts: [] });
       if (!ev.session) newSession();
       return;
     case 'session': {

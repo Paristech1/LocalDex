@@ -42,6 +42,10 @@ Browser (React UI)  <-- WebSocket -->  LocalDex server (Node)  -->  LM Studio :1
 - Node.js 20+ (tested on 24)
 - LM Studio with the local server running (`lms server start` or Developer → Start Server)
 - A chat model loaded (or JIT loading enabled). See *Choosing a model* below.
+- Optional: `node-pty` for the persistent `terminal_*` tools. It installs automatically on macOS and Windows (prebuilt binaries).
+  On Linux it needs build tools (`python3`, `make`, a C++ compiler); without them `npm install` still succeeds, the terminal tools
+  are hidden from the model, and Settings → Capabilities says so. To enable them later: install the build tools, then `npm rebuild node-pty`.
+  `shell_run` works either way.
 
 ## Quick start
 
