@@ -2,7 +2,7 @@
 
 > **Who this is for:** a coding agent working through this plan for Paris.
 > **What it covers:** fixes and features for LocalDex. Some come from an audit of the LocalDex code. Others come from a review of DeepSeek Harness (`deepseek-ai/deepseek-harness`, MIT).
-> **Update:** H1 (branch merge) and F5 (Playwright hardening) are already on `main`. **2026-11-04 (cloud agent):** tasks through **U6, C1–C4, S1–S2, F1–F4, A1–A2, A4–A5, U2** landed on integration branch `cursor/dev-roadmap-5d28` and were merged to `main` at Paris's request. **Next agent:** start from `main`; pick up at **S3** (or **U1 / E1 / E4** by priority). Branch naming on that run used `cursor/<slug>-5d28` instead of `feat/<id>-slug` off `dev/roadmap` — either convention is fine if PRs stay off `main` until review.
+> **Status (2026-11-04, end of day): all 36 tasks are done and on `main`.** First pass (Cursor agent): H2–H3, F1–F4, C1–C4, S1–S2, U6, A1–A2, A4–A5, U2. Second pass (Claude): S3–S5, A3, A6–A8, U1, U3–U5, E1–E6, plus an H3 follow-up (typecheck without node-pty). Section 11 has the notes for whoever works on LocalDex next. The plugin system stays parked (section 9).
 > **Written:** 2026-11-04. Audited branch: `fix/local-model-tool-calls` @ `b0feac1`. DeepSeek Harness reviewed @ `fcc0ad46` (v0.2.2-rc.1).
 
 ---
@@ -90,7 +90,7 @@ Each task lists **Why** (the evidence), **Where** (files), **Borrow** (the DeepS
 | 6 | E4 | Model doctor (tool-calling probe + context-size advice) | P1 | M | ✅ done |
 | 6 | E5 | Scheduled goal runs | P3 | M | ✅ done |
 | 6 | E6 | Voice input (local speech-to-text) | P3 | M | ✅ done |
-Suggested order (remaining): **S3 → U1 → E1 → E4 → S4 → A6 → U4 → U5 → …** by priority column. Completed on `main`: H2–H3, F1–F4, C1–C4, S1–S2, U6, A1–A2, A4–A5, U2.
+**Everything in this table is done.** For what comes next, see section 11.
 
 **Solo `/plan` vs Council `/plan`:** In **Solo** mode, `/plan <task>` starts enforced read-only **plan mode** (A4) until Approve & run. In **Council** mode, `/plan …` is unchanged: a single-member **planner** turn with session continue — do not route Council `/plan` through `session.planMode`.
 
@@ -370,45 +370,50 @@ When a sandboxed command fails with a write denial, show "Command was blocked by
 
 ---
 
-## 11. Handoff for the next agent (2026-11-04)
+## 11. Handoff for the next agent (2026-11-04, after the second pass)
 
-### Done on `main` (this integration)
+### What's on `main` now
 
-| Area | IDs | Notes |
+| Area | Tasks | Where to look |
 |---|---|---|
-| Fixes | F1–F4 | Risk classifier + Not risky; council-led goals; reviewer grounding; diff budget |
-| Context | C1–C4, U6 | Spill, prune-before-summarize, stable system prefix + clock line, project instructions, LM Studio retry |
-| Safety / undo | S1–S2 | Read-before-edit; turn checkpoints + Undo |
-| Agent | A1–A2, A4–A5 | `web_fetch` / `web_search` (off by default); background jobs; solo plan mode; goal tools + fresh-context rounds |
-| UX | U2 | Stats tab (TTFT, tok/s, model vs tool time) |
+| Fixes | F1–F5 | `council/router.ts` (risk), `agent/runner.ts` (council-led goals), `council/orchestrator.ts` (grounding, diff budget) |
+| Context budget | C1–C4, U6 | `spill.ts`, `agent/compact.ts`, `agent/prompts.ts`, `agent/instructions.ts`, `lmstudio.ts` (retry) |
+| Safety | S1–S5 | `tools/readTracker.ts`, `checkpoints.ts`, `sandbox.ts` (Seatbelt/bwrap + presets), `autoReview.ts`, `hooks.ts` |
+| Agent | A1–A8 | `tools/web.ts`, `jobs.ts`, `lsp.ts` + `tools/lspTool.ts`, `agent/planMode.ts`, `tools/goalTools.ts`, `fileMentions.ts`, `attachments.ts` + `tools/image.ts`, `tools/editStyles.ts` |
+| Sessions/UX | U1–U6 | `sessionTools.ts` (search/export/titles), `feedback.ts`, `fork.ts`, `web/src/slash.ts`, `agent/stats.ts` |
+| Ecosystem | E1–E6 | `mcp/gallery.ts`, `cli.ts` + `server/bin/localdex.mjs`, `council/forge.ts`, `doctor.ts`, `schedule.ts`, `voice.ts` |
 
-**Gates (last run):** `npm run typecheck` · `npm run test:local -w server` → **196 passed** · `npm run test:council -w server` → **322 passed**.
+**Gates at hand-off:** `npm run typecheck` ✓ (also on Linux without node-pty) · `npm run test:local -w server` → **342 passed** · `npm run test:council -w server` → **322 passed** · `npm run build -w web` ✓. The UI was also clicked through in Chrome against a stand-in LM Studio: chat, `/` palette, `@` mentions, search, Settings (Permissions, MCP gallery, edit style, model doctor), Goal schedules. No console errors.
 
-**DeepSeek Harness patterns reimplemented (add to PR notes if you touch them):** spill-policy, fs-observation-policy, workspace-changes, compaction-tool-result-pruner, time-context, agent-instructions, llm-retry, plan/plan-mode, goal/tool-goal, experimental/tool-ralph (fresh rounds), jobs/*, web/tool-web + web-fetch-http.
+### Things only Paris's machine can confirm
 
-**Security called out in code/docs:** C1 read-only spill path for `read_file` / `grep` under `~/.localdex/spill/`; `web_fetch` untrusted `<web_result>` wrapper; plan mode read-only shell classifier.
+1. **Seatbelt** (S3): tested for real with bubblewrap on Linux; macOS `sandbox-exec` is covered by the same tests on CI's macOS runner. Try the Workspace preset with a real `npm install` to make sure the cache folders in `sandbox.ts` cover your tools.
+2. **C3 / U2 timings**: TTFT with a stable prompt prefix needs real LM Studio. Watch the Stats tab.
+3. **Model doctor** (E4): run it on Gemma 4 12B and the other models you use; the suggestions are rules of thumb.
+4. **Voice** (E6): needs `brew install whisper-cpp ffmpeg` and a model in `~/.localdex/models/`.
+5. **Open PR** (E3): needs `gh auth login`. Tested against a fake `gh` and a local bare repo.
+6. **Blender gallery entry** (E1): uses `uvx blender-mcp@2.0.0` (ahujasid). The Blender MCP on your Mac may be a different server; if so, keep your own entry in `config.json`.
 
-**Not measured in CI:** C3 TTFT / KV-cache effect (no LM Studio in the VM).
+### Pitfalls
 
-### Still open (section 1 table)
+1. **Council suite takes ~4.5 min.** The local suite takes about 40 s (it now spawns the CLI, a fake MCP server, git repos, ffmpeg).
+2. **`enabledTools` filters** (tools/index.ts): plan mode, goal, jobs, `web_search` URL, node-pty, vision (`read_image`), Read only preset, **edit style per model** (exactly one of edit_file+write_file / apply_patch / str_replace_editor). Pass `{ model }` when building a tool list for a run.
+3. **Config-file-only settings** (the socket strips them): `mcpServers` commands, council member commands, `sandboxExtraWritable`, `lspServers`, `voice`. Keep it that way: each one starts a program or widens the sandbox.
+4. **Tests that call the model** must set `autoTitle: false` (already in both `run.sh` configs), or the title call eats a scripted reply.
+5. **`pkill -f <pattern>`** in a shell whose own command line contains the pattern kills that shell. Kill by PID.
+6. **Linux without build tools**: `npm ci` works; terminals are reported unavailable.
 
-Priority **P1** next: **S3** (shell sandbox + presets), **U1** (session search/rename/export), **E1** (MCP gallery UI), **E4** (model doctor).
+### Ideas for a next round (not started)
 
-Then P2: S4, A3, A6, A7, U3–U5, E2–E3. P3: S5, A8, E5–E6.
-
-### Pitfalls from this integration
-
-1. **`/plan`:** Solo → A4 plan mode; Council → `parseCommand` planner route. Regression test: council suite section 25 (member session continue).
-2. **Council suite ~4 min** — run in tmux or with patience; local suite ~6 s.
-3. **`enabledTools` filters:** `planMode`, `goal`, `jobs`, `web_search` (needs `webSearchUrl`).
-4. **Commits:** one commit per task on `cursor/dev-roadmap-5d28`; future work can use `feat/<id>-<slug>` off `main`.
+- The parked **plugin system** (design in git history at `15ed621`).
+- Run the **model doctor's edit checks with the selected edit style** (A8), so the doctor can recommend a style per model.
+- **Auto-review** (S4) could learn from your approve/deny history per command pattern.
+- **Scheduled goals** (E5) could send a desktop notification when a run finishes or waits for approval.
 
 ### Start here
 
 ```bash
 git checkout main && git pull
-npm ci   # or npm ci --ignore-scripts on Linux without build tools
+npm ci   # Linux without build tools: also fine now (node-pty optional)
 npm run typecheck && npm run test:local -w server && npm run test:council -w server
 ```
-
-Read `README.md` for user-visible behavior added in this batch. Tick section 1 and update README when you finish the next task.
