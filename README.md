@@ -121,7 +121,7 @@ program on your machine.
 "mcpServers": {
   "playwright": {
     "command": "npx",
-    "args": ["-y", "@playwright/mcp@latest", "--headless", "--isolated"],
+    "args": ["-y", "@playwright/mcp@0.0.84", "--browser", "chrome", "--sandbox", "--headless", "--isolated"],
     "enabled": true,
     "allowTools": ["browser_navigate", "browser_snapshot", "browser_click", "browser_type"],
     "approval": "once",
@@ -240,5 +240,9 @@ web/      Vite + React + Tailwind UI
 - Paths such as `~/.ssh`, `~/.aws`, `.env*` and key files are blocked even inside approved folders.
 - Nothing is sent anywhere except your LM Studio server, plus whatever MCP servers you enable (a browser server
   makes web requests). Playwright MCP is not a security boundary; do not pass `--allow-unrestricted-file-access`.
+- The Playwright server drives your installed Google Chrome (`--browser chrome`) with the sandbox on (`--sandbox`).
+  Keep Chrome updated (`chrome://settings/help`). Don't switch it to `--browser chromium` or add `--no-sandbox`:
+  Playwright's bundled Chromium can lag Chrome security fixes (Playwright 1.64.1 bundles 156.0.8078.4, without the
+  fixes for CVE-2026-118306, -118331, -118344 and -118348). Older stock configs are upgraded automatically on start.
 
 MIT. Not affiliated with LM Studio or the Chat On Steroids project.

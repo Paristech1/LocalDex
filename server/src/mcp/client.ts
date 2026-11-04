@@ -216,6 +216,16 @@ function dropTools(conn: Conn): void {
   conn.tools = [];
 }
 
+/** Flag Playwright MCP args that run the bundled (possibly outdated) Chromium or turn the sandbox off. */
+function warnUnsafePlaywright(name: string, args: string[]): void {
+  if (!args.some((a) => a.startsWith('@playwright/mcp'))) return;
+  const browserIdx = args.indexOf('--browser');
+  const browser = browserIdx >= 0 ? args[browserIdx + 1] : args.find((a) => a.startsWith('--browser='))?.split('=')[1];
+  if (args.includes('--no-sandbox')) bus.log('warn', `[mcp:${name}] --no-sandbox is set: a browser bug could run code as your user.`);
+  if (!browser || browser === 'chromium')
+    bus.log('warn', `[mcp:${name}] no '--browser chrome': Playwright may use its bundled Chromium, which can lag Chrome security fixes.`);
+}
+
 async function connectOne(name: string, cfg: McpServerConfig): Promise<void> {
   const conn: Conn = {
     name,
@@ -231,6 +241,7 @@ async function connectOne(name: string, cfg: McpServerConfig): Promise<void> {
   conns.set(name, conn);
   emitStatus();
   bus.log('info', `[mcp:${name}] starting: ${cfg.command} ${(cfg.args ?? []).join(' ')}`);
+  warnUnsafePlaywright(name, cfg.args ?? []);
 
   const client = new Client({ name: 'localdex', version: '0.1.0' });
   conn.client = client;

@@ -640,6 +640,19 @@ export const DEFAULT_CAPABILITIES: Record<ToolName, boolean> = {
   council: true,
 };
 
+/**
+ * Stock Playwright MCP launch args.
+ * - `--browser chrome` drives the installed Google Chrome, which auto-updates. Never fall back to Playwright's bundled
+ *   Chromium: Playwright 1.64.1 bundles 156.0.8078.4, which lacks the fixes for CVE-2026-118306/-118331/-118344/-118348
+ *   (fixed in Chrome 156.0.8078.73).
+ * - `--sandbox` keeps Chromium's sandbox on.
+ * - The package is pinned so a new release can't change what runs on this machine without a LocalDex update.
+ */
+export const PLAYWRIGHT_MCP_ARGS = ['-y', '@playwright/mcp@0.0.84', '--browser', 'chrome', '--sandbox', '--headless', '--isolated'];
+
+/** Earlier stock args, upgraded to PLAYWRIGHT_MCP_ARGS on load. Only exact matches are touched; custom args are left alone. */
+export const LEGACY_PLAYWRIGHT_MCP_ARGS = [['-y', '@playwright/mcp@latest', '--headless', '--isolated']];
+
 export const DEFAULT_SETTINGS: Settings = {
   baseUrl: 'http://localhost:1234/v1',
   model: null,
@@ -659,7 +672,7 @@ export const DEFAULT_SETTINGS: Settings = {
   mcpServers: {
     playwright: {
       command: 'npx',
-      args: ['-y', '@playwright/mcp@latest', '--headless', '--isolated'],
+      args: PLAYWRIGHT_MCP_ARGS,
       enabled: false,
       allowTools: [
         'browser_navigate',

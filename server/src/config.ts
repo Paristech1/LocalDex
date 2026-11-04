@@ -6,6 +6,8 @@ import {
   DEFAULT_COUNCIL,
   DEFAULT_SETTINGS,
   DEFAULT_CAPABILITIES,
+  LEGACY_PLAYWRIGHT_MCP_ARGS,
+  PLAYWRIGHT_MCP_ARGS,
   MEMBER_IDS,
   type CouncilSettings,
   type Settings,
@@ -27,10 +29,22 @@ function load(): Settings {
       ...raw,
       capabilities: { ...DEFAULT_CAPABILITIES, ...(raw.capabilities ?? {}) },
       council: mergeCouncil(DEFAULT_COUNCIL, raw.council),
+      mcpServers: migrateMcpServers(raw.mcpServers ?? DEFAULT_SETTINGS.mcpServers),
     };
   } catch {
     return { ...DEFAULT_SETTINGS };
   }
+}
+
+/**
+ * Upgrade the stock Playwright entry from older config files to the hardened args (installed Chrome, sandbox on,
+ * pinned package). Only args that exactly match an old stock default are replaced, so hand-edited entries stay as written.
+ */
+export function migrateMcpServers(servers: Settings['mcpServers']): Settings['mcpServers'] {
+  const pw = servers?.playwright;
+  if (!pw || !Array.isArray(pw.args)) return servers;
+  const isLegacy = LEGACY_PLAYWRIGHT_MCP_ARGS.some((old) => old.length === pw.args!.length && old.every((a, i) => a === pw.args![i]));
+  return isLegacy ? { ...servers, playwright: { ...pw, args: [...PLAYWRIGHT_MCP_ARGS] } } : servers;
 }
 
 /** Deep-merge a (partial) council patch so older config files and partial UI patches keep every field. */
