@@ -1,7 +1,7 @@
 import os from 'node:os';
 import { projectInstructions } from './instructions.js';
 import { getSettings } from '../config.js';
-import { enabledTools, type ToolSetOptions } from '../tools/index.js';
+import { editStyleFor, enabledTools, type ToolSetOptions } from '../tools/index.js';
 import { approvedFolders } from '../tools/permissions.js';
 import { mcpPromptNotes } from '../mcp/client.js';
 import { skillsPromptNotes } from '../skills/store.js';
@@ -44,12 +44,24 @@ function toolList(kind: 'main' | 'worker', opts: ToolSetOptions = {}): string {
 const SHARED_RULES = `Working rules:
 - Use tools to inspect before you change anything. Read a file before editing it: edit_file and write_file refuse files you have not read (or that changed since), and the refusal tells you what to do.
 - Every action on files or the shell must be a real tool call; never just describe or print code that "would" do it. Never claim a result you did not observe in a tool result.
-- Prefer edit_file for small changes and write_file for new files or rewrites.
+EDIT_RULE
 - Run commands with shell_run; use terminal_* only for long-lived processes.
 - Keep going until the task is actually finished and verified (run tests/builds when relevant). Do not stop to ask whether to proceed on routine steps.
 - Use ask_user only when a decision genuinely requires the user.
 - When done, reply with a concise summary of what changed and anything the user must do next.
 - Paths outside the approved folders are blocked; do not try to work around that.`;
+
+/** A8: the edit rule matches the edit tools the model actually has. */
+function rules(model?: string | null): string {
+  const style = editStyleFor(model);
+  const line =
+    style === 'apply_patch'
+      ? '- Change files with apply_patch (Update File for edits, Add File for new files); copy context lines exactly from what you read.'
+      : style === 'str_replace_editor'
+        ? '- Change files with str_replace_editor: view, then str_replace (unique old_str) for edits, create for new files, insert to add lines.'
+        : '- Prefer edit_file for small changes and write_file for new files or rewrites.';
+  return SHARED_RULES.replace('EDIT_RULE', line);
+}
 
 export function mainSystemPrompt(opts: ToolSetOptions = {}): string {
   const custom = getSettings().systemPrompt.trim();
@@ -57,7 +69,7 @@ export function mainSystemPrompt(opts: ToolSetOptions = {}): string {
     `You are LocalDex, a local coding agent running on the user's machine with access to their files and terminal through tools.`,
     environment(),
     toolList('main', opts),
-    SHARED_RULES,
+    rules(opts.model),
     mcpPromptNotes('main'),
     skillsPromptNotes(),
     `Planning: for multi-step work, call update_plan first with the steps, then keep it current as you progress.`,
@@ -93,7 +105,7 @@ export function workerSystemPrompt(name: string): string {
     `You are "${name}", a worker agent delegated a task by the lead LocalDex agent. You have the same file and shell tools. Complete the task fully, then reply with a report: what you did, files touched, verification results, and any problems. Do not ask the lead agent questions; make reasonable decisions and state them in the report.`,
     environment(),
     toolList('worker'),
-    SHARED_RULES,
+    rules(),
     mcpPromptNotes('worker'),
     skillsPromptNotes(),
     projectInstructions(),

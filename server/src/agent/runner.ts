@@ -70,7 +70,7 @@ export class SessionRunner {
 
   private toolSet() {
     const model = this.session.model ?? getSettings().model;
-    return { planMode: this.planning, goal: this.goalToolsOn, jobs: hasJobs(this.session.id), vision: !!model && isVisionModel(model) };
+    return { planMode: this.planning, goal: this.goalToolsOn, jobs: hasJobs(this.session.id), vision: !!model && isVisionModel(model), model };
   }
 
   get running(): boolean {

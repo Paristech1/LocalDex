@@ -377,6 +377,10 @@ Also useful on small machines: **Settings → Model & Agent → Context window �
 
 Run the recovery tests (a mock LM Studio replays each failure above) with `npm run test:local -w server`.
 
+### Edit tools per model
+
+**Settings → Model & Agent → Edit tools for <model>**: some fine-tunes were trained on one specific way of editing files. Choose between `edit_file` + `write_file` (default), **`apply_patch`** (Codex-style `*** Begin Patch / *** Update File / @@ / -old / +new / *** End Patch`; context lines may differ in trailing spaces), or **`str_replace_editor`** (Claude-Code-style `view` / `create` / `str_replace` / `insert`). The model is shown exactly one style, and the system prompt matches it. All three go through the same file code, so read-before-edit, checkpoints with Undo and the Read only preset apply. Try the default first and switch if edits keep failing for that model.
+
 ### Model doctor
 
 **Settings → Model & Agent → Run model doctor** checks how well the selected model works as an agent before you rely on it. It sends six scripted checks in each tool protocol (native and text): calls a tool, picks the right tool, keeps multi-line file content intact, makes an edit that actually lands, stays honest when a tool fails (doesn't invent an answer), and stops when the task is done. Then a short speed test (first-token time, tokens/s). Every check is one request with a made-up conversation, so nothing touches your files or runs a command.

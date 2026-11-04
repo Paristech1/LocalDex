@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { ALL_TOOL_NAMES, type McpGalleryEntry, type McpServerStatus, type PermissionPreset, type ReasoningMode, type Settings, type ShellApprovalMode, type ToolMode } from '@localdex/shared';
+import { ALL_TOOL_NAMES, type EditStyle, type McpGalleryEntry, type McpServerStatus, type PermissionPreset, type ReasoningMode, type Settings, type ShellApprovalMode, type ToolMode } from '@localdex/shared';
 import { send, useStore } from '../store';
 import { collectDropped, fromInput, importGithub, removeSkill, setSkillEnabled, summarize, uploadSkills, type UploadEntry } from '../skills';
 import { Button, Field, Toggle, cx, inputCls, timeAgo } from './ui';
@@ -272,6 +272,15 @@ function ModelTab({ settings, patch, models }: TabProps & { models: string[] }) 
           <input type="number" min={1} max={8} className={inputCls} value={settings.workerConcurrency} onChange={(e) => patch({ workerConcurrency: Number(e.target.value) })} />
         </Field>
       </div>
+      {settings.model && (
+        <Field label={`Edit tools for ${settings.model}`} hint="Some fine-tunes were trained on one way of editing files. Pick the one this model handles best (the model doctor's edit checks use edit_file). Read-before-edit, Undo and the Read only preset apply to all three.">
+          <select className={inputCls} value={settings.editStyle?.[settings.model] ?? 'edit_file'} onChange={(e) => patch({ editStyle: { ...(settings.editStyle ?? {}), [settings.model!]: e.target.value as EditStyle } })}>
+            <option value="edit_file">edit_file + write_file (default)</option>
+            <option value="apply_patch">apply_patch (Codex-style patches)</option>
+            <option value="str_replace_editor">str_replace_editor (Claude-Code-style)</option>
+          </select>
+        </Field>
+      )}
       <ReloadModel settings={settings} patch={patch} />
       <ModelDoctor settings={settings} patch={patch} />
     </>

@@ -132,7 +132,7 @@ async function runWith(steps: Step[], prompt: string, model = 'gemma-mock') {
   script = [...steps];
   const messages: any[] = [{ role: 'system', content: 'You are a test agent.' }, { role: 'user', content: prompt }];
   const ac = new AbortController();
-  const res = await runLoop({ sessionId: 't', agent: 'main', model, messages, tools: enabledTools('main'), signal: ac.signal, maxSteps: 20, updatePlan: (s: any[]) => (plan = s) });
+  const res = await runLoop({ sessionId: 't', agent: 'main', model, messages, tools: enabledTools('main', { model }), signal: ac.signal, maxSteps: 20, updatePlan: (s: any[]) => (plan = s) });
   return { res, messages, leftover: script.length };
 }
 const toolResults = (messages: any[]) => messages.filter((m) => m.role === 'tool');
@@ -1558,6 +1558,42 @@ console.log('\n# AK. Hooks: PreToolUse blocks, PostToolUse feedback, UserPromptS
   check('Stop: a blocking Stop hook gets one more turn with its reason', hs.messages.some((m: any) => /Your hook asked to keep going: also update the changelog/.test(m.content)) && hs.messages.at(-1)?.content === 'Changelog updated too.', JSON.stringify(hs.messages.slice(-3).map((m: any) => String(m.content).slice(0, 50))));
   updateSettings({ hooksSource: 'off' });
   void stopCount;
+}
+
+// ---------- AL: Selectable edit format (A8) ----------
+console.log('\n# AL. Edit styles: apply_patch and str_replace_editor');
+{
+  const es = await import(`${SRC}/tools/editStyles.ts`);
+  const { editStyleFor } = await import(`${SRC}/tools/index.ts`);
+  const patchText = '*** Begin Patch\n*** Update File: p.py\n@@ def f\n def f():\n-    return 1\n+    return 2\n*** Add File: q.py\n+print("q")\n*** End Patch';
+  const ops = es.parsePatch(patchText);
+  check('parse: update + add with hunks', ops.length === 2 && ops[0].kind === 'update' && ops[0].hunks![0].join('|') === ' def f():|-    return 1|+    return 2' && ops[1].lines![0] === 'print("q")');
+  check('parse: malformed patches are refused', (() => { try { es.parsePatch('*** Update File: x'); return false; } catch { return true; } })());
+  check('hunks: forgive trailing whitespace, keep the final newline', es.applyHunks('a\nb  \nc\n', [[' a', '-b', '+B', ' c']]) === 'a\nB\nc\n');
+  check('hunks: a hunk that does not match is refused with its first line', (() => { try { es.applyHunks('x\n', [['-nope', '+y']]); return false; } catch (e) { return /does not match.*nope/.test((e as Error).message); } })());
+
+  updateSettings({ editStyle: { 'gemma-mock': 'apply_patch' } });
+  const names = enabledTools('main', { model: 'gemma-mock' }).map((t: any) => t.function.name);
+  check('apply_patch style: only apply_patch is offered for that model', names.includes('apply_patch') && !names.includes('edit_file') && !names.includes('write_file') && !names.includes('str_replace_editor') && editStyleFor('other') === 'edit_file', names.join(','));
+  fs.writeFileSync(path.join(DEMO, 'p.py'), 'def f():\n    return 1\n');
+  let r = await runWith([textCalls({ name: 'apply_patch', arguments: { patch: patchText } }), say('patched')], 'patch it');
+  check('read-before-edit still applies to apply_patch', /has not been read/.test(toolResults(r.messages)[0].content) && read('p.py').includes('return 1'), toolResults(r.messages)[0].content.slice(0, 200));
+  r = await runWith([textCalls({ name: 'read_file', arguments: { path: 'p.py' } }), textCalls({ name: 'apply_patch', arguments: { patch: patchText } }), say('patched')], 'patch it after reading');
+  check('apply_patch: updates and adds files', read('p.py') === 'def f():\n    return 2\n' && read('q.py') === 'print("q")\n' && /Patch applied: updated p\.py; added q\.py/.test(toolResults(r.messages)[1].content), toolResults(r.messages)[1].content);
+
+  updateSettings({ editStyle: { 'gemma-mock': 'str_replace_editor' } });
+  fs.writeFileSync(path.join(DEMO, 's.txt'), 'one\ntwo\n');
+  r = await runWith([
+    textCalls({ name: 'str_replace_editor', arguments: { command: 'view', path: 's.txt' } }),
+    textCalls({ name: 'str_replace_editor', arguments: { command: 'str_replace', path: 's.txt', old_str: 'two', new_str: 'TWO' } }),
+    textCalls({ name: 'str_replace_editor', arguments: { command: 'insert', path: 's.txt', insert_line: 0, new_str: 'zero' } }),
+    textCalls({ name: 'str_replace_editor', arguments: { command: 'create', path: 'new.txt', file_text: 'fresh\n' } }),
+    say('edited'),
+  ], 'edit s.txt');
+  check('str_replace_editor: view → str_replace → insert → create', read('s.txt') === 'zero\none\nTWO\n' && read('new.txt') === 'fresh\n', `${JSON.stringify(read('s.txt'))} ${toolResults(r.messages).map((m: any) => m.ok).join(',')}`);
+  updateSettings({ editStyle: {}, permissionPreset: 'read-only' });
+  check('Read only preset: no edit tool of any style', !enabledTools('main', { model: 'gemma-mock' }).some((t: any) => ['apply_patch', 'str_replace_editor', 'edit_file', 'write_file'].includes(t.function.name)));
+  updateSettings({ permissionPreset: 'full' });
 }
 
 server.close();

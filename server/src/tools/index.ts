@@ -1,4 +1,4 @@
-import type { ToolCall, ToolName, ToolSchema } from '@localdex/shared';
+import type { EditStyle, ToolCall, ToolName, ToolSchema } from '@localdex/shared';
 import { readOnlyPreset } from './fs.js';
 import { getSettings } from '../config.js';
 import { edit_file, glob, list_dir, read_file, write_file } from './fs.js';
@@ -13,6 +13,7 @@ import { job_kill, job_list, job_output } from './jobTools.js';
 import { web_fetch, web_search } from './web.js';
 import { read_image } from './image.js';
 import { lsp } from './lspTool.js';
+import { apply_patch, str_replace_editor } from './editStyles.js';
 import { enabledSkills } from '../skills/store.js';
 import { PermissionError } from './permissions.js';
 import { isMcpTool, mcpToolSchemas, runMcpTool } from '../mcp/client.js';
@@ -49,6 +50,8 @@ export const registry: ToolRegistry = {
   web_search,
   read_image,
   lsp,
+  apply_patch,
+  str_replace_editor,
 };
 /** Offered once the session has started a background job (shell_run with background: true). */
 export const JOB_TOOLS = new Set<ToolName>(['job_output', 'job_list', 'job_kill']);
@@ -65,7 +68,16 @@ export interface ToolSetOptions {
   jobs?: boolean;
   /** A7: the model accepts images, so read_image is shown. */
   vision?: boolean;
+  /** A8: the model the tools are for (picks its edit tool style). */
+  model?: string | null;
 }
+
+/** A8: the edit tool style for a model (Settings → Model & Agent). */
+export function editStyleFor(model?: string | null): EditStyle {
+  return (model && getSettings().editStyle?.[model]) || 'edit_file';
+}
+const EDIT_TOOLS: Record<EditStyle, ToolName[]> = { edit_file: ['edit_file', 'write_file'], apply_patch: ['apply_patch'], str_replace_editor: ['str_replace_editor'] };
+const ALL_EDIT_TOOLS = new Set<ToolName>(['edit_file', 'write_file', 'apply_patch', 'str_replace_editor']);
 
 /**
  * Tool schemas enabled for a given agent kind, honouring the user's capability toggles.
@@ -89,8 +101,8 @@ export function enabledTools(kind: 'main' | 'worker', opts: ToolSetOptions = {})
     .filter((name) => !opts.planMode || isPlanTool(name))
     // A7: only a vision model can look at an image.
     .filter((name) => name !== 'read_image' || !!opts.vision)
-    // Read only preset (S3): the write tools are off.
-    .filter((name) => !(readOnlyPreset() && (name === 'write_file' || name === 'edit_file')))
+    // A8: exactly one edit style is shown. Read only preset (S3): none.
+    .filter((name) => !ALL_EDIT_TOOLS.has(name) || (!readOnlyPreset() && EDIT_TOOLS[editStyleFor(opts.model)].includes(name)))
     .map((name) => registry[name].schema);
   return opts.planMode ? builtin : [...builtin, ...mcpToolSchemas(kind)];
 }

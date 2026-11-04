@@ -77,7 +77,7 @@ Each task lists **Why** (the evidence), **Where** (files), **Borrow** (the DeepS
 | 4 | A5 | Goal upgrades: goal tools, auto-block, fresh-context rounds | P1 | M | ✅ done |
 | 4 | A6 | `@file` mentions in the composer | P2 | S | ✅ done |
 | 4 | A7 | Image attachments + `read_image` | P2 | M | ✅ done |
-| 4 | A8 | Selectable edit format (`apply_patch` / `str_replace_editor`) | P3 | M |
+| 4 | A8 | Selectable edit format (`apply_patch` / `str_replace_editor`) | P3 | M | ✅ done (measure per model with the model doctor before recommending one) |
 | 5 | U1 | Sessions: search, rename, auto-title, export | P1 | M | ✅ done |
 | 5 | U2 | Stats tab (time to first token, tokens/s, model vs tool time) | P1 | M | ✅ done |
 | 5 | U3 | Message thumbs up/down feeding the scorecard | P2 | S | ✅ done |

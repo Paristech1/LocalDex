@@ -93,7 +93,9 @@ export type ToolName =
   | 'web_fetch'
   | 'web_search'
   | 'read_image'
-  | 'lsp';
+  | 'lsp'
+  | 'apply_patch'
+  | 'str_replace_editor';
 
 export const ALL_TOOL_NAMES: ToolName[] = [
   'read_file',
@@ -124,6 +126,8 @@ export const ALL_TOOL_NAMES: ToolName[] = [
   'web_search',
   'read_image',
   'lsp',
+  'apply_patch',
+  'str_replace_editor',
 ];
 
 export interface ToolSchema {
@@ -793,6 +797,9 @@ export type ShellApprovalMode = 'always' | 'dangerous' | 'never';
  */
 export type PermissionPreset = 'full' | 'workspace' | 'read-only';
 
+/** A8: which edit tools a model gets: edit_file + write_file (default), a Codex-style apply_patch, or a str_replace_editor. */
+export type EditStyle = 'edit_file' | 'apply_patch' | 'str_replace_editor';
+
 /** Which OS sandbox this machine can run (macOS Seatbelt, Linux bubblewrap). */
 export interface SandboxStatus {
   available: boolean;
@@ -860,6 +867,8 @@ export interface Settings {
   projectInstructions: boolean;
   /** After the first Solo run, the local model writes a short session title (one small call). Default on. */
   autoTitle: boolean;
+  /** A8: edit tool style per model id (absent = edit_file + write_file). */
+  editStyle?: Record<string, EditStyle>;
   /** A3: extra language servers for the lsp tool, keyed by file extension (".rb": { command, args }). Config file only. */
   lspServers?: Record<string, { command: string; args?: string[]; languageId?: string }>;
   /** SearXNG base URL for web_search (empty = no search provider). */
@@ -980,6 +989,8 @@ export const DEFAULT_CAPABILITIES: Record<ToolName, boolean> = {
   web_search: false,
   read_image: true,
   lsp: false,
+  apply_patch: true,
+  str_replace_editor: true,
 };
 
 /**
