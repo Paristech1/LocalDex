@@ -31,6 +31,13 @@ Browser (React UI)  <-- WebSocket -->  LocalDex server (Node)  -->  LM Studio :1
   Loop mode keeps working within a brief indefinitely. In Council mode the goal is **led by the
   council** by default: each iteration is a council turn and the checkpoint is a read-only council
   reviewer; the Goal panel's **Led by** picker switches between the local model and the council.
+- **Plan mode** – `/plan <task>` makes the agent explore and design first. It is enforced, not just
+  suggested: the write, terminal, worker and council tools are not offered (and refused if the
+  model calls them anyway), `shell_run` only runs read-only commands (`ls`, `cat`, `rg`, `git
+  status/log/diff`, `npm ls` …), and the run ends with an `update_plan` and a summary. A card under
+  the answer offers **Approve & run** (all tools come back and the plan is the brief), **Revise**
+  (feedback, still read-only) and **Cancel**. While a plan awaits approval, whatever you type is
+  feedback on it. Plan mode is stored with the session, so it survives a reload or a restart.
 - **Changed files + Undo this turn** – every Solo turn that touches files gets a card under the
   answer: the files with +/− counts, the diff on demand, and **Undo this turn**, which puts every
   listed file back to how it was when the turn started. Git folders are snapshotted at turn start
@@ -98,6 +105,10 @@ npm start            # http://localhost:7331
 | **Log** | Server events: tool-mode detection, recovered tool calls, goal checkpoints, errors. |
 
 Keyboard: `Enter` send, `Shift+Enter` newline, `Cmd/Ctrl+,` settings, `Esc` close.
+
+Slash commands in Solo: `/plan <task>` (plan first, read-only until approved). The council
+commands (`/ask`, `/build`, `/review`, `/vote`, `/arena` …) are listed under
+[Model council](#model-council-cloud-models-on-your-subscriptions).
 
 ## Settings
 

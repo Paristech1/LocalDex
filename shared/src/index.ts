@@ -176,6 +176,20 @@ export interface Session {
   memberSessions?: Partial<Record<MemberId, MemberSessionRef>>;
   /** Solo turns that changed files, oldest first (capped), with Undo. */
   turns?: TurnCheckpoint[];
+  /** `/plan` in progress: read-only tools until the user approves the plan (persisted, so it survives a reload). */
+  planMode?: PlanModeState;
+}
+
+/** Plan mode (A4): the agent explores and designs with read-only tools; the user approves, revises or cancels. */
+export interface PlanModeState {
+  task: string;
+  startedAt: number;
+  /** planning = the agent is working (or will, on the next run); review = waiting for Approve / Revise / Cancel. */
+  status: 'planning' | 'review';
+  /** The agent's closing summary, shown with the plan while it awaits approval. */
+  summary?: string;
+  /** Revision rounds so far. */
+  revisions: number;
 }
 
 /** One Solo turn's file changes, kept so the user can see the diff and undo it (last 20 turns). */
@@ -883,6 +897,9 @@ export type ClientEvent =
   | { type: 'clear_goal'; sessionId: string }
   | { type: 'undo_turn'; sessionId: string; turnId: string }
   | { type: 'get_turn_diff'; sessionId: string; turnId: string }
+  | { type: 'plan_approve'; sessionId: string }
+  | { type: 'plan_revise'; sessionId: string; feedback: string }
+  | { type: 'plan_cancel'; sessionId: string }
   | { type: 'compact'; sessionId: string }
   | { type: 'set_mode'; sessionId: string; mode: SessionMode }
   /** deep: also list each member's models (the health check). */

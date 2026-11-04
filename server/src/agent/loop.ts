@@ -3,6 +3,7 @@ import { isCorruptCall, streamChat } from '../lmstudio.js';
 import { executeTool } from '../tools/index.js';
 import type { CouncilRequest, ToolContext } from '../tools/types.js';
 import { inlineBudgetChars, spill } from '../spill.js';
+import { PLAN_MISSING_NUDGE } from './planMode.js';
 import { bus } from './bus.js';
 import { getSettings } from '../config.js';
 import { ConsultNudger, consultEnabled } from './consultNudge.js';
@@ -25,6 +26,8 @@ export interface LoopParams {
   council?: (req: CouncilRequest) => Promise<string>;
   /** Called before each model call; returns user messages to inject (mid-run corrections). */
   pullCorrections?: () => string[];
+  /** Plan mode: read-only shell, no "plan steps still open" gate, one nudge if the run ends without update_plan. */
+  planMode?: boolean;
   /** Called before each model call; may compact `messages` in place. */
   beforeStep?: () => Promise<void>;
   onUsage?: (usage: { promptTokens: number; completionTokens: number }) => void;
@@ -214,7 +217,13 @@ export async function runLoop(p: LoopParams): Promise<LoopResult> {
       }
       // Finishing with plan steps still open: small models declare victory early. Push back once.
       const open = planSteps.filter((s) => s.status === 'pending' || s.status === 'in_progress');
-      if (!planGateUsed && planTouched && open.length) {
+      if (p.planMode && !planGateUsed && !planTouched) {
+        planGateUsed = true;
+        bus.log('warn', `[${agent}] plan mode: the run ended without update_plan; asked for the plan`);
+        p.messages.push({ role: 'user', content: PLAN_MISSING_NUDGE, ts: Date.now() });
+        continue;
+      }
+      if (!p.planMode && !planGateUsed && planTouched && open.length) {
         planGateUsed = true;
         bus.log('warn', `[${agent}] tried to finish with ${open.length} plan step(s) still open; asked it to finish or explain`);
         p.messages.push({
@@ -251,6 +260,7 @@ export async function runLoop(p: LoopParams): Promise<LoopResult> {
       agent,
       signal: p.signal,
       model: p.model,
+      ...(p.planMode ? { planMode: true } : {}),
       requestApproval: async (cmd, cwd) => {
         const key = `${cwd}\u0000${cmd.trim().replace(/\s+/g, ' ')}`;
         if (denied.has(key)) {

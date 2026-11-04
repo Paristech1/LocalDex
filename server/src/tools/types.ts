@@ -16,6 +16,8 @@ export interface ToolContext {
   model?: string | null;
   /** This tool call's id (names the file when the output is saved to disk). */
   callId?: string;
+  /** Plan mode: shell_run refuses anything that is not a read-only command. */
+  planMode?: boolean;
   /** Ask the user to approve a shell command. Resolves true/false. */
   requestApproval(command: string, cwd: string): Promise<boolean>;
   /** Ask the user a free-form question. */

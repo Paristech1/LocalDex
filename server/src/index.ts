@@ -435,6 +435,24 @@ async function handle(ws: WebSocket, ev: ClientEvent): Promise<void> {
       if (!s) return;
       return send(ws, { type: 'turn_diff', sessionId: s.id, turnId: ev.turnId, diff: turnDiff(s.id, ev.turnId) });
     }
+    case 'plan_approve': {
+      const s = getSession(ev.sessionId);
+      if (s) void runnerFor(s).approvePlan();
+      return;
+    }
+    case 'plan_revise': {
+      const s = getSession(ev.sessionId);
+      if (!s) return;
+      const feedback = typeof ev.feedback === 'string' ? ev.feedback.trim() : '';
+      if (!feedback) return send(ws, { type: 'error', sessionId: s.id, message: 'Say what should change in the plan.' });
+      void runnerFor(s).revisePlan(feedback);
+      return;
+    }
+    case 'plan_cancel': {
+      const s = getSession(ev.sessionId);
+      if (s) runnerFor(s).cancelPlan();
+      return;
+    }
     case 'compact': {
       const s = getSession(ev.sessionId);
       if (!s) return;

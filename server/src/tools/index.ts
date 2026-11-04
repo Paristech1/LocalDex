@@ -12,6 +12,7 @@ import { PermissionError } from './permissions.js';
 import { isMcpTool, mcpToolSchemas, runMcpTool } from '../mcp/client.js';
 import type { ToolContext, ToolDef, ToolRegistry, ToolResult } from './types.js';
 import { parseLenientJson } from '../jsonRepair.js';
+import { isPlanTool } from '../agent/planMode.js';
 
 export const registry: ToolRegistry = {
   read_file,
@@ -35,8 +36,11 @@ export const registry: ToolRegistry = {
 
 const COUNCIL_TOOLS = new Set<ToolName>(['ask_member', 'council']);
 
-/** Tool schemas enabled for a given agent kind, honouring the user's capability toggles. */
-export function enabledTools(kind: 'main' | 'worker'): ToolSchema[] {
+/**
+ * Tool schemas enabled for a given agent kind, honouring the user's capability toggles.
+ * In plan mode only the read-only tools (and update_plan / ask_user / load_skill) are offered; MCP tools are hidden too.
+ */
+export function enabledTools(kind: 'main' | 'worker', opts: { planMode?: boolean } = {}): ToolSchema[] {
   const caps = getSettings().capabilities;
   const councilOn = getSettings().council.enabled;
   const builtin = (Object.keys(registry) as ToolName[])
@@ -47,8 +51,9 @@ export function enabledTools(kind: 'main' | 'worker'): ToolSchema[] {
     .filter((name) => councilOn || !COUNCIL_TOOLS.has(name))
     // Without node-pty (optional on Linux) the terminal tools can't work, so the model isn't shown them.
     .filter((name) => !TERMINAL_TOOLS.has(name) || ptyAvailable().ok)
+    .filter((name) => !opts.planMode || isPlanTool(name))
     .map((name) => registry[name].schema);
-  return [...builtin, ...mcpToolSchemas(kind)];
+  return opts.planMode ? builtin : [...builtin, ...mcpToolSchemas(kind)];
 }
 
 /** Built-in tools that cannot work on this install, with the reason, for Settings → Capabilities. */
@@ -67,7 +72,11 @@ export function parseArgs(call: ToolCall): Record<string, unknown> {
   return v && typeof v === 'object' && !Array.isArray(v) ? (v as Record<string, unknown>) : {};
 }
 
+export const PLAN_TOOL_REFUSAL = 'Plan mode: this tool is not available until the user approves the plan. Describe the step in the plan (update_plan) instead; only read_file, list_dir, glob, grep and read-only shell_run work now.';
+
 export async function executeTool(call: ToolCall, ctx: ToolContext): Promise<ToolResult> {
+  // Plan mode is enforced here too: a model that calls a hidden tool anyway gets a refusal, not a side effect.
+  if (ctx.planMode && !isPlanTool(call.function.name)) return { ok: false, content: PLAN_TOOL_REFUSAL };
   if (isMcpTool(call.function.name)) {
     try {
       return await runMcpTool(call.function.name, parseArgs(call), ctx);

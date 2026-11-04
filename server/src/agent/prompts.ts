@@ -27,8 +27,8 @@ export function clockLine(now = new Date()): string {
 }
 export const CLOCK_PREFIX = '[context] Date and time: ';
 
-function toolList(kind: 'main' | 'worker'): string {
-  const names = enabledTools(kind).map((t) => t.function.name);
+function toolList(kind: 'main' | 'worker', planMode = false): string {
+  const names = enabledTools(kind, { planMode }).map((t) => t.function.name);
   return `Tools available to you (use exactly these names, no others): ${names.join(', ')}.`;
 }
 
@@ -42,12 +42,12 @@ const SHARED_RULES = `Working rules:
 - When done, reply with a concise summary of what changed and anything the user must do next.
 - Paths outside the approved folders are blocked; do not try to work around that.`;
 
-export function mainSystemPrompt(): string {
+export function mainSystemPrompt(opts: { planMode?: boolean } = {}): string {
   const custom = getSettings().systemPrompt.trim();
   return [
     `You are LocalDex, a local coding agent running on the user's machine with access to their files and terminal through tools.`,
     environment(),
-    toolList('main'),
+    toolList('main', opts.planMode === true),
     SHARED_RULES,
     mcpPromptNotes('main'),
     skillsPromptNotes(),

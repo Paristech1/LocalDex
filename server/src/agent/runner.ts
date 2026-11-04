@@ -7,6 +7,7 @@ import { compactMain, maybeCompactMain, verifiedFileFacts } from './compact.js';
 import { assessGoal, goalCouncilAssessTask, parseAssessment } from './goal.js';
 import { beginTurn, endTurn } from '../checkpoints.js';
 import { pullInstructions } from './instructions.js';
+import { parsePlanCommand, planApprovedPrompt, planModePrompt, planRevisePrompt } from './planMode.js';
 import { runLoop } from './loop.js';
 import { CLOCK_EVERY_MS, CLOCK_PREFIX, clockLine, goalContinuePrompt, mainSystemPrompt } from './prompts.js';
 import { WorkerManager } from './workers.js';
@@ -49,11 +50,78 @@ export class SessionRunner {
     if (this.session.messages.length === 0 || this.session.title === 'New session') {
       this.session.title = content.trim().split('\n')[0].slice(0, 60) || 'New session';
     }
+    // /plan <task>: plan mode until the user approves. A plain message while a plan awaits approval is feedback on it.
+    const planTask = parsePlanCommand(content);
+    if (planTask !== null) {
+      if (!planTask) {
+        bus.emit({ type: 'error', sessionId: this.session.id, message: 'Usage: /plan <what to plan>' });
+        return;
+      }
+      this.session.planMode = { task: planTask, startedAt: Date.now(), status: 'planning', revisions: 0 };
+      this.session.plan = [];
+      bus.log('info', '[plan] plan mode: read-only tools until the plan is approved');
+      this.session.messages.push({ role: 'user', content: planModePrompt(planTask), ts: Date.now() });
+      this.persist();
+      this.sync();
+      await this.run();
+      return;
+    }
+    if (this.session.planMode?.status === 'review') {
+      await this.revisePlan(content);
+      return;
+    }
     this.session.messages.push({ role: 'user', content, ts: Date.now() });
     this.persist();
     this.sync();
     if (this.councilMode) await this.runCouncilTurn(content, access, notRisky);
     else await this.run();
+  }
+
+  get planning(): boolean {
+    return this.session.planMode?.status === 'planning';
+  }
+
+  /** Approve & run: plan mode ends, all tools come back, the plan becomes the brief. */
+  async approvePlan(): Promise<void> {
+    const pm = this.session.planMode;
+    if (!pm) return;
+    if (this.running) {
+      bus.emit({ type: 'error', sessionId: this.session.id, message: 'The plan is still being written; wait for it to finish or press Stop.' });
+      return;
+    }
+    delete this.session.planMode;
+    bus.log('info', `[plan] approved after ${pm.revisions} revision${pm.revisions === 1 ? '' : 's'}; running it with all tools`);
+    this.session.messages.push({ role: 'user', content: planApprovedPrompt(pm.task, this.session.plan), ts: Date.now() });
+    this.persist();
+    this.sync();
+    await this.run();
+  }
+
+  /** Revise: feedback goes to the agent, still read-only; the plan comes back for approval. */
+  async revisePlan(feedback: string): Promise<void> {
+    const pm = this.session.planMode;
+    if (!pm) return;
+    if (this.running) {
+      this.corrections.push({ content: feedback });
+      return;
+    }
+    pm.status = 'planning';
+    pm.revisions += 1;
+    delete pm.summary;
+    this.session.messages.push({ role: 'user', content: planRevisePrompt(feedback), ts: Date.now() });
+    this.persist();
+    this.sync();
+    await this.run();
+  }
+
+  cancelPlan(): void {
+    if (!this.session.planMode) return;
+    if (this.running) this.stop();
+    delete this.session.planMode;
+    bus.log('info', '[plan] cancelled; nothing was changed');
+    this.session.messages.push({ role: 'user', content: '[system] Plan cancelled by the user. Nothing was changed. Wait for the next instruction.', ts: Date.now() });
+    this.persist();
+    this.sync();
   }
 
   /** Council mode is on for this session and the council is enabled in Settings. */
@@ -398,9 +466,10 @@ export class SessionRunner {
           agent: 'main',
           model,
           messages: s.messages,
-          tools: enabledTools('main'),
+          tools: enabledTools('main', { planMode: this.planning }),
           signal: ac.signal,
           maxSteps: getSettings().maxSteps,
+          planMode: this.planning,
           delegate: (name, task) => this.workers.delegate(name, task, ac.signal),
           council: getSettings().council.enabled ? this.councilFor(ac.signal) : undefined,
           updatePlan: (steps) => {
@@ -440,6 +509,14 @@ export class SessionRunner {
 
         // Deliver corrections that arrived during the final turn as a fresh run.
         if (this.corrections.length) continue;
+
+        // Plan mode: the plan is written; hand it to the user. Goals wait until the plan is approved or cancelled.
+        if (s.planMode?.status === 'planning') {
+          s.planMode.status = 'review';
+          s.planMode.summary = result.text.trim().slice(0, 4000) || undefined;
+          bus.log('info', `[plan] ready for review: ${s.plan.length} step${s.plan.length === 1 ? '' : 's'}; Approve & run, Revise or Cancel under the answer`);
+          break;
+        }
 
         // Goal / Loop controller: finish checkpoint. Council-led goals are iterated by councilGoalIterations instead.
         const goal = s.goal;
@@ -533,7 +610,7 @@ export class SessionRunner {
    * installed, MCP servers switched), because any byte change at the top of the prompt resets LM Studio's KV cache.
    */
   private ensureSystemPrompt(): void {
-    const prompt = mainSystemPrompt();
+    const prompt = mainSystemPrompt({ planMode: this.planning });
     const first = this.session.messages[0];
     if (first?.role === 'system') {
       if (first.content !== prompt) {

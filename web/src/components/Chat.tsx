@@ -4,6 +4,7 @@ import { send, useStore, type Prompt } from '../store';
 import { AssistantBubble, MessageList } from './Message';
 import { ToolCard } from './ToolCard';
 import { CouncilRunCard, MEMBER_META } from './Council';
+import { PlanCard } from './PlanCard';
 import { Button, StatusDot, cx, inputCls, statusLabel } from './ui';
 
 export function Chat() {
@@ -61,6 +62,7 @@ export function Chat() {
               </button>
             </div>
           )}
+          {session.planMode && !showLive && <PlanCard sessionId={session.id} planMode={session.planMode} steps={session.plan} running={running} />}
           {showLive && (
             <AssistantBubble content={live.content || null} reasoning={live.reasoning} streaming={!live.done}>
               {liveTools.map((t) => (
@@ -93,6 +95,7 @@ export function Chat() {
             status={status?.status}
             detail={status?.detail}
             council={councilMode}
+            planReview={session.planMode?.status === 'review'}
             onEscalate={canEscalate && !picker ? () => setPicker(true) : undefined}
           />
         </div>
@@ -142,6 +145,9 @@ function Welcome({ noFolders, council }: { noFolders: boolean; council?: boolean
         <div className="mt-6 text-xs text-ink-400 space-y-1">
           <div>Describe a task. The agent reads, edits, runs commands and reports back.</div>
           <div>Use the right panel to set a Goal, watch Workers, or Compact context.</div>
+          <div>
+            <span className="font-mono text-ink-300">/plan &lt;task&gt;</span> explores with read-only tools and shows you a plan to approve before anything changes.
+          </div>
         </div>
       )}
     </div>
@@ -154,6 +160,7 @@ function Composer({
   status,
   detail,
   council,
+  planReview,
   onEscalate,
 }: {
   sessionId: string;
@@ -161,6 +168,8 @@ function Composer({
   status?: string;
   detail?: string;
   council?: boolean;
+  /** A plan awaits approval: what is typed here is feedback on it, not a new task. */
+  planReview?: boolean;
   onEscalate?: () => void;
 }) {
   const [text, setText] = useState('');
@@ -209,13 +218,15 @@ function Composer({
         }}
         rows={1}
         placeholder={
-          council
+          planReview
+            ? 'Feedback on the plan… (Approve & run, Revise or Cancel above; /plan starts over)'
+            : council
             ? running
               ? 'Queue a follow-up — it runs when the council finishes…'
               : 'Ask the council… (/ask claude, /build, /second, /review, /vote; Enter to send)'
             : running
               ? 'Send a correction — it is delivered before the next model call…'
-              : 'What should LocalDex do? (Enter to send, Shift+Enter for newline)'
+              : 'What should LocalDex do? (Enter to send, Shift+Enter for newline; /plan <task> plans first)'
         }
         className="w-full bg-transparent resize-none px-4 pt-3 pb-1 text-sm focus:outline-none placeholder:text-ink-400"
       />
@@ -238,7 +249,7 @@ function Composer({
             </Button>
           )}
           <Button variant="primary" size="sm" onClick={submit} disabled={!text.trim()}>
-            {running ? 'Send correction' : 'Send'} ↵
+            {running ? 'Send correction' : planReview ? 'Send feedback' : 'Send'} ↵
           </Button>
         </div>
       </div>

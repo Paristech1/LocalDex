@@ -667,6 +667,71 @@ console.log('\n# S. Retry requests that fail before any token; never after a par
   failNext = 0;
 }
 
+// ---------- T: Plan mode (A4) ----------
+console.log('\n# T. Plan mode: /plan is read-only until approved, survives a reload');
+{
+  const { isReadOnlyCommand, PLAN_TOOLS } = await import(`${SRC}/agent/planMode.ts`);
+  const { SESSIONS_DIR } = await import(`${SRC}/config.ts`);
+  const ro = ['ls -la src', 'cat a.txt | head -20', 'rg -n "foo" src && wc -l src/*.ts', 'git status', 'git log --oneline -5', 'git diff HEAD~1 -- src/a.ts', 'find . -name "*.ts"', 'npm ls --depth=0', 'node --version', 'sed -n 1,20p a.ts', 'echo hi 2>/dev/null', 'git branch -a'];
+  const rw = ['rm -rf dist', 'echo x > a.txt', 'cat a | tee b', 'sed -i "s/a/b/" a.ts', 'find . -name "*.log" -delete', 'git checkout -- .', 'git branch -D old', 'git stash pop', 'npm install', 'npm test', 'node script.js', 'ls $(rm -rf x)', 'mkdir -p a', 'touch a', 'cp a b', 'python3 -c "print(1)"', 'ls; rm a'];
+  check('read-only commands pass', ro.every(isReadOnlyCommand), ro.filter((c) => !isReadOnlyCommand(c)).join(' | '));
+  check('commands that could write are refused', rw.every((c) => !isReadOnlyCommand(c)), rw.filter(isReadOnlyCommand).join(' | '));
+  const planNames = enabledTools('main', { planMode: true }).map((t) => t.function.name);
+  check('plan mode offers only the read-only tool set', planNames.every((n) => PLAN_TOOLS.has(n)) && ['read_file', 'grep', 'shell_run', 'update_plan'].every((n) => planNames.includes(n)) && !planNames.includes('write_file') && !planNames.includes('edit_file') && !planNames.includes('delegate_to_worker'), planNames.join(','));
+
+  fs.writeFileSync(path.join(DEMO, 'greet.ts'), 'export const greet = () => "hi";\n');
+  const sess = createSession('gemma-mock');
+  const rn = runnerFor(sess);
+  logs.length = 0;
+  script = [
+    textCalls({ name: 'read_file', arguments: { path: 'greet.ts' } }),
+    // The model tries to edit anyway, and to run a build: both refused.
+    textCalls({ name: 'edit_file', arguments: { path: 'greet.ts', old_string: '"hi"', new_string: '"hello"' } }, { name: 'shell_run', arguments: { command: 'npm run build' } }),
+    textCalls({ name: 'shell_run', arguments: { command: 'git status --short' } }),
+    say('Plan: change the greeting. Risks: none.'), // ended without update_plan → nudged once
+    textCalls({ name: 'update_plan', arguments: { steps: [{ title: 'Edit greet.ts: return "hello"', status: 'pending' }, { title: 'Run the tests', status: 'pending' }] } }),
+    say('Summary: change greet.ts to return "hello", then run the tests.'),
+  ];
+  await rn.handleUserMessage('/plan make greet say hello');
+  const toolLine = (m: any) => (m.content as string).split('\n').find((l: string) => l.startsWith('Tools available to you')) ?? '';
+  check('system prompt lists only the plan tools', !/write_file/.test(toolLine(sess.messages[0])) && /read_file/.test(toolLine(sess.messages[0])), toolLine(sess.messages[0]));
+  const tr = sess.messages.filter((m: any) => m.role === 'tool').map((m: any) => m.content as string);
+  check('edit_file refused in plan mode, file untouched', tr.some((t) => /^Plan mode: this tool is not available/.test(t)) && read('greet.ts').includes('"hi"'));
+  check('mutating shell command refused, read-only one ran', tr.some((t) => /^Plan mode: shell_run only runs read-only/.test(t)) && tr.some((t) => /\$ git status --short/.test(t)), tr.map((t) => t.slice(0, 40)).join(' | '));
+  check('ending without update_plan is nudged once', logs.some((l) => /plan mode: the run ended without update_plan/.test(l)) && sess.messages.some((m: any) => m.role === 'user' && /^\[system\] Plan mode: you have not called update_plan/.test(m.content)));
+  check('plan awaits review with its steps and summary', sess.planMode?.status === 'review' && sess.plan.length === 2 && /return "hello"/.test(sess.planMode?.summary ?? ''), JSON.stringify(sess.planMode));
+  check('"plan steps still open" gate did not fire in plan mode', !sess.messages.some((m: any) => m.role === 'user' && /plan still has unfinished steps/.test(m.content)));
+  // Survives a reload: the state is in the session file.
+  await new Promise((r) => setTimeout(r, 400));
+  const onDisk = JSON.parse(fs.readFileSync(path.join(SESSIONS_DIR, `${sess.id}.json`), 'utf8'));
+  check('plan mode is persisted with the session', onDisk.planMode?.status === 'review' && onDisk.planMode?.task === 'make greet say hello');
+  // A plain message while the plan awaits approval is feedback: still read-only.
+  script = [
+    textCalls({ name: 'write_file', arguments: { path: 'x.txt', content: 'nope' } }),
+    textCalls({ name: 'update_plan', arguments: { steps: [{ title: 'Edit greet.ts: return "hello"', status: 'pending' }, { title: 'Add a test for greet', status: 'pending' }, { title: 'Run the tests', status: 'pending' }] } }),
+    say('Updated: added a test step.'),
+  ];
+  await rn.handleUserMessage('also add a test');
+  check('feedback keeps plan mode, counts a revision, write still refused', sess.planMode?.status === 'review' && sess.planMode?.revisions === 1 && !fs.existsSync(path.join(DEMO, 'x.txt')) && sess.plan.length === 3, JSON.stringify(sess.planMode));
+  check('feedback message is marked as such', sess.messages.some((m: any) => m.role === 'user' && /^\[Plan feedback\] also add a test/.test(m.content)));
+  // Approve: tools are back and the plan is the brief.
+  script = [
+    textCalls({ name: 'edit_file', arguments: { path: 'greet.ts', old_string: '"hi"', new_string: '"hello"' } }),
+    textCalls({ name: 'update_plan', arguments: { steps: [{ title: 'Edit greet.ts: return "hello"', status: 'done' }, { title: 'Add a test for greet', status: 'done' }, { title: 'Run the tests', status: 'done' }] } }),
+    say('Done.'),
+  ];
+  await rn.approvePlan();
+  check('approval ends plan mode and restores write tools', sess.planMode === undefined && read('greet.ts').includes('"hello"') && /write_file/.test(toolLine(sess.messages[0])));
+  check('the approved plan is sent as the brief', sess.messages.some((m: any) => m.role === 'user' && /^\[Plan approved\][\s\S]*1\. Edit greet\.ts/.test(m.content)));
+  // Cancel path.
+  script = [textCalls({ name: 'update_plan', arguments: { steps: [{ title: 'Delete everything', status: 'pending' }] } }), say('Plan: delete everything.')];
+  await rn.handleUserMessage('/plan delete everything');
+  check('second plan awaits review', sess.planMode?.status === 'review');
+  rn.cancelPlan();
+  check('cancel clears plan mode and leaves a note', sess.planMode === undefined && /^\[system\] Plan cancelled/.test((sess.messages.at(-1) as any).content));
+  fs.rmSync(path.join(DEMO, 'greet.ts'));
+}
+
 server.close();
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

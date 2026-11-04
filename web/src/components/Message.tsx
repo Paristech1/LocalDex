@@ -34,7 +34,7 @@ export function Reasoning({ text, streaming }: { text: string; streaming?: boole
 
 export function UserBubble({ text }: { text: string }) {
   const [open, setOpen] = useState(false);
-  const isSystemish = /^\[(Goal|Loop|system|context|Resumed|Handed to council)/.test(text);
+  const isSystemish = /^\[(Goal|Loop|system|context|Resumed|Handed to council|Plan )/.test(text);
   if (isSystemish) {
     const [head, ...rest] = text.split('\n');
     return (
