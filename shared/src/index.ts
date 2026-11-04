@@ -22,7 +22,16 @@ export type ChatMessage =
       /** The council run this answer came from (for the "changes waiting" chip). */
       councilRunId?: string;
     }
-  | { role: 'tool'; tool_call_id: string; name?: string; content: string; ok?: boolean; ts?: number };
+  | {
+      role: 'tool';
+      tool_call_id: string;
+      name?: string;
+      content: string;
+      ok?: boolean;
+      ts?: number;
+      /** The full result before the context got tight and its middle was pruned (kept in the session log, never sent to the model again). */
+      original?: string;
+    };
 
 // ---------- Skills ----------
 

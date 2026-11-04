@@ -165,9 +165,48 @@ function overThreshold(model: string | null, messages: ChatMessage[], reportedPr
   return used >= ctx * threshold;
 }
 
+/** Tool results longer than this are pruned when the context gets tight… */
+export const PRUNE_OVER = 8_192;
+/** …to their first PRUNE_HEAD and last PRUNE_TAIL characters. */
+export const PRUNE_HEAD = 4_096;
+export const PRUNE_TAIL = 1_024;
+export const PRUNE_MARK = '\n\n[... tool result middle pruned ...]\n\n';
+
+/**
+ * Cheap first step before summarizing (pattern borrowed from DeepSeek Harness `compaction-tool-result-pruner`,
+ * reimplemented): shorten old tool results that are over PRUNE_OVER characters to head + marker + tail. The latest
+ * turn (everything after the last user message) is left alone, so the model still has what it just asked for; the
+ * full text stays on the message as `original` for the session log. Returns how many were pruned and the characters saved.
+ */
+export function pruneToolResults(messages: ChatMessage[]): { pruned: number; savedChars: number } {
+  let lastUser = -1;
+  for (let i = 0; i < messages.length; i++) if (messages[i].role === 'user') lastUser = i;
+  let pruned = 0;
+  let savedChars = 0;
+  for (let i = 0; i < lastUser; i++) {
+    const m = messages[i];
+    if (m.role !== 'tool' || m.content.length <= PRUNE_OVER || m.original !== undefined) continue;
+    const short = `${m.content.slice(0, PRUNE_HEAD)}${PRUNE_MARK}${m.content.slice(-PRUNE_TAIL)}`;
+    savedChars += m.content.length - short.length;
+    m.original = m.content;
+    m.content = short;
+    pruned++;
+  }
+  return { pruned, savedChars };
+}
+
 export async function maybeCompactMain(session: Session, signal: AbortSignal): Promise<void> {
   if (!overThreshold(session.model, session.messages, session.usage.lastPromptTokens)) return;
   if (session.messages.length < MIN_MESSAGES_TO_COMPACT) return;
+  // Trim first: often enough, and it costs no model call.
+  const t = pruneToolResults(session.messages);
+  if (t.pruned) {
+    // LM Studio's last report is stale now; judge by the estimate of what is left.
+    session.usage.lastPromptTokens = 0;
+    const fits = !overThreshold(session.model, session.messages, 0);
+    bus.log('info', `[main] pruned ${t.pruned} old tool result${t.pruned === 1 ? '' : 's'}, saved ~${Math.round(t.savedChars / 3.5)} tokens${fits ? '; no summary needed' : '; still over the threshold, summarizing'}`);
+    if (fits) return;
+  }
   try {
     await compactMain(session, signal, 'auto: context nearly full');
   } catch (e) {
