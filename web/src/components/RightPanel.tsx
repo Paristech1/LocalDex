@@ -60,7 +60,10 @@ export function RightPanel({ onOpenSettings }: { onOpenSettings?: (tab?: Setting
         {tab === 'plan' && <PlanPanel steps={session?.plan ?? []} />}
         {tab === 'workers' && <WorkersPanel />}
         {tab === 'council' && <CouncilPanel onOpenSettings={() => onOpenSettings?.('council')} />}
-        {tab === 'goal' && <GoalPanel />}
+        {tab === 'goal' && <>
+          <GoalPanel />
+          <SchedulesPanel />
+        </>}
         {tab === 'context' && <ContextPanel />}
         {tab === 'stats' && <StatsPanel />}
         {tab === 'log' && <LogPanel />}
@@ -533,4 +536,98 @@ function LogPanel() {
 
 function Empty({ children }: { children: React.ReactNode }) {
   return <div className="text-xs text-ink-400 leading-relaxed">{children}</div>;
+}
+
+const DAY = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+
+/** E5: goals that start by themselves at a set time (while LocalDex is running). */
+function SchedulesPanel() {
+  const schedules = useStore((s) => s.schedules);
+  const settings = useStore((s) => s.settings);
+  const [adding, setAdding] = useState(false);
+  const [brief, setBrief] = useState('');
+  const [done, setDone] = useState('');
+  const [time, setTime] = useState('07:30');
+  const [days, setDays] = useState<number[]>([1, 2, 3, 4, 5]);
+  const [folder, setFolder] = useState('');
+  const folders = settings?.approvedFolders ?? [];
+  return (
+    <div className="mt-4 pt-3 border-t border-ink-700 space-y-2 text-xs">
+      <div className="flex items-center">
+        <h4 className="font-medium text-ink-200 flex-1">Scheduled goals</h4>
+        {!adding && (
+          <Button size="sm" variant="ghost" onClick={() => setAdding(true)} disabled={!folders.length}>
+            + Schedule
+          </Button>
+        )}
+      </div>
+      <p className="text-[11px] text-ink-400">Starts a goal in a new session at the set time, while LocalDex is running (a time missed while it was off is skipped). Approvals still wait for you.</p>
+      {schedules.map((sc) => (
+        <div key={sc.id} className={cx('rounded-md bg-ink-800 px-2.5 py-2 space-y-1', !sc.enabled && 'opacity-60')}>
+          <div className="flex items-center gap-2">
+            <span className="font-mono text-ink-100">{sc.time}</span>
+            <span className="text-ink-400">{sc.days.length === 7 ? 'every day' : sc.days.map((d) => DAY[d]).join(' ')}</span>
+            <span className="flex-1" />
+            <Toggle label="" checked={sc.enabled} onChange={(v) => send({ type: 'schedule_save', schedule: { ...sc, enabled: v } })} />
+          </div>
+          <div className="text-ink-200 line-clamp-2">{sc.brief}</div>
+          <div className="flex items-center gap-2 text-[11px] text-ink-400">
+            <span className="font-mono truncate flex-1" title={sc.folder}>
+              {sc.folder.split('/').pop()}
+              {sc.lead === 'council' ? ' · council' : ''}
+            </span>
+            {sc.lastRunAt && <span>last {timeAgo(sc.lastRunAt)}</span>}
+            <button type="button" className="hover:text-ink-100" onClick={() => send({ type: 'schedule_run_now', id: sc.id })}>
+              Run now
+            </button>
+            <button type="button" className="hover:text-danger" onClick={() => confirm('Delete this schedule?') && send({ type: 'schedule_delete', id: sc.id })}>
+              Delete
+            </button>
+          </div>
+        </div>
+      ))}
+      {adding && (
+        <form
+          className="space-y-2 rounded-md border border-ink-700 p-2"
+          onSubmit={(e) => {
+            e.preventDefault();
+            send({ type: 'schedule_save', schedule: { brief, doneCriteria: done, time, days, folder: folder || folders[0], lead: 'local', maxIterations: 10, enabled: true } });
+            setAdding(false);
+            setBrief('');
+            setDone('');
+          }}
+        >
+          <textarea className={cx(inputCls, 'min-h-[60px]')} placeholder="Goal, e.g. Run the tests and fix anything that fails" value={brief} onChange={(e) => setBrief(e.target.value)} />
+          <input className={inputCls} placeholder="Done when… (optional)" value={done} onChange={(e) => setDone(e.target.value)} />
+          <div className="flex items-center gap-2">
+            <input type="time" className={cx(inputCls, 'w-28')} value={time} onChange={(e) => setTime(e.target.value)} />
+            <div className="flex gap-0.5">
+              {DAY.map((d, i) => (
+                <button key={d} type="button" onClick={() => setDays((xs) => (xs.includes(i) ? xs.filter((x) => x !== i) : [...xs, i]))} className={cx('rounded px-1.5 py-0.5 text-[10px]', days.includes(i) ? 'bg-accent/20 text-accent' : 'text-ink-400 hover:text-ink-200')}>
+                  {d[0]}
+                </button>
+              ))}
+            </div>
+          </div>
+          {folders.length > 1 && (
+            <select className={inputCls} value={folder || folders[0]} onChange={(e) => setFolder(e.target.value)}>
+              {folders.map((f) => (
+                <option key={f} value={f}>
+                  {f}
+                </option>
+              ))}
+            </select>
+          )}
+          <div className="flex gap-2">
+            <Button size="sm" variant="primary" type="submit" disabled={!brief.trim() || !days.length}>
+              Save schedule
+            </Button>
+            <Button size="sm" variant="ghost" type="button" onClick={() => setAdding(false)}>
+              Cancel
+            </Button>
+          </div>
+        </form>
+      )}
+    </div>
+  );
 }

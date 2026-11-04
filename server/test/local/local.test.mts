@@ -1596,6 +1596,40 @@ console.log('\n# AL. Edit styles: apply_patch and str_replace_editor');
   updateSettings({ permissionPreset: 'full' });
 }
 
+// ---------- AM: Scheduled goal runs (E5) ----------
+console.log('\n# AM. Scheduled goals: due once per slot, approved folders only, starts a goal session');
+{
+  const sch = await import(`${SRC}/schedule.ts`);
+  check('validation: time format, a day, an approved folder', typeof sch.saveSchedule({ brief: 'x', time: '7:30' }) === 'string' && typeof sch.saveSchedule({ brief: 'x', time: '07:30', days: [] }) === 'string' && /approved folders/.test(String(sch.saveSchedule({ brief: 'x', time: '07:30', folder: '/etc' }))) && typeof sch.saveSchedule({ brief: '', time: '07:30' }) === 'string');
+  const sc = sch.saveSchedule({ brief: 'Run the tests and fix failures', time: '07:30', days: [1, 2, 3, 4, 5] }) as any;
+  check('saved with defaults (first approved folder, local lead, 10 iterations)', sc.id && sc.folder === DEMO && sc.lead === 'local' && sc.maxIterations === 10 && sch.listSchedules().length === 1);
+  const mon0729 = new Date(2026, 10, 2, 7, 29);
+  const mon0731 = new Date(2026, 10, 2, 7, 31);
+  const mon0745 = new Date(2026, 10, 2, 7, 45);
+  const sun0731 = new Date(2026, 10, 1, 7, 31);
+  check('due: in the slot (and 10 min after), not before, not on unscheduled days, not long after', sch.dueSlot(sc, mon0729) === null && sch.dueSlot(sc, mon0731) !== null && sch.dueSlot(sc, sun0731) === null && sch.dueSlot(sc, mon0745) === null);
+  const started: string[] = [];
+  const starter = async (x: any) => {
+    const s = createSession('gemma-mock');
+    s.title = `⏰ ${x.brief}`;
+    const r = runnerFor(s);
+    r.setGoal({ mode: 'goal', brief: sch.scheduledBrief(x), doneCriteria: x.doneCriteria, maxIterations: 1, lead: 'local' });
+    script = [say('Tests pass.'), say('{"done": true, "remaining": []}'), say('{"done": true, "remaining": []}')];
+    await r.startGoalRun();
+    started.push(s.id);
+    return s.id;
+  };
+  const n1 = await sch.tickSchedules(mon0731, starter);
+  const n2 = await sch.tickSchedules(new Date(2026, 10, 2, 7, 32), starter);
+  check('tick: starts once per slot, records the session', n1 === 1 && n2 === 0 && sch.listSchedules()[0].lastSessionId === started[0], `${n1} ${n2}`);
+  const { getSession } = await import(`${SRC}/store.ts`);
+  const ran = getSession(started[0]);
+  check('the run is a goal session with the scheduled brief', !!ran && /Run the tests and fix failures/.test(ran.goal?.brief ?? '') && /Scheduled run: 07:30/.test(ran.goal?.brief ?? ''), ran?.goal?.brief);
+  sch.saveSchedule({ ...sch.listSchedules()[0], enabled: false });
+  check('disabled schedules never start', sch.dueSlot(sch.listSchedules()[0], new Date(2026, 10, 3, 7, 31)) === null);
+  check('delete', sch.deleteSchedule(sc.id) && sch.listSchedules().length === 0);
+}
+
 server.close();
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

@@ -20,6 +20,7 @@ import type {
   SessionSummary,
   Settings,
   SandboxStatus,
+  ScheduledGoal,
 } from '@localdex/shared';
 
 export interface LiveTool {
@@ -68,6 +69,8 @@ export interface State {
   /** E4: saved model-doctor reports (newest first) and the run in progress. */
   doctorReports: DoctorReport[];
   doctorProgress: { model: string; done: number; total: number; label: string } | null;
+  /** E5: scheduled goals. */
+  schedules: ScheduledGoal[];
   skills: SkillInfo[];
   /** Built-in tools this install can't run, with the reason (from hello). */
   unavailableTools: Partial<Record<ToolName, string>>;
@@ -105,6 +108,7 @@ let state: State = {
   mcpNotice: null,
   doctorReports: [],
   doctorProgress: null,
+  schedules: [],
   skills: [],
   unavailableTools: {},
   sandbox: null,
@@ -250,6 +254,9 @@ function handle(ev: ServerEvent): void {
       return;
     case 'doctor_result':
       set((st) => ({ doctorProgress: null, doctorReports: [ev.report, ...st.doctorReports.filter((r) => r.model !== ev.report.model)] }));
+      return;
+    case 'schedules':
+      set({ schedules: ev.schedules });
       return;
     case 'doctor_reports':
       set({ doctorReports: ev.reports });

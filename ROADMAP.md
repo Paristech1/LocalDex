@@ -88,7 +88,7 @@ Each task lists **Why** (the evidence), **Where** (files), **Borrow** (the DeepS
 | 6 | E2 | Headless CLI: `localdex run "task"` | P2 | M | ✅ done |
 | 6 | E3 | "Open PR" from a council worktree (gh CLI) | P2 | S | ✅ done |
 | 6 | E4 | Model doctor (tool-calling probe + context-size advice) | P1 | M | ✅ done |
-| 6 | E5 | Scheduled goal runs | P3 | M |
+| 6 | E5 | Scheduled goal runs | P3 | M | ✅ done |
 | 6 | E6 | Voice input (local speech-to-text) | P3 | M |
 
 Suggested order (remaining): **S3 → U1 → E1 → E4 → S4 → A6 → U4 → U5 → …** by priority column. Completed on `main`: H2–H3, F1–F4, C1–C4, S1–S2, U6, A1–A2, A4–A5, U2.

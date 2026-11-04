@@ -34,6 +34,7 @@ import { attachmentPath, isAttachmentId, saveImage } from './attachments.js';
 import { forkAt, isEditableUserMessage } from './fork.js';
 import { exportFileName, exportMarkdown, searchSessions } from './sessionTools.js';
 import { closeAllMcp, mcpStatuses, reloadMcp, restartMcp } from './mcp/client.js';
+import { deleteSchedule, listSchedules, saveSchedule, scheduledBrief, startScheduler, stopScheduler } from './schedule.js';
 import { doctorReports, doctorRunning, runDoctor, stopDoctor } from './doctor.js';
 import { addFromGallery, mcpGallery, removeServer, setAllowTools } from './mcp/gallery.js';
 import { LIMITS, listSkills, removeSkill, setSkillEnabled } from './skills/store.js';
@@ -248,6 +249,7 @@ wss.on('connection', (ws) => {
   send(ws, { type: 'mcp_status', servers: mcpStatuses() });
   send(ws, { type: 'mcp_gallery', entries: mcpGallery() });
   send(ws, { type: 'doctor_reports', reports: doctorReports() });
+  send(ws, { type: 'schedules', schedules: listSchedules() });
   send(ws, { type: 'skills', skills: listSkills() });
   const cached = cachedStatuses();
   if (cached.length) send(ws, { type: 'council_status', members: cached });
@@ -390,6 +392,28 @@ async function handle(ws: WebSocket, ev: ClientEvent): Promise<void> {
       void runDoctor(ev.model)
         .then(() => bus.emit({ type: 'doctor_reports', reports: doctorReports() }))
         .catch((e) => bus.emit({ type: 'error', message: `Model doctor: ${(e as Error).message}` }));
+      return;
+    }
+    case 'schedule_save': {
+      const r = saveSchedule(ev.schedule ?? {});
+      if (typeof r === 'string') send(ws, { type: 'error', message: `Schedule: ${r}` });
+      return;
+    }
+    case 'schedule_delete':
+      deleteSchedule(ev.id);
+      return;
+    case 'schedule_run_now': {
+      const sc = listSchedules().find((x) => x.id === ev.id);
+      if (!sc) return;
+      void startScheduledRun(sc)
+        .then((id) => {
+          sc.lastRunAt = Date.now();
+          sc.lastSessionId = id;
+          saveSchedule(sc);
+          const s = getSession(id);
+          if (s) send(ws, { type: 'session', session: s });
+        })
+        .catch((e) => send(ws, { type: 'error', message: `Schedule: ${(e as Error).message}` }));
       return;
     }
     case 'doctor_stop':
@@ -633,7 +657,24 @@ async function handle(ws: WebSocket, ev: ClientEvent): Promise<void> {
   }
 }
 
+/** E5: a scheduled goal becomes a new session with that goal, started right away. Returns the session id. */
+async function startScheduledRun(sc: import('@localdex/shared').ScheduledGoal): Promise<string> {
+  if (!getSettings().approvedFolders.map((f) => path.resolve(f)).includes(sc.folder)) throw new Error(`${sc.folder} is no longer an approved folder`);
+  const s = createSession(getSettings().model);
+  s.title = `⏰ ${sc.brief.split('\n')[0].slice(0, 60)}`;
+  s.titleSource = 'user';
+  if (sc.lead === 'council' && getSettings().council.enabled) s.mode = 'council';
+  saveSession(s);
+  bus.emit({ type: 'sessions', sessions: listSessions() });
+  const r = runnerFor(s);
+  r.setGoal({ mode: 'goal', brief: scheduledBrief(sc), doneCriteria: sc.doneCriteria, maxIterations: sc.maxIterations, lead: sc.lead });
+  void r.startGoalRun();
+  return s.id;
+}
+startScheduler(startScheduledRun);
+
 function shutdown(): void {
+  stopScheduler();
   console.log('\nShutting down…');
   closeAllTerminals();
   flushAll();

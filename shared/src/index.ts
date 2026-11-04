@@ -727,6 +727,24 @@ export interface McpServerConfig {
 
 export type McpServerState = 'disabled' | 'connecting' | 'ready' | 'error';
 
+/** E5: a goal that runs at a set time (while LocalDex is running), in a new session. */
+export interface ScheduledGoal {
+  id: string;
+  brief: string;
+  doneCriteria: string;
+  /** One of the approved folders. */
+  folder: string;
+  /** "HH:MM", local time. */
+  time: string;
+  /** 0 = Sunday … 6 = Saturday. */
+  days: number[];
+  maxIterations: number;
+  lead: GoalLead;
+  enabled: boolean;
+  lastRunAt?: number;
+  lastSessionId?: string;
+}
+
 /** E4: one model-doctor probe result. */
 export interface DoctorProbe {
   id: string;
@@ -1091,6 +1109,7 @@ export type ServerEvent =
   | { type: 'doctor_progress'; model: string; done: number; total: number; label: string }
   | { type: 'doctor_result'; report: DoctorReport }
   | { type: 'doctor_reports'; reports: DoctorReport[] }
+  | { type: 'schedules'; schedules: ScheduledGoal[] }
   | { type: 'mcp_notice'; ok: boolean; message: string }
   | { type: 'skills'; skills: SkillInfo[] }
   | { type: 'council_status'; members: MemberStatus[] }
@@ -1139,6 +1158,9 @@ export type ClientEvent =
   | { type: 'mcp_test'; name: string }
   | { type: 'doctor_run'; model?: string }
   | { type: 'doctor_stop' }
+  | { type: 'schedule_save'; schedule: Partial<ScheduledGoal> }
+  | { type: 'schedule_delete'; id: string }
+  | { type: 'schedule_run_now'; id: string }
   | { type: 'list_models' }
   /** Unload and reload a model in LM Studio with this context window (LM Studio REST API v1). */
   | { type: 'reload_model'; model: string; contextLength: number }
