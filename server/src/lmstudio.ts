@@ -35,7 +35,8 @@ export interface StreamOptions {
 }
 
 function client(): OpenAI {
-  return new OpenAI({ baseURL: getSettings().baseUrl, apiKey: 'lm-studio' });
+  // The SDK's own silent retries are off: streamOnce retries with a visible log line and known delays.
+  return new OpenAI({ baseURL: getSettings().baseUrl, apiKey: 'lm-studio', maxRetries: 0 });
 }
 
 /** Convert our stored message shape to the OpenAI wire format (strip UI-only fields). */
@@ -468,7 +469,48 @@ export async function streamChat(opts: StreamOptions): Promise<StreamResult> {
   }
 }
 
+/** Backoff between retries of a request that failed before any token arrived (DeepSeek Harness `llm-retry`: retry at clean boundaries only). */
+export const RETRY_DELAYS_MS = [1_000, 3_000, 8_000];
+
+/** Hiccups that tend to pass by themselves: the server (re)starting, a model still loading, a 5xx, a dropped connection. */
+export function isTransientError(e: unknown): boolean {
+  const err = e as Error & { status?: number; code?: string; cause?: { code?: string } };
+  if (err.status !== undefined && err.status >= 500) return true;
+  const code = err.code ?? err.cause?.code ?? '';
+  if (/^(ECONNRESET|ECONNREFUSED|ETIMEDOUT|EPIPE|EAI_AGAIN|UND_ERR_SOCKET|UND_ERR_CONNECT_TIMEOUT)$/.test(code)) return true;
+  const m = String(err.message ?? '');
+  return /fetch failed|socket hang up|network error|terminated|model is (still )?loading|loading model|service unavailable|ECONNRESET|ECONNREFUSED/i.test(m);
+}
+
+const sleep = (ms: number, signal?: AbortSignal) =>
+  new Promise<void>((resolve) => {
+    const t = setTimeout(resolve, ms);
+    signal?.addEventListener('abort', () => {
+      clearTimeout(t);
+      resolve();
+    }, { once: true });
+  });
+
+/**
+ * One request, retried up to RETRY_DELAYS_MS.length times on transient failures, but only while nothing has streamed
+ * yet: once tokens were shown to the user a retry would replay them, so a partial stream fails as before.
+ */
 async function streamOnce(opts: StreamOptions, textMode: boolean): Promise<StreamResult> {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      return await streamAttempt(opts, textMode);
+    } catch (e) {
+      const partial = (e as { partialStream?: boolean }).partialStream === true;
+      if (opts.signal?.aborted || partial || attempt >= RETRY_DELAYS_MS.length || !isTransientError(e)) throw e;
+      const wait = RETRY_DELAYS_MS[attempt];
+      bus.log('warn', `LM Studio request failed before any token arrived (${String((e as Error).message).split('\n')[0].slice(0, 120)}); retry ${attempt + 1}/${RETRY_DELAYS_MS.length} in ${wait / 1000}s`);
+      await sleep(wait, opts.signal);
+      if (opts.signal?.aborted) throw e;
+    }
+  }
+}
+
+async function streamAttempt(opts: StreamOptions, textMode: boolean): Promise<StreamResult> {
   const settings = getSettings();
   // Our own controller, so a runaway think can be cut off without looking like the user pressed Stop.
   const ac = new AbortController();
@@ -547,7 +589,11 @@ async function streamOnce(opts: StreamOptions, textMode: boolean): Promise<Strea
       }
     }
   } catch (e) {
-    if (!runaway) throw e;
+    if (!runaway) {
+      // Tokens already reached the user: a retry would replay them, so the caller must not retry this one.
+      if (content || reasoning || toolAcc.size) (e as { partialStream?: boolean }).partialStream = true;
+      throw e;
+    }
   } finally {
     opts.signal?.removeEventListener('abort', onOuterAbort);
   }

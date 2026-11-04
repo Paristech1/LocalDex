@@ -19,7 +19,7 @@ const check = (name: string, cond: boolean, extra = '') => {
 // ---------------- mock LM Studio ----------------
 type Reply =
   | { kind: 'stream'; deltas: Array<Record<string, unknown>>; finish?: string }
-  | { kind: 'midStreamError'; message: string };
+  | { kind: 'midStreamError'; message: string; partial?: string };
 type Step = (body: any) => Reply;
 let script: Step[] = [];
 const requests: any[] = [];
@@ -42,7 +42,7 @@ const think = (chars: number): Step => () => ({
   deltas: Array.from({ length: Math.ceil(chars / 500) }, () => ({ reasoning_content: 'hmm, let me reconsider the approach once more. '.repeat(11).slice(0, 500) })),
   finish: 'stop',
 });
-const midErr = (message: string): Step => () => ({ kind: 'midStreamError', message });
+const midErr = (message: string, partial?: string): Step => () => ({ kind: 'midStreamError', message, partial });
 
 const models = {
   v0: { data: [
@@ -55,6 +55,7 @@ const models = {
   ] },
 };
 const loads: any[] = [];
+let failNext = 0; // answer this many chat requests with HTTP 503 before any token
 
 const server = http.createServer((req, res) => {
   let body = '';
@@ -78,6 +79,10 @@ const server = http.createServer((req, res) => {
     if (!url.startsWith('/v1/chat/completions')) return json({ error: 'not found' }, 404);
     const b = JSON.parse(body);
     requests.push(b);
+    if (failNext > 0) {
+      failNext--;
+      return json({ error: { message: 'Model is loading', type: 'server_error' } }, 503);
+    }
     // Tool-mode probe (non-streaming): the model "passes" it with a native call.
     if (!b.stream) {
       return json({ id: 'p', object: 'chat.completion', choices: [{ index: 0, message: { role: 'assistant', content: null, tool_calls: [{ id: 'c1', type: 'function', function: { name: 'ping', arguments: '{"value":"ok"}' } }] }, finish_reason: 'tool_calls' }] });
@@ -88,7 +93,7 @@ const server = http.createServer((req, res) => {
     const chunk = (delta: Record<string, unknown>, finish: string | null = null) =>
       res.write(`data: ${JSON.stringify({ id: 'x', object: 'chat.completion.chunk', created: 0, model: b.model, choices: [{ index: 0, delta, finish_reason: finish }] })}\n\n`);
     if (reply.kind === 'midStreamError') {
-      chunk({ role: 'assistant', content: '' });
+      chunk({ role: 'assistant', content: reply.partial ?? '' });
       res.write(`data: ${JSON.stringify({ error: { message: reply.message, type: 'server_error' } })}\n\n`);
       return res.end();
     }
@@ -635,6 +640,31 @@ console.log('\n# R. Project instructions');
   updateSettings({ projectInstructions: true });
   fs.rmSync(path.join(DEMO, 'AGENTS.md')); fs.rmSync(path.join(DEMO, 'CLAUDE.md')); fs.rmSync(GLOBAL_INSTRUCTIONS); fs.rmSync(path.join(DEMO, 'pkg'), { recursive: true });
   forgetInstructions(sess.id);
+}
+
+// ---------- S: LM Studio retry (U6) ----------
+console.log('\n# S. Retry requests that fail before any token; never after a partial stream');
+{
+  const { RETRY_DELAYS_MS, isTransientError } = lm;
+  check('backoff is 1s / 3s / 8s', JSON.stringify(RETRY_DELAYS_MS) === '[1000,3000,8000]', JSON.stringify(RETRY_DELAYS_MS));
+  check('5xx, dropped connections and "model is loading" are transient', isTransientError({ status: 503 }) && isTransientError({ code: 'ECONNRESET' }) && isTransientError(new Error('fetch failed')) && isTransientError(new Error('Model is loading')));
+  check('4xx and ordinary errors are not', !isTransientError({ status: 400, message: 'bad request' }) && !isTransientError(new Error('Invalid diff: now finding less tool calls!')));
+  // One HTTP 503 before any token: retried once after 1 s, the run completes as if nothing happened.
+  logs.length = 0; requests.length = 0; failNext = 1;
+  const t0 = Date.now();
+  r = await runWith([say('after the hiccup')], 'hi');
+  const took = Date.now() - t0;
+  check('run completed after a 503 before any token', r.res.reason === 'done' && /after the hiccup/.test(r.messages[r.messages.length - 1].content), `${r.res.reason} ${r.res.error ?? ''}`);
+  check('the request was sent twice (one failure, one success)', requests.filter((b) => b.stream).length === 2, String(requests.filter((b) => b.stream).length));
+  check('waited about 1 s before the retry', took >= 950 && took < 2_800, `${took}ms`);
+  check('the retry is logged with its attempt number', logs.some((l) => /failed before any token arrived .*retry 1\/3 in 1s/.test(l)), logs.filter((l) => /retry/.test(l)).join(' | '));
+  check('no second retry was needed', !logs.some((l) => /retry 2\/3/.test(l)));
+  // A transient-looking error after tokens were streamed: not retried (a retry would replay the shown tokens).
+  logs.length = 0; requests.length = 0;
+  r = await runWith([midErr('Service unavailable', 'Here is the start of an answer'), say('(should not be reached by a retry)')], 'hi');
+  check('a stream that already produced tokens is not retried', !logs.some((l) => /retry \d\/3/.test(l)), logs.filter((l) => /retry/.test(l)).join(' | '));
+  check('that error surfaces instead', r.res.reason !== 'done' || r.leftover >= 1, `${r.res.reason} leftover=${r.leftover}`);
+  failNext = 0;
 }
 
 server.close();

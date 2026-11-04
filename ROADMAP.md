@@ -83,7 +83,7 @@ Each task lists **Why** (the evidence), **Where** (files), **Borrow** (the DeepS
 | 5 | U3 | Message thumbs up/down feeding the scorecard | P2 | S |
 | 5 | U4 | Fork a session / edit and regenerate | P2 | M |
 | 5 | U5 | Unified slash-command palette | P2 | S |
-| 5 | U6 | LM Studio request retry with backoff | P1 | S |
+| 5 | U6 | LM Studio request retry with backoff | P1 | S | ✅ done |
 | 6 | E1 | MCP manager UI + preset gallery (Playwright, Blender, …) | P1 | M |
 | 6 | E2 | Headless CLI: `localdex run "task"` | P2 | M |
 | 6 | E3 | "Open PR" from a council worktree (gh CLI) | P2 | S |

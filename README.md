@@ -49,6 +49,9 @@ Browser (React UI)  <-- WebSocket -->  LocalDex server (Node)  -->  LM Studio :1
   set, skills or MCP servers really change (logged as a cache reset), so LM Studio can reuse its
   KV cache across steps. The date and time arrive as an appended `[context]` line at most every
   10 minutes instead of living in the system prompt.
+- **Survives LM Studio hiccups** – a request that fails before any token arrives (model still
+  loading, a 5xx, a dropped connection) is retried up to 3 times after 1 s, 3 s and 8 s, each retry
+  logged. A stream that already produced tokens is never retried, so you never see a reply replayed.
 - **Works with models that have no native tool support** – LocalDex probes the model once; if it
   does not emit OpenAI `tool_calls`, it switches to a text protocol and parses calls from the reply.
   It also recovers Python-style calls (`write_file(path="a", content="b")`), fenced JSON, and
