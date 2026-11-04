@@ -1119,6 +1119,49 @@ console.log('\n# Z. Sessions: search, auto-title, export');
   updateSettings({ autoTitle: false });
 }
 
+// ---------- AA: MCP gallery and tool picking (E1) ----------
+console.log('\n# AA. MCP gallery: add with typed confirmation, choose tools, remove');
+{
+  const gal = await import(`${SRC}/mcp/gallery.ts`);
+  const mcp = await import(`${SRC}/mcp/client.ts`);
+  const { getSettings } = await import(`${SRC}/config.ts`);
+  const entries = gal.mcpGallery();
+  check('gallery: playwright, blender, filesystem, github', ['playwright', 'blender', 'filesystem', 'github'].every((id) => entries.some((e: any) => e.id === id)), entries.map((e: any) => e.id).join(','));
+  const fsEntry = entries.find((e: any) => e.id === 'filesystem');
+  check('gallery: filesystem server is pinned and limited to the approved folders', fsEntry.config.args.includes('@modelcontextprotocol/server-filesystem@2.1.0') && fsEntry.config.args.includes(DEMO), fsEntry.config.args.join(' '));
+  const blender = entries.find((e: any) => e.id === 'blender');
+  check('gallery: blender asks before every call (execute_blender_code runs code)', blender.config.approval === 'always' && /@\d/.test(blender.config.args[0]), JSON.stringify(blender.config));
+  check('gallery: playwright entry matches the hardened default', JSON.stringify(entries.find((e: any) => e.id === 'playwright').config.args).includes('--sandbox'));
+
+  const wrong = gal.addFromGallery('blender', 'blendr');
+  check('add: refused unless the server name is typed exactly', !wrong.ok && !getSettings().mcpServers.blender, wrong.message);
+  check('add: unknown gallery id refused', !gal.addFromGallery('../../evil', 'x').ok);
+  const added = gal.addFromGallery('blender', 'blender');
+  check('add: writes the gallery config (from the server, not the browser)', added.ok && getSettings().mcpServers.blender?.command === 'uvx' && getSettings().mcpServers.blender.enabled === true, added.message);
+  const custom = { ...getSettings().mcpServers.blender, args: ['my-own-args'], enabled: false };
+  updateSettings({ mcpServers: { ...getSettings().mcpServers, blender: custom } });
+  gal.addFromGallery('blender', 'blender');
+  check('add again: an existing server is switched on, never overwritten', getSettings().mcpServers.blender.args[0] === 'my-own-args' && getSettings().mcpServers.blender.enabled === true);
+  check('remove: deletes it from config.json', gal.removeServer('blender').ok && !getSettings().mcpServers.blender && gal.mcpGallery().find((e: any) => e.id === 'blender').installed === false);
+
+  // A real stdio server: connect, list tools, narrow the exposed set.
+  const fake = new URL('./fake-mcp.mjs', import.meta.url).pathname;
+  updateSettings({ mcpServers: { ...getSettings().mcpServers, fake: { command: process.execPath, args: [fake], enabled: true, approval: 'never' } } });
+  await mcp.restartMcp('fake');
+  let st = mcp.mcpStatuses().find((x: any) => x.name === 'fake');
+  check('test connection: server starts and reports its tools', st?.state === 'ready' && st.availableTools.join(',') === 'alpha,beta,gamma' && st.exposedTools.length === 3, JSON.stringify(st));
+  check('choose tools: names the server does not offer are refused', !gal.setAllowTools('fake', ['alpha', 'rm_rf'], st.availableTools).ok);
+  check('choose tools: an empty pick is refused', !gal.setAllowTools('fake', [], st.availableTools).ok);
+  const narrowed = gal.setAllowTools('fake', ['beta'], st.availableTools);
+  await mcp.reloadMcp();
+  st = mcp.mcpStatuses().find((x: any) => x.name === 'fake');
+  const schemaNames = enabledTools('main').map((t: any) => t.function.name).filter((n: string) => n.startsWith('mcp_fake_'));
+  check('choose tools: only the picked tool reaches the model', narrowed.ok && st?.exposedTools.join(',') === 'beta' && schemaNames.join(',') === 'mcp_fake_beta', `${JSON.stringify(st?.exposedTools)} ${schemaNames}`);
+  gal.removeServer('fake');
+  await mcp.reloadMcp();
+  check('remove: a running server is stopped', !mcp.mcpStatuses().some((x: any) => x.name === 'fake') && !enabledTools('main').some((t: any) => t.function.name.startsWith('mcp_fake_')));
+}
+
 server.close();
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

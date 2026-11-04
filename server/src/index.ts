@@ -27,7 +27,8 @@ import { forgetInstructions } from './agent/instructions.js';
 import { unavailableTools } from './tools/index.js';
 import { sandboxStatus } from './sandbox.js';
 import { exportFileName, exportMarkdown, searchSessions } from './sessionTools.js';
-import { closeAllMcp, mcpStatuses, reloadMcp } from './mcp/client.js';
+import { closeAllMcp, mcpStatuses, reloadMcp, restartMcp } from './mcp/client.js';
+import { addFromGallery, mcpGallery, removeServer, setAllowTools } from './mcp/gallery.js';
 import { LIMITS, listSkills, removeSkill, setSkillEnabled } from './skills/store.js';
 import { BIND_HOST, checkRequest, checkUpgrade } from './security.js';
 import { importFromGithub, importFromUpload } from './skills/import.js';
@@ -220,6 +221,7 @@ wss.on('connection', (ws) => {
   const current = sessions[0] ? getSession(sessions[0].id) : null;
   send(ws, { type: 'hello', settings: getSettings(), sessions, session: current, models: modelsCache, unavailableTools: unavailableTools(), sandbox: sandboxStatus() });
   send(ws, { type: 'mcp_status', servers: mcpStatuses() });
+  send(ws, { type: 'mcp_gallery', entries: mcpGallery() });
   send(ws, { type: 'skills', skills: listSkills() });
   const cached = cachedStatuses();
   if (cached.length) send(ws, { type: 'council_status', members: cached });
@@ -297,6 +299,38 @@ async function handle(ws: WebSocket, ev: ClientEvent): Promise<void> {
     case 'stop': {
       const s = getSession(ev.sessionId);
       if (s) runnerFor(s).stop();
+      return;
+    }
+    case 'mcp_gallery_add': {
+      const r = addFromGallery(ev.id, ev.confirmName);
+      bus.emit({ type: 'mcp_notice', ok: r.ok, message: r.message });
+      if (!r.ok) return;
+      bus.emit({ type: 'settings', settings: getSettings() });
+      bus.emit({ type: 'mcp_gallery', entries: mcpGallery() });
+      void reloadMcp();
+      return;
+    }
+    case 'mcp_set_tools': {
+      const st = mcpStatuses().find((x) => x.name === ev.name);
+      const r = setAllowTools(ev.name, Array.isArray(ev.allowTools) ? ev.allowTools.map(String) : [], st?.availableTools ?? []);
+      bus.emit({ type: 'mcp_notice', ok: r.ok, message: r.message });
+      if (!r.ok) return;
+      bus.emit({ type: 'settings', settings: getSettings() });
+      void reloadMcp();
+      return;
+    }
+    case 'mcp_remove': {
+      const r = removeServer(ev.name);
+      bus.emit({ type: 'mcp_notice', ok: r.ok, message: r.message });
+      if (!r.ok) return;
+      bus.emit({ type: 'settings', settings: getSettings() });
+      bus.emit({ type: 'mcp_gallery', entries: mcpGallery() });
+      void reloadMcp();
+      return;
+    }
+    case 'mcp_test': {
+      if (!getSettings().mcpServers?.[ev.name]) return;
+      void restartMcp(ev.name);
       return;
     }
     case 'set_settings': {

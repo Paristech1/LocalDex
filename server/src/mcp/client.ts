@@ -348,6 +348,14 @@ export function reloadMcp(): Promise<void> {
 
 export const startMcp = reloadMcp;
 
+/** Stop and start one server again ("Test connection"): a fresh process, a fresh tool list. */
+export function restartMcp(name: string): Promise<void> {
+  chain = chain.then(async () => {
+    await closeOne(name);
+  });
+  return reloadMcp();
+}
+
 export async function closeAllMcp(): Promise<void> {
   await chain.catch(() => undefined);
   await Promise.all([...conns.keys()].map((n) => closeOne(n)));

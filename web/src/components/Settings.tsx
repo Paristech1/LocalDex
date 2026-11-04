@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { ALL_TOOL_NAMES, type PermissionPreset, type ReasoningMode, type Settings, type ShellApprovalMode, type ToolMode } from '@localdex/shared';
+import { ALL_TOOL_NAMES, type McpGalleryEntry, type McpServerStatus, type PermissionPreset, type ReasoningMode, type Settings, type ShellApprovalMode, type ToolMode } from '@localdex/shared';
 import { send, useStore } from '../store';
 import { collectDropped, fromInput, importGithub, removeSkill, setSkillEnabled, summarize, uploadSkills, type UploadEntry } from '../skills';
 import { Button, Field, Toggle, cx, inputCls } from './ui';
@@ -451,45 +451,155 @@ function SkillsTab() {
 
 function McpTab({ settings, patch }: TabProps) {
   const status = useStore((s) => s.mcp);
+  const gallery = useStore((s) => s.mcpGallery);
+  const notice = useStore((s) => s.mcpNotice);
+  const [adding, setAdding] = useState<string | null>(null);
   const names = Object.keys(settings.mcpServers ?? {});
   return (
     <>
       <div>
         <h3 className="font-medium">MCP servers</h3>
         <p className="text-xs text-ink-400 mt-1">
-          MCP servers add extra tools (for example a browser). Turn one on here. To add a server or change its command, edit <span className="font-mono">~/.localdex/config.json</span> and restart LocalDex; commands cannot be changed from this screen. Only the tools listed under "exposed" are shown to the model.
+          MCP servers add extra tools (a browser, Blender, GitHub…). Add one from the gallery below, or define your own in <span className="font-mono">~/.localdex/config.json</span> and restart LocalDex. Commands can't be typed in here: the gallery's commands are fixed in LocalDex itself. Only the tools ticked under a server are shown to the model; keep the list short for small models.
         </p>
       </div>
+      {notice && Date.now() - notice.ts < 15_000 && <div className={cx('text-xs rounded-md px-3 py-2', notice.ok ? 'bg-accent/10 text-accent' : 'bg-danger/10 text-danger')}>{notice.message}</div>}
       {names.length === 0 && <div className="text-xs text-ink-400">No MCP servers configured.</div>}
       <ul className="space-y-3">
-        {names.map((name) => {
-          const cfg = settings.mcpServers[name];
-          const st = status.find((x) => x.name === name);
-          const state = st?.state ?? 'disabled';
-          return (
-            <li key={name} className="bg-ink-800 rounded-md px-3 py-2 space-y-1.5">
-              <div className="flex items-center gap-3">
-                <span className="font-mono text-sm flex-1">{name}</span>
-                <span className={cx('text-xs', MCP_STATE_STYLE[state])}>{state}</span>
-                <div className="w-16 shrink-0">
-                  <Toggle label="" checked={cfg.enabled} onChange={(v) => patch({ mcpServers: { ...settings.mcpServers, [name]: { ...cfg, enabled: v } } })} />
-                </div>
-              </div>
-              <div className="font-mono text-[11px] text-ink-400 truncate">
-                {cfg.command} {(cfg.args ?? []).join(' ')}
-              </div>
-              {st && st.state === 'ready' && (
-                <div className="text-xs text-ink-300">
-                  exposed ({st.exposedTools.length} of {st.availableTools.length}): <span className="font-mono">{st.exposedTools.join(', ') || 'none'}</span>
-                </div>
-              )}
-              {st?.error && <pre className="text-xs text-danger whitespace-pre-wrap break-words">{st.error}</pre>}
-              <div className="text-[11px] text-ink-400">approval: {cfg.approval ?? 'once'} · workers: {cfg.allowWorkers ? 'allowed' : 'main agent only'}</div>
-            </li>
-          );
-        })}
+        {names.map((name) => (
+          <McpServerCard key={name} name={name} settings={settings} patch={patch} st={status.find((x) => x.name === name)} />
+        ))}
       </ul>
+      <div className="pt-4 border-t border-ink-700">
+        <h3 className="font-medium">Gallery</h3>
+        <ul className="mt-2 grid gap-2">
+          {gallery.map((g) => (
+            <li key={g.id} className="bg-ink-800 rounded-md px-3 py-2">
+              <div className="flex items-center gap-2">
+                <span className="text-sm text-ink-100 flex-1">{g.title}</span>
+                {g.installed ? <span className="text-[11px] text-ink-400">added</span> : <Button size="sm" onClick={() => setAdding(g.id)}>Add…</Button>}
+              </div>
+              <p className="text-[11px] text-ink-400 mt-0.5">{g.description}</p>
+              {adding === g.id && <GalleryConfirm entry={g} onDone={() => setAdding(null)} />}
+            </li>
+          ))}
+        </ul>
+      </div>
     </>
+  );
+}
+
+/** Confirm dialog: everything that will be written to config.json, and the server name typed to confirm. */
+function GalleryConfirm({ entry, onDone }: { entry: McpGalleryEntry; onDone: () => void }) {
+  const [typed, setTyped] = useState('');
+  const c = entry.config;
+  return (
+    <div className="mt-2 rounded-md border border-warn/40 bg-ink-900 p-3 space-y-2 text-xs" role="dialog" aria-label={`Add ${entry.title}`}>
+      <div className="text-ink-200">This starts a program on your computer:</div>
+      <pre className="font-mono text-[11px] text-ink-100 bg-ink-800 rounded px-2 py-1 whitespace-pre-wrap break-all">{[c.command, ...(c.args ?? [])].join(' ')}</pre>
+      <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-0.5 text-[11px]">
+        <dt className="text-ink-400">Tools shown</dt>
+        <dd className="font-mono">{c.allowTools?.join(', ') || 'all the server offers'}</dd>
+        <dt className="text-ink-400">Asks first</dt>
+        <dd>{c.approval === 'always' ? 'every call' : c.approval === 'never' ? 'never' : 'once per LocalDex start'}</dd>
+        {!!c.inheritEnv?.length && (
+          <>
+            <dt className="text-ink-400">Gets env vars</dt>
+            <dd className="font-mono">{c.inheritEnv.join(', ')}</dd>
+          </>
+        )}
+        <dt className="text-ink-400">Needs</dt>
+        <dd>{entry.needs}</dd>
+      </dl>
+      <a className="text-accent underline text-[11px]" href={entry.homepage} target="_blank" rel="noreferrer">
+        {entry.homepage}
+      </a>
+      <label className="block text-ink-300">
+        Type <span className="font-mono text-ink-100">{entry.name}</span> to confirm
+        <input className={cx(inputCls, 'mt-1 font-mono')} value={typed} onChange={(e) => setTyped(e.target.value)} autoFocus />
+      </label>
+      <div className="flex gap-2">
+        <Button
+          size="sm"
+          variant="primary"
+          disabled={typed.trim() !== entry.name}
+          onClick={() => {
+            send({ type: 'mcp_gallery_add', id: entry.id, confirmName: typed.trim() });
+            onDone();
+          }}
+        >
+          Add and start
+        </Button>
+        <Button size="sm" variant="ghost" onClick={onDone}>
+          Cancel
+        </Button>
+      </div>
+    </div>
+  );
+}
+
+function McpServerCard({ name, settings, patch, st }: TabProps & { name: string; st?: McpServerStatus }) {
+  const cfg = settings.mcpServers[name];
+  const state = st?.state ?? 'disabled';
+  const [picking, setPicking] = useState(false);
+  const [picked, setPicked] = useState<string[]>([]);
+  useEffect(() => setPicked(st?.exposedTools ?? []), [st?.exposedTools?.join(',')]);
+  return (
+    <li className="bg-ink-800 rounded-md px-3 py-2 space-y-1.5">
+      <div className="flex items-center gap-3">
+        <span className="font-mono text-sm flex-1">{name}</span>
+        <span className={cx('text-xs', MCP_STATE_STYLE[state])}>{state}</span>
+        <div className="w-16 shrink-0">
+          <Toggle label="" checked={cfg.enabled} onChange={(v) => patch({ mcpServers: { ...settings.mcpServers, [name]: { ...cfg, enabled: v } } })} />
+        </div>
+      </div>
+      <div className="font-mono text-[11px] text-ink-400 truncate">
+        {cfg.command} {(cfg.args ?? []).join(' ')}
+      </div>
+      {st && st.state === 'ready' && !picking && (
+        <div className="text-xs text-ink-300">
+          exposed ({st.exposedTools.length} of {st.availableTools.length}): <span className="font-mono">{st.exposedTools.join(', ') || 'none'}</span>
+        </div>
+      )}
+      {st && st.state === 'ready' && picking && (
+        <div className="space-y-1">
+          <div className="grid grid-cols-2 gap-x-3 gap-y-0.5 max-h-48 overflow-y-auto">
+            {st.availableTools.map((t) => (
+              <label key={t} className="flex items-center gap-1.5 text-[11px] font-mono">
+                <input type="checkbox" checked={picked.includes(t)} onChange={(e) => setPicked((p) => (e.target.checked ? [...p, t] : p.filter((x) => x !== t)))} />
+                {t}
+              </label>
+            ))}
+          </div>
+          {picked.length > 8 && <div className="text-[11px] text-warn">{picked.length} tools: small local models get less reliable above about 8.</div>}
+          <div className="flex gap-2">
+            <Button size="sm" variant="primary" disabled={!picked.length} onClick={() => (send({ type: 'mcp_set_tools', name, allowTools: picked }), setPicking(false))}>
+              Save tools
+            </Button>
+            <Button size="sm" variant="ghost" onClick={() => setPicking(false)}>
+              Cancel
+            </Button>
+          </div>
+        </div>
+      )}
+      {st?.error && <pre className="text-xs text-danger whitespace-pre-wrap break-words">{st.error}</pre>}
+      <div className="flex items-center gap-2 text-[11px] text-ink-400">
+        <span className="flex-1">approval: {cfg.approval ?? 'once'} · workers: {cfg.allowWorkers ? 'allowed' : 'main agent only'}</span>
+        {cfg.enabled && (
+          <button type="button" className="hover:text-ink-100" onClick={() => send({ type: 'mcp_test', name })}>
+            Test connection
+          </button>
+        )}
+        {st?.state === 'ready' && !picking && (
+          <button type="button" className="hover:text-ink-100" onClick={() => setPicking(true)}>
+            Choose tools
+          </button>
+        )}
+        <button type="button" className="hover:text-danger" onClick={() => confirm(`Remove "${name}" from config.json?`) && send({ type: 'mcp_remove', name })}>
+          Remove
+        </button>
+      </div>
+    </li>
   );
 }
 

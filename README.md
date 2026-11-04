@@ -206,6 +206,8 @@ configured is [Playwright MCP](https://github.com/microsoft/playwright-mcp) for 
 2. Ask the agent to open a page. The first call to a server asks for approval once; approving allows that
    server's exposed tools until LocalDex restarts.
 
+**Gallery** (Settings → MCP Servers): ready-made entries for **Playwright**, **Blender** (`blender-mcp`, every call asks first), **Filesystem** (read-only tools, limited to your approved folders) and **GitHub** (official server, read-only). **Add…** shows the exact command, arguments, tools, environment variables and prerequisites, and you type the server's name to confirm. The browser only sends the gallery id: the command itself is fixed in LocalDex, so the WebSocket still can't start an arbitrary program. Each server card has **Test connection** (restart it and list its tools), **Choose tools** (tick which of the server's tools the model sees; a warning above 8) and **Remove**.
+
 Server definitions live in `~/.localdex/config.json` under `mcpServers`. They can only be edited in that file
 (restart LocalDex after editing); the UI and WebSocket can only toggle `enabled`, because a server command runs a
 program on your machine.

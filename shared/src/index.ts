@@ -670,6 +670,22 @@ export interface McpServerConfig {
 
 export type McpServerState = 'disabled' | 'connecting' | 'ready' | 'error';
 
+/** E1: a ready-made MCP server the user can add from Settings → MCP Servers. The command comes from the server, never the browser. */
+export interface McpGalleryEntry {
+  id: string;
+  /** Server name it is added under (also what the user types to confirm). */
+  name: string;
+  title: string;
+  description: string;
+  /** What must be installed first. */
+  needs: string;
+  homepage: string;
+  /** Exactly what would be written to config.json. */
+  config: McpServerConfig;
+  /** A server with this name already exists. */
+  installed: boolean;
+}
+
 export interface McpServerStatus {
   name: string;
   state: McpServerState;
@@ -957,6 +973,8 @@ export type ServerEvent =
   | { type: 'settings'; settings: Settings }
   | { type: 'models'; models: ModelInfo[]; error?: string }
   | { type: 'mcp_status'; servers: McpServerStatus[] }
+  | { type: 'mcp_gallery'; entries: McpGalleryEntry[] }
+  | { type: 'mcp_notice'; ok: boolean; message: string }
   | { type: 'skills'; skills: SkillInfo[] }
   | { type: 'council_status'; members: MemberStatus[] }
   /** needsCode: the vendor showed a code in the browser that must be pasted back (council_login_code). */
@@ -991,6 +1009,10 @@ export type ClientEvent =
   | { type: 'rename_session'; id: string; title: string }
   | { type: 'stop'; sessionId: string }
   | { type: 'set_settings'; patch: Partial<Settings> }
+  | { type: 'mcp_gallery_add'; id: string; confirmName: string }
+  | { type: 'mcp_set_tools'; name: string; allowTools: string[] }
+  | { type: 'mcp_remove'; name: string }
+  | { type: 'mcp_test'; name: string }
   | { type: 'list_models' }
   /** Unload and reload a model in LM Studio with this context window (LM Studio REST API v1). */
   | { type: 'reload_model'; model: string; contextLength: number }
