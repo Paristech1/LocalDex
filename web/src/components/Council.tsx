@@ -19,7 +19,7 @@ import {
   type MemberStatus,
   type Settings,
 } from '@localdex/shared';
-import { send, useStore } from '../store';
+import { send, setComposerDraft, useStore } from '../store';
 import { Markdown } from './Message';
 import { ToolCard } from './ToolCard';
 import { Button, Field, Toggle, cx, fmtTokens, inputCls } from './ui';
@@ -130,7 +130,7 @@ export function CouncilRunCard({ run, defaultOpen, compact }: { run: CouncilRun;
           <span className={cx('text-[11px]', running ? 'text-warn pulse' : run.status === 'done' ? 'text-accent-dim' : run.status === 'error' ? 'text-danger' : 'text-ink-400')}>
             {running ? 'running' : run.status}
           </span>
-          {run.risk && <RiskChip risk={run.risk} reasons={run.riskReasons ?? []} />}
+          {run.risk && <RiskChip risk={run.risk} reasons={run.riskReasons ?? []} overridden={run.riskOverridden} />}
           {run.access && <AccessChip access={run.access} />}
           {run.escalated && (
             <span className="rounded border border-[#7cc0f2]/40 px-1.5 py-px text-[10px] leading-4 text-[#7cc0f2]" title="Handed over from a Solo chat, with a summary of what the local agent did">
@@ -174,8 +174,22 @@ export function CouncilRunCard({ run, defaultOpen, compact }: { run: CouncilRun;
         <div className="border-t border-ink-700 px-3 py-2 space-y-2">
           {run.routeNote && <div className="text-[11px] text-ink-400">router: {run.routeNote}</div>}
           {run.risk === 'high' && riskRouting && (
-            <div className="text-[11px] text-warn">High risk: planned and reviewed, built on the heavy model, and every edit needs your approval.</div>
+            <div className="text-[11px] text-warn">
+              High risk{run.riskReasons?.length ? ` (matched: ${run.riskReasons.join(', ')})` : ''}: planned and reviewed, built on the heavy model, and every edit needs your approval.{' '}
+              <button
+                type="button"
+                className="underline hover:text-ink-100"
+                title="Loads this request into the composer with the Not risky chip pressed, so you can send it again rated normal"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setComposerDraft(run.task.split('\n\n---\nEarlier in this conversation')[0], { notRisky: true });
+                }}
+              >
+                Wrong? Mark not risky
+              </button>
+            </div>
           )}
+          {run.riskOverridden?.length ? <div className="text-[11px] text-ink-400">You marked this not risky; the classifier had matched: {run.riskOverridden.join(', ')}.</div> : null}
           {run.steps.map((s) => (
             <StepRow key={s.id} step={s} now={now} defaultOpen={s.status === 'running'} />
           ))}
@@ -433,7 +447,14 @@ const RISK_CLS: Record<CouncilRisk, string> = {
   low: 'border-ink-600 text-ink-400',
 };
 
-function RiskChip({ risk, reasons }: { risk: CouncilRisk; reasons: string[] }) {
+function RiskChip({ risk, reasons, overridden }: { risk: CouncilRisk; reasons: string[]; overridden?: string[] }) {
+  if (overridden?.length) {
+    return (
+      <span className={cx('rounded border px-1.5 py-px text-[10px] leading-4 truncate max-w-[14rem]', RISK_CLS.normal)} title={`You marked this not risky. The classifier had matched: ${overridden.join(', ')}`}>
+        not risky (you) · was {overridden.join(', ')}
+      </span>
+    );
+  }
   return (
     <span
       className={cx('rounded border px-1.5 py-px text-[10px] leading-4 truncate max-w-[14rem]', RISK_CLS[risk])}

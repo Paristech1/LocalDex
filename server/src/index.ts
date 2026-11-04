@@ -228,7 +228,7 @@ async function handle(ws: WebSocket, ev: ClientEvent): Promise<void> {
     case 'send_message': {
       const s = getSession(ev.sessionId);
       if (!s) return send(ws, { type: 'error', message: 'Session not found' });
-      void runnerFor(s).handleUserMessage(ev.content, parseRunAccess(ev.access));
+      void runnerFor(s).handleUserMessage(ev.content, parseRunAccess(ev.access), ev.notRisky === true);
       return;
     }
     case 'council_escalate': {
@@ -236,7 +236,7 @@ async function handle(ws: WebSocket, ev: ClientEvent): Promise<void> {
       if (!s) return send(ws, { type: 'error', message: 'Session not found' });
       if (!getSettings().council.enabled) return send(ws, { type: 'error', sessionId: s.id, message: 'Turn on the model council in Settings → Council first.' });
       const member = MEMBER_IDS.find((m) => m === ev.member);
-      void runnerFor(s).escalate({ pattern: ev.pattern, member, note: typeof ev.note === 'string' ? ev.note : undefined, access: parseRunAccess(ev.access) });
+      void runnerFor(s).escalate({ pattern: ev.pattern, member, note: typeof ev.note === 'string' ? ev.note : undefined, access: parseRunAccess(ev.access), notRisky: ev.notRisky === true });
       return;
     }
     case 'new_session': {

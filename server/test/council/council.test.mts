@@ -341,6 +341,19 @@ const riskTable: [string, string, string[]?][] = [
   ['add a button to the toolbar', 'normal', []],
   ['add rate limiting to the API with tests', 'normal', []],
   ['explain how the author list renders', 'normal', []],
+  // F1: words LocalDex itself uses, and bare "CI"/"prod", only count in context.
+  ['add a --fail-on flag for CI', 'normal', []],
+  ['update the CI pipeline config', 'high', ['deploy/infra']],
+  ['list chat sessions in the sidebar', 'normal', []],
+  ['fix session token expiry', 'high', ['auth']],
+  ['productivity tweaks', 'normal', []],
+  ['add a log in the request handler', 'normal', []],
+  ['fix the login page redirect', 'high', ['auth']],
+  ['check file permissions on the upload dir', 'high', ['auth']],
+  ['the permissions dialog overlaps the sidebar', 'normal', []],
+  ['renew the TLS certificate for the API', 'high', ['secrets']],
+  ['add a tls option to the settings table', 'normal', []],
+  ['restart the prod db after the deploy', 'high', ['deploy/infra']],
 ];
 const riskMiss = riskTable.filter(([t, want, reasons]) => {
   const a = assessRisk(t);
@@ -356,6 +369,16 @@ check('risk: slash command keeps its pattern', askHi.pattern === 'single' && ask
 updateSettings({ council: { ...getSettings().council, riskRouting: false } });
 check('risk: switch off → no upgrade, still rated', classify('fix the password reset check in auth.ts').pattern === 'single' && classify('fix the password reset check in auth.ts').risk === 'high');
 updateSettings({ council: { ...getSettings().council, riskRouting: true } });
+// F1: the per-message "Not risky" override rates the run normal, keeps the matched words, and skips the pbr upgrade.
+const { markNotRisky } = await import(`${SRC}/council/router.ts`);
+const nr = classify('fix the password reset check in auth.ts', getSettings().council, { notRisky: true });
+check('not risky: rated normal, no pbr upgrade, matched words kept', nr.risk === 'normal' && nr.pattern === 'single' && nr.riskOverridden?.includes('auth') && /marked it not risky/.test(nr.note), JSON.stringify({ risk: nr.risk, pattern: nr.pattern, over: nr.riskOverridden }));
+check('not risky: a normal request is unchanged', markNotRisky({ pattern: 'single', role: 'builder', task: 'add a button to the toolbar', note: 'x' }).riskOverridden === undefined);
+{
+  reset(); approvals = 0;
+  const run = await runCouncil(ctx(), markNotRisky({ pattern: 'single', role: 'builder', member: 'codex', task: 'fix the password reset check in auth.ts', note: 'test' }));
+  check('not risky run: normal risk persisted with the overridden words, one plain builder step', run.risk === 'normal' && run.riskOverridden?.includes('auth') && run.steps.length === 1 && !/heavy model/.test(run.steps[0].note ?? ''), `${run.risk} ${JSON.stringify(run.riskOverridden)} ${run.steps.map((s: any) => s.note).join('|')}`);
+}
 
 // High-risk small request end to end, with confirmWrites off and fix rounds at 0.
 reset(); approvals = 0;

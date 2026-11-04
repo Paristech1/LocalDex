@@ -63,6 +63,8 @@ export interface State {
   councilStats: CouncilStats | null;
   councilLogin: { member: MemberId; url?: string; done?: boolean; error?: string; needsCode?: boolean } | null;
   error: string | null;
+  /** Text (and flags) another component asked the composer to load, e.g. "Wrong? Mark not risky" on a run card. */
+  composerDraft: { text: string; notRisky?: boolean; nonce: number } | null;
 }
 
 let state: State = {
@@ -83,6 +85,7 @@ let state: State = {
   councilStats: null,
   councilLogin: null,
   error: null,
+  composerDraft: null,
 };
 
 const listeners = new Set<() => void>();
@@ -301,6 +304,11 @@ function handle(ev: ServerEvent): void {
       set((s) => ({ logs: [...s.logs.slice(-199), { id: ++logId, level: ev.level, message: ev.message, ts: Date.now() }] }));
       return;
   }
+}
+
+/** Ask the composer to load this text (replacing what is typed), optionally with the "Not risky" chip pressed. */
+export function setComposerDraft(text: string, opts: { notRisky?: boolean } = {}): void {
+  set({ composerDraft: { text, notRisky: opts.notRisky, nonce: Date.now() } });
 }
 
 export function dismissError(): void {

@@ -383,6 +383,8 @@ export interface CouncilRun {
   /** Risk rating of the request and the signals behind it (e.g. ['auth', 'migration']). */
   risk?: CouncilRisk;
   riskReasons?: string[];
+  /** The user marked the message "Not risky": the signals that would have rated it high. */
+  riskOverridden?: string[];
   /** Vote runs: quorum used, voters asked, and how many were dropped after the grace period. */
   quorum?: { needed: number; of: number; dropped: number; graceSeconds: number };
   steps: CouncilStep[];
@@ -802,10 +804,13 @@ export type ServerEvent =
   | { type: 'log'; level: 'info' | 'warn' | 'error'; message: string };
 
 export type ClientEvent =
-  /** access: Council mode only, overrides Settings → Council edit access for this message's run. */
-  | { type: 'send_message'; sessionId: string; content: string; access?: CouncilRunAccess }
+  /**
+   * access: Council mode only, overrides Settings → Council edit access for this message's run.
+   * notRisky: Council mode only, the user says the risk classifier is wrong for this message (rated normal; access mode still applies).
+   */
+  | { type: 'send_message'; sessionId: string; content: string; access?: CouncilRunAccess; notRisky?: boolean }
   /** Solo mode: hand the latest request, with a summary of what the local agent did, to the council. The mode stays Solo. */
-  | { type: 'council_escalate'; sessionId: string; pattern: EscalatePattern; member?: MemberId; note?: string; access?: CouncilRunAccess }
+  | { type: 'council_escalate'; sessionId: string; pattern: EscalatePattern; member?: MemberId; note?: string; access?: CouncilRunAccess; notRisky?: boolean }
   | { type: 'new_session' }
   | { type: 'load_session'; id: string }
   | { type: 'delete_session'; id: string }

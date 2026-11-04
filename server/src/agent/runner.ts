@@ -9,7 +9,7 @@ import { runLoop } from './loop.js';
 import { goalContinuePrompt, mainSystemPrompt } from './prompts.js';
 import { WorkerManager } from './workers.js';
 import { redactIfEnabled, runCouncil, runSummary, runVia, type CouncilContext } from '../council/orchestrator.js';
-import { classify, classifyWithLocal, domainBuilder, parseCommand, settingsForAccess, withRisk, type Route } from '../council/router.js';
+import { classify, classifyWithLocal, domainBuilder, markNotRisky, parseCommand, settingsForAccess, withRisk, type Route } from '../council/router.js';
 import type { CouncilRequest } from '../tools/types.js';
 
 /** Orchestrates one session: main loop, corrections, workers, goal/loop autonomy, compaction. */
@@ -38,9 +38,9 @@ export class SessionRunner {
   }
 
   /** User sent a message. Starts a run, or queues a correction if one is already in flight. */
-  async handleUserMessage(content: string, access?: CouncilRunAccess): Promise<void> {
+  async handleUserMessage(content: string, access?: CouncilRunAccess, notRisky = false): Promise<void> {
     if (this.running) {
-      this.corrections.push({ content, ...(access ? { access } : {}) });
+      this.corrections.push({ content, ...(access ? { access } : {}), ...(notRisky ? { notRisky } : {}) });
       bus.log('info', 'Correction queued; it will be delivered before the next model call.');
       return;
     }
@@ -50,7 +50,7 @@ export class SessionRunner {
     this.session.messages.push({ role: 'user', content, ts: Date.now() });
     this.persist();
     this.sync();
-    if (this.councilMode) await this.runCouncilTurn(content, access);
+    if (this.councilMode) await this.runCouncilTurn(content, access, notRisky);
     else await this.run();
   }
 
@@ -94,17 +94,18 @@ export class SessionRunner {
   }
 
   /** Council mode: route the message to cloud members instead of the local model. */
-  private async runCouncilTurn(content: string, access?: CouncilRunAccess): Promise<void> {
+  private async runCouncilTurn(content: string, access?: CouncilRunAccess, notRisky = false): Promise<void> {
     await this.councilTurn(async (signal) => {
       // The access picked for this message also steers routing (e.g. "Read only" never routes to a builder).
       const c = settingsForAccess(access);
       let route = parseCommand(content);
       if (!route) {
-        if (c.defaultPattern === 'auto') route = c.routing === 'local' ? await classifyWithLocal(content, signal, c) : classify(content, c);
-        else route = { ...classify(content, c), pattern: c.defaultPattern, note: `default pattern: ${c.defaultPattern}` };
+        if (c.defaultPattern === 'auto') route = c.routing === 'local' ? await classifyWithLocal(content, signal, c, { notRisky }) : classify(content, c, { notRisky });
+        else route = { ...classify(content, c, { notRisky }), pattern: c.defaultPattern, note: `default pattern: ${c.defaultPattern}` };
       }
       // Rate risk on what was asked, before conversation context is appended (slash commands keep their pattern).
-      route = withRisk(route);
+      route = notRisky ? markNotRisky(route) : withRisk(route);
+      if (route.riskOverridden?.length) bus.log('info', `[council] you marked this message not risky (classifier said: ${route.riskOverridden.join(', ')})`);
       const asked = route.task;
       // chatMessage lets a follow-up to the same member continue its own session with just this message.
       route = { ...route, chatMessage: asked, ...(access ? { access } : {}) };
@@ -118,7 +119,7 @@ export class SessionRunner {
    * "Hand to council" from a Solo chat: the latest real request plus a summary of what the local agent did goes to
    * the council as one run. The answer is appended here as a council turn; the session stays in Solo mode.
    */
-  async escalate(opts: { pattern: EscalatePattern; member?: MemberId; note?: string; access?: CouncilRunAccess }): Promise<void> {
+  async escalate(opts: { pattern: EscalatePattern; member?: MemberId; note?: string; access?: CouncilRunAccess; notRisky?: boolean }): Promise<void> {
     const sid = this.session.id;
     if (this.running) {
       const msg = 'A run is in progress. Wait for it to finish (or press Stop), then hand it to the council.';
@@ -142,12 +143,15 @@ export class SessionRunner {
       const asked = note ? `${request}\n\nNote from the user: ${note}` : request;
       const c = settingsForAccess(opts.access);
       let route: Route;
-      if (pattern === 'auto') route = c.routing === 'local' ? await classifyWithLocal(asked, signal, c) : classify(asked, c);
-      else if (pattern === 'single') route = { ...classify(asked, c), pattern: 'single', member: opts.member, note: opts.member ? `handed over → ${opts.member}` : 'handed over → router picks the member' };
+      const nr = { notRisky: opts.notRisky === true };
+      if (pattern === 'auto') route = c.routing === 'local' ? await classifyWithLocal(asked, signal, c, nr) : classify(asked, c, nr);
+      else if (pattern === 'single') route = { ...classify(asked, c, nr), pattern: 'single', member: opts.member, note: opts.member ? `handed over → ${opts.member}` : 'handed over → router picks the member' };
       else if (pattern === 'vote') route = { pattern: 'vote', role: 'researcher', task: asked, note: 'handed over → vote' };
       else route = { pattern, role: domainBuilder(asked).role, task: asked, note: `handed over → ${ESCALATE_LABELS[pattern]}` };
       // Risk is rated on the request itself, before the local agent's history is appended.
-      route = withRisk({ ...route, task: asked, escalated: true, ...(opts.access ? { access: opts.access } : {}) });
+      const base: Route = { ...route, task: asked, escalated: true, ...(opts.access ? { access: opts.access } : {}) };
+      route = nr.notRisky ? markNotRisky(base) : withRisk(base);
+      if (route.riskOverridden?.length) bus.log('info', `[council] you marked this request not risky (classifier said: ${route.riskOverridden.join(', ')})`);
       const work = localWorkSummary(this.session.messages);
       if (work) route = { ...route, task: `${asked}\n\n---\nEarlier in this conversation, LocalDex's local agent worked on this in Solo mode. What it did:\n${work}` };
       return { route, asked };
@@ -187,7 +191,7 @@ export class SessionRunner {
         const next = pending.map((m) => m.content).join('\n\n');
         s.messages.push({ role: 'user', content: next, ts: Date.now() });
         // Queued follow-ups keep the access picked for them; several at once get the strictest one.
-        void (this.councilMode ? this.runCouncilTurn(next, strictestAccess(pending.map((m) => m.access))) : this.run());
+        void (this.councilMode ? this.runCouncilTurn(next, strictestAccess(pending.map((m) => m.access)), pending.every((m) => m.notRisky === true)) : this.run());
       }
     }
   }
@@ -408,6 +412,7 @@ export class SessionRunner {
 interface QueuedMessage {
   content: string;
   access?: CouncilRunAccess;
+  notRisky?: boolean;
 }
 
 const ACCESS_RANK: Record<CouncilRunAccess, number> = { read: 0, confirm: 1, auto: 2 };

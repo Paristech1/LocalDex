@@ -83,6 +83,7 @@ export async function runCouncil(ctx: CouncilContext, input: Route): Promise<Cou
     routeNote: route.note,
     risk: route.risk,
     riskReasons: route.riskReasons,
+    ...(route.riskOverridden?.length ? { riskOverridden: route.riskOverridden } : {}),
     ...(route.access ? { access: route.access } : {}),
     ...(route.escalated ? { escalated: true } : {}),
     steps: [],

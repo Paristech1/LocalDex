@@ -26,6 +26,8 @@ export interface Route {
   access?: CouncilRunAccess;
   /** Started from a Solo chat with "Hand to council". */
   escalated?: boolean;
+  /** The user marked this message "Not risky": the signals that matched anyway, kept for the run card. */
+  riskOverridden?: string[];
 }
 
 // ---------- risk ----------
@@ -39,11 +41,16 @@ export interface RiskAssessment {
 /** Keyword signals for risky changes. Each label is what the user sees on the run card. */
 const HIGH_RISK: [string, RegExp][] = [
   ['migration', /\b(migrations?|(db|database|sql) (schema|migrat\w*)|schema (change|migration)s?|alter table|create table|(add|drop|rename) (a )?column)\b/i],
-  ['auth', /\b(auth|authn|authz|authenticat\w*|authori[sz]\w*|log ?in|logout|log out|sign[- ]?in|sign[- ]?up|sessions?|passwords?|passwd|oauth\d?|sso|saml|jwt|(access|refresh|auth|bearer|csrf) tokens?|permissions?|rbac|acl|access control|(user|admin) roles?|roles and permissions|2fa|mfa)\b/i],
+  // Words that LocalDex itself uses (sessions, log, permissions) only count in auth phrases, so UI work on "chat sessions" isn't "auth".
+  [
+    'auth',
+    /\b(auth|authn|authz|authenticat\w*|authori[sz]\w*|logins?|logout|log out|log[- ]?in (page|flow|form|button|screen|link)|logging in|sign[- ]?in|sign[- ]?up|session (tokens?|cookies?|fixation|hijack\w*|expiry|expiration|timeout|store|storage)|(user|auth|login) sessions?|passwords?|passwd|oauth\d?|sso|saml|jwt|(access|refresh|auth|bearer|csrf) tokens?|(user|admin|role|access|file) permissions?|permission (model|system|checks?|levels?|bits)|rbac|acl|access control|(user|admin) roles?|roles and permissions|2fa|mfa)\b/i,
+  ],
   ['payments', /\b(payments?|billing|checkout|invoic\w*|stripe|paypal|credit cards?|refunds?|payouts?)\b/i],
-  ['secrets', /\b(encrypt\w*|decrypt\w*|crypto\w*|ciphers?|secrets?|api[- ]?keys?|private keys?|signing keys?|keys?(store|chain)|credentials?|certificates?|tls|ssl|hmac)\b|\.env\b/i],
+  ['secrets', /\b(encrypt\w*|decrypt\w*|crypto\w*|ciphers?|secrets?|api[- ]?keys?|private keys?|signing keys?|keys?(store|chain)|credentials?|(tls|ssl) (cert\w*|config\w*|termination|handshake|versions?|settings?)|(tls|ssl)\/(tls|ssl)|certificates? (pin\w*|validation|chains?|renew\w*|rotation)|(renew|rotate|install|replace|generate|issue) (the |a |new )?(tls |ssl |x\.?509 )?certificates?|hmac)\b|\.env\b/i],
   ['data deletion', /\b(delet\w* (all |the |every |old |existing )?(data|records?|rows?|users?|accounts?|database|tables?|backups?|history)|delete from|drop (table|database|schema|column|index)|truncate|rm -rf|purge|wipe|destroy (the )?(data|database))\b/i],
-  ['deploy/infra', /\b(production|prod|deploy\w*|infra\w*|terraform|kubernetes|k8s|helm|dockerfile|docker-compose|ci( config| pipeline| workflow)?|ci\/cd|github actions|nginx)\b|\.github\/workflows/i],
+  // "CI" and "prod" need context: "add a --fail-on flag for CI" is a normal change, "update the CI pipeline config" is not.
+  ['deploy/infra', /\b(prod(uction)?[- ](db|database|deploy\w*|servers?|data|env\w*|config\w*|credentials?|secrets?|cluster|instance|release|outage|incident)|(to|on|in|into) prod(uction)?|deploy\w*|infra\w*|terraform|kubernetes|k8s|helm|dockerfile|docker-compose|ci[- ](config\w*|pipelines?|workflows?|jobs?|runners?)|ci\/cd|github actions|nginx)\b|\.github\/workflows/i],
   ['security fix', /\b(security (fix|patch|issue|bug|hole)s?|vulnerab\w*|cve-\d+|xss|csrf|(sql|command|shell|prompt) injection|path traversal|rce|sanitiz\w*)\b/i],
   ['major upgrade', /\b(major (version|upgrade|bump)s?|(upgrade|bump)\w* .{0,40}?\bto v?\d+(\.x|\.0)?(?![\w.]))/i],
   ['history rewrite', /\b(force[- ]push\w*|push (--force|-f)\b|rebase|reset --hard|rewrite (the )?(repo |commit )?history|filter-branch|filter-repo)/i],
@@ -78,6 +85,16 @@ export function withRisk(route: Route, opts: { upgrade?: boolean } = {}, c: Coun
     out.note = `${out.note}; high risk (${reasons.join(', ')}) → plan → build → review`;
   }
   return out;
+}
+
+/**
+ * The user pressed "Not risky" for this message: the run is rated normal whatever the words say. The matched signals
+ * are kept on the route (riskOverridden) so the run card can show what was overridden. Access mode is not changed.
+ */
+export function markNotRisky(route: Route): Route {
+  const { risk, reasons } = route.risk ? { risk: route.risk, reasons: route.riskReasons ?? [] } : assessRisk(route.task);
+  if (risk !== 'high') return { ...route, risk, riskReasons: reasons };
+  return { ...route, risk: 'normal', riskReasons: [], riskOverridden: reasons, note: `${route.note}; rated high (${reasons.join(', ')}) but you marked it not risky` };
 }
 
 /** Settings as one run sees them when the user picked an access mode for that message. */
@@ -196,8 +213,9 @@ export function domainBuilder(task: string): { role: CouncilRole; why: string } 
 }
 
 /** Keyword routing: instant, free, predictable. Also rates risk and applies the risk policy. */
-export function classify(task: string, c: CouncilSettings = getSettings().council): Route {
-  return withRisk(classifyIntent(task, c), { upgrade: true }, c);
+export function classify(task: string, c: CouncilSettings = getSettings().council, opts: { notRisky?: boolean } = {}): Route {
+  const route = classifyIntent(task, c);
+  return opts.notRisky ? markNotRisky(route) : withRisk(route, { upgrade: true }, c);
 }
 
 function classifyIntent(task: string, c: CouncilSettings): Route {
@@ -223,8 +241,8 @@ function classifyIntent(task: string, c: CouncilSettings): Route {
 }
 
 /** Optional: ask the local model to classify (free, ~1–3s). Falls back to rules on any problem. */
-export async function classifyWithLocal(task: string, signal: AbortSignal, c: CouncilSettings = getSettings().council): Promise<Route> {
-  const fallback = classify(task, c);
+export async function classifyWithLocal(task: string, signal: AbortSignal, c: CouncilSettings = getSettings().council, opts: { notRisky?: boolean } = {}): Promise<Route> {
+  const fallback = classify(task, c, opts);
   const model = getSettings().model;
   if (!model) return fallback;
   const ac = new AbortController();
@@ -262,7 +280,8 @@ export async function classifyWithLocal(task: string, signal: AbortSignal, c: Co
       pattern = 'single';
       role = 'planner';
     }
-    return withRisk({ pattern, role, task, note: `local router (${model}): ${pattern}/${role}` }, { upgrade: true }, c);
+    const route: Route = { pattern, role, task, note: `local router (${model}): ${pattern}/${role}` };
+    return opts.notRisky ? markNotRisky(route) : withRisk(route, { upgrade: true }, c);
   } catch {
     return { ...fallback, note: `${fallback.note} (local router unavailable)` };
   } finally {

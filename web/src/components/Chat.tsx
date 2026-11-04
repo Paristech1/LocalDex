@@ -166,16 +166,26 @@ function Composer({
   const [text, setText] = useState('');
   const ref = useRef<HTMLTextAreaElement>(null);
   const councilSettings = useStore((s) => s.settings?.council);
+  const draft = useStore((s) => s.composerDraft);
   const fallback: CouncilRunAccess = councilSettings ? defaultRunAccess(councilSettings) : 'read';
   // Per message, never saved: starts from Settings → Council and follows it when those settings change.
   const [access, setAccess] = useState<CouncilRunAccess>(fallback);
   useEffect(() => setAccess(fallback), [fallback]);
+  // "Not risky" for this one message: the risk classifier is overruled (the access mode still applies). Resets after sending.
+  const [notRisky, setNotRisky] = useState(false);
+  useEffect(() => {
+    if (!draft) return;
+    setText(draft.text);
+    if (draft.notRisky) setNotRisky(true);
+    ref.current?.focus();
+  }, [draft]);
 
   const submit = () => {
     const t = text.trim();
     if (!t) return;
-    send({ type: 'send_message', sessionId, content: t, ...(council ? { access } : {}) });
+    send({ type: 'send_message', sessionId, content: t, ...(council ? { access, ...(notRisky ? { notRisky } : {}) } : {}) });
     setText('');
+    setNotRisky(false);
   };
 
   useEffect(() => {
@@ -216,6 +226,7 @@ function Composer({
         </div>
         <div className="flex items-center gap-2">
           {council && <AccessPicker value={access} onChange={setAccess} />}
+          {council && <NotRiskyChip value={notRisky} onChange={setNotRisky} />}
           {onEscalate && (
             <Button variant="ghost" size="sm" onClick={onEscalate} title="Hand your latest request to the council; the chat stays in Solo">
               Hand to council ☁
@@ -266,6 +277,22 @@ function AccessPicker({ value, onChange }: { value: CouncilRunAccess; onChange: 
   );
 }
 
+/** Per-message override of the risk classifier: the run is rated normal, so it isn't forced through plan → build → review. */
+function NotRiskyChip({ value, onChange }: { value: boolean; onChange: (v: boolean) => void }) {
+  return (
+    <button
+      type="button"
+      role="switch"
+      aria-checked={value}
+      onClick={() => onChange(!value)}
+      title={value ? 'This message is rated normal risk even if it mentions auth, payments, migrations… (click to undo)' : 'Rate this message as not risky, if the risk classifier gets it wrong (words like "CI" or "sessions")'}
+      className={cx('rounded-md border px-2 py-1 text-[11px] whitespace-nowrap transition-colors', value ? 'border-accent/50 bg-accent/10 text-accent' : 'border-ink-600 text-ink-400 hover:text-ink-200')}
+    >
+      {value ? '✓ Not risky' : 'Not risky'}
+    </button>
+  );
+}
+
 const ESCALATE_OPTIONS: Array<{ id: EscalatePattern; label: string; hint: string }> = [
   { id: 'auto', label: 'Auto', hint: 'The router picks' },
   { id: 'single', label: 'Ask one member', hint: 'One member answers' },
@@ -287,8 +314,9 @@ function EscalatePicker({ sessionId, onClose }: { sessionId: string; onClose: ()
   const fallback: CouncilRunAccess = councilSettings ? defaultRunAccess(councilSettings) : 'read';
   const [access, setAccess] = useState<CouncilRunAccess>(fallback);
   useEffect(() => setAccess(fallback), [fallback]);
+  const [notRisky, setNotRisky] = useState(false);
   const go = () => {
-    send({ type: 'council_escalate', sessionId, pattern, access, ...(pattern === 'single' && member ? { member } : {}), ...(note.trim() ? { note: note.trim() } : {}) });
+    send({ type: 'council_escalate', sessionId, pattern, access, ...(notRisky ? { notRisky } : {}), ...(pattern === 'single' && member ? { member } : {}), ...(note.trim() ? { note: note.trim() } : {}) });
     onClose();
   };
   return (
@@ -326,6 +354,7 @@ function EscalatePicker({ sessionId, onClose }: { sessionId: string; onClose: ()
           </select>
         )}
         <AccessPicker value={access} onChange={setAccess} />
+        <NotRiskyChip value={notRisky} onChange={setNotRisky} />
         <input
           className={cx(inputCls, 'flex-1 min-w-[10rem] text-xs')}
           value={note}

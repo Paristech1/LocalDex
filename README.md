@@ -181,7 +181,7 @@ Install the CLIs you want (`npm i -g @anthropic-ai/claude-code @openai/codex @go
 - **Votes** wait for a quorum with a grace timer, then advisers rank each other's answers blind before the judge decides.
 - **Handoff.** When a member hits its usage limit mid-run, the next one gets a written handoff and continues.
 - **Follow-ups** in Council mode resume the same member's own session instead of re-sending the chat.
-- **Risk routing** sends risky changes (migrations, auth, deletes…) to stronger models and always asks before editing.
+- **Risk routing** sends risky changes (migrations, auth, deletes…) to stronger models and always asks before editing. The run card shows the words that matched. If the classifier is wrong ("CI" in "add a --fail-on flag for CI", "sessions" in "list chat sessions"), press **Not risky** next to the access switch before sending, or **Wrong? Mark not risky** on the run card to reload the request with it pressed. The access mode still applies; the override is logged and shown on the run.
 - **Scorecard** in the Council tab tracks each member's runs, success rate, time, tokens, limits, build and review outcomes.
 - **Secrets are redacted** (API keys, tokens, passwords, private keys) from prompts, history and diffs before they reach a cloud member.
 
