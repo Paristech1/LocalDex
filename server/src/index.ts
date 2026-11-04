@@ -14,7 +14,7 @@ import { getStats, resetStats } from './council/stats.js';
 import { cleanupStaleWorktrees } from './council/worktrees.js';
 import { applyArenaEntry, applyRunChanges, discardArena, discardRunChanges, discardSessionCopies } from './council/orchestrator.js';
 import { waitingCopyPaths } from './council/recover.js';
-import { listModels } from './lmstudio.js';
+import { listModels, reloadModel } from './lmstudio.js';
 import { createSession, deleteSession, flushAll, getSession, listSessions, saveSession } from './store.js';
 import { bus } from './agent/bus.js';
 import { dropRunner, runnerFor } from './agent/runner.js';
@@ -312,6 +312,22 @@ async function handle(ws: WebSocket, ev: ClientEvent): Promise<void> {
     }
     case 'list_models':
       return void refreshModels();
+    case 'reload_model': {
+      const ctx = Math.round(Number(ev.contextLength));
+      if (!ev.model || !Number.isFinite(ctx) || ctx < 2048 || ctx > 1_048_576) {
+        send(ws, { type: 'error', message: 'Pick a model and a context length between 2048 and 1048576.' });
+        return;
+      }
+      bus.log('info', `Reloading ${ev.model} in LM Studio with ${ctx} tokens of context…`);
+      void reloadModel(ev.model, ctx)
+        .then(() => refreshModels())
+        .catch((e) => {
+          const msg = `Could not reload ${ev.model}: ${(e as Error).message}. Needs LM Studio 0.4+ (REST API v1); or reload it in LM Studio → Developer with a bigger Context Length.`;
+          bus.log('error', msg);
+          bus.emit({ type: 'error', message: msg });
+        });
+      return;
+    }
     case 'set_model': {
       const s = getSession(ev.sessionId);
       if (!s) return;

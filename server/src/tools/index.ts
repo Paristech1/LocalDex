@@ -11,6 +11,7 @@ import { enabledSkills } from '../skills/store.js';
 import { PermissionError } from './permissions.js';
 import { isMcpTool, mcpToolSchemas, runMcpTool } from '../mcp/client.js';
 import type { ToolContext, ToolDef, ToolRegistry, ToolResult } from './types.js';
+import { parseLenientJson } from '../jsonRepair.js';
 
 export const registry: ToolRegistry = {
   read_file,
@@ -50,18 +51,10 @@ export function enabledTools(kind: 'main' | 'worker'): ToolSchema[] {
 
 export function parseArgs(call: ToolCall): Record<string, unknown> {
   const raw = call.function.arguments?.trim() || '{}';
-  try {
-    const v = JSON.parse(raw);
-    return v && typeof v === 'object' ? (v as Record<string, unknown>) : {};
-  } catch {
-    // Common local-model failure: trailing garbage or unescaped newlines. Try a light repair.
-    try {
-      const v = JSON.parse(raw.replace(/,\s*([}\]])/g, '$1').replace(/\n/g, '\\n'));
-      return v && typeof v === 'object' ? (v as Record<string, unknown>) : {};
-    } catch {
-      throw new Error(`Tool arguments were not valid JSON: ${raw.slice(0, 200)}`);
-    }
-  }
+  // Lenient: raw newlines inside strings, Gemma string tokens, trailing commas, smart quotes.
+  const v = parseLenientJson(raw);
+  if (v === undefined) throw new Error(`Tool arguments were not valid JSON: ${raw.slice(0, 200)}`);
+  return v && typeof v === 'object' && !Array.isArray(v) ? (v as Record<string, unknown>) : {};
 }
 
 export async function executeTool(call: ToolCall, ctx: ToolContext): Promise<ToolResult> {

@@ -1,5 +1,8 @@
+import fs from 'node:fs/promises';
 import type { ChatMessage, Session, WorkerState } from '@localdex/shared';
 import { getSettings } from '../config.js';
+import { describeTextLine, parseLenientJson } from '../jsonRepair.js';
+import { resolvePath } from '../tools/permissions.js';
 import { contextLengthFor, estimateTokens, streamChat } from '../lmstudio.js';
 import { bus } from './bus.js';
 import { compactPrompt, mainSystemPrompt, workerSystemPrompt } from './prompts.js';
@@ -36,6 +39,42 @@ function clip(s: string, n: number): string {
   return s.length > n ? `${s.slice(0, n)}… [+${s.length - n} chars]` : s;
 }
 
+const FILE_TOOLS = new Set(['write_file', 'edit_file']);
+
+/**
+ * Ground truth for summaries and goal checkpoints: every file the agent wrote or edited in `messages`, checked on disk
+ * now (exists, line count in `wc -l` terms, size). Small models misremember these; this block does not.
+ */
+export async function verifiedFileFacts(messages: ChatMessage[], max = 40): Promise<string> {
+  const paths: string[] = [];
+  for (const m of messages) {
+    if (m.role !== 'assistant') continue;
+    for (const tc of m.tool_calls ?? []) {
+      if (!FILE_TOOLS.has(tc.function.name)) continue;
+      const a = parseLenientJson(tc.function.arguments) as { path?: unknown } | undefined;
+      if (typeof a?.path === 'string' && a.path.trim()) paths.push(a.path.trim());
+    }
+  }
+  const unique = [...new Set(paths.reverse())].reverse().slice(-max);
+  const lines: string[] = [];
+  for (const p of unique) {
+    let abs = p;
+    try {
+      abs = resolvePath(p);
+      const st = await fs.stat(abs);
+      if (st.isDirectory()) lines.push(`- ${abs}: a directory`);
+      else if (st.size > 2_000_000) lines.push(`- ${abs}: ${st.size} bytes`);
+      else lines.push(`- ${abs}: ${describeTextLine(await fs.readFile(abs, 'utf8'))}`);
+    } catch (e) {
+      const code = (e as NodeJS.ErrnoException).code;
+      lines.push(`- ${abs}: ${code === 'ENOENT' ? 'does not exist' : `could not be checked (${(e as Error).message.slice(0, 80)})`}`);
+    }
+  }
+  return lines.length
+    ? `Files on disk right now (checked by LocalDex, not recalled by the model; trust this over anything above):\n${lines.join('\n')}`
+    : '';
+}
+
 export async function summarize(
   model: string,
   messages: ChatMessage[],
@@ -54,8 +93,10 @@ export async function summarize(
     tools: [],
     temperature: 0.1,
     signal,
+    reasoning: 'off',
   });
-  return res.content.trim() || '(summary unavailable)';
+  const facts = await verifiedFileFacts(messages).catch(() => '');
+  return [res.content.trim() || '(summary unavailable)', facts].filter(Boolean).join('\n\n');
 }
 
 export function resumeMessage(summary: string, goalBrief?: string | null): string {

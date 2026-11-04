@@ -3,6 +3,7 @@ import path from 'node:path';
 import fg from 'fast-glob';
 import { resolvePath, defaultCwd } from './permissions.js';
 import { fail, ok, optNum, optStr, str, truncate, type ToolDef } from './types.js';
+import { describeText, describeTextLine, fixDoubleEscapedText } from '../jsonRepair.js';
 
 const MAX_READ = 200_000;
 
@@ -30,13 +31,15 @@ export const read_file: ToolDef = {
     if (stat.isDirectory()) return fail(`"${p}" is a directory. Use list_dir.`);
     if (stat.size > 5_000_000) return fail(`File is too large (${stat.size} bytes).`);
     const raw = await fs.readFile(p, 'utf8');
-    const lines = raw.split('\n');
+    const lines = raw.endsWith('\n') ? raw.slice(0, -1).split('\n') : raw.split('\n');
     const start = Math.max(1, optNum(args.start_line) ?? 1);
     const end = Math.min(lines.length, optNum(args.end_line) ?? lines.length);
     const slice = lines.slice(start - 1, end);
     const width = String(end).length;
     const body = slice.map((l, i) => `${String(start + i).padStart(width)}| ${l}`).join('\n');
-    const header = `${p} (${lines.length} lines${start > 1 || end < lines.length ? `, showing ${start}-${end}` : ''})\n`;
+    // Same line count as write_file/edit_file and `wc -l` users expect: a final newline does not start a new line.
+    const total = describeText(raw).lines;
+    const header = `${p} (${describeTextLine(raw)}${start > 1 || end < total ? `, showing ${start}-${Math.min(end, total)}` : ''})\n`;
     return ok(header + truncate(body, MAX_READ));
   },
 };
@@ -59,14 +62,18 @@ export const write_file: ToolDef = {
   },
   async run(args) {
     const p = resolvePath(str(args.path, 'path'));
-    const content = str(args.content, 'content');
+    const repaired = fixDoubleEscapedText(str(args.content, 'content'), p);
+    const content = repaired.text;
     await fs.mkdir(path.dirname(p), { recursive: true });
     const existed = await fs
       .access(p)
       .then(() => true)
       .catch(() => false);
     await fs.writeFile(p, content, 'utf8');
-    return ok(`${existed ? 'Overwrote' : 'Created'} ${p} (${content.split('\n').length} lines).`);
+    const note = repaired.fixed
+      ? ` LocalDex turned ${repaired.fixed} literal "\\n" sequence(s) into real line breaks (the content looked double-escaped). Send real newlines in JSON as \\n, not \\\\n.`
+      : '';
+    return ok(`${existed ? 'Overwrote' : 'Created'} ${p} (${describeTextLine(content)}).${note}`);
   },
 };
 
@@ -101,9 +108,13 @@ export const edit_file: ToolDef = {
     if (count > 1 && !replaceAll) {
       return fail(`old_string appears ${count} times in ${p}. Add more context or set replace_all=true.`);
     }
-    const updated = replaceAll ? content.split(oldStr).join(newStr) : content.replace(oldStr, () => newStr);
+    // Same double-escape repair as write_file, but only when the file itself uses real line breaks.
+    const repaired = content.includes('\n') ? fixDoubleEscapedText(newStr, p) : { text: newStr, fixed: 0 };
+    const replacement = repaired.text;
+    const updated = replaceAll ? content.split(oldStr).join(replacement) : content.replace(oldStr, () => replacement);
     await fs.writeFile(p, updated, 'utf8');
-    return ok(`Edited ${p}: replaced ${replaceAll ? count : 1} occurrence(s).`);
+    const note = repaired.fixed ? ` (turned ${repaired.fixed} literal "\\n" into real line breaks)` : '';
+    return ok(`Edited ${p}: replaced ${replaceAll ? count : 1} occurrence(s)${note}. File now: ${describeTextLine(updated)}.`);
   },
 };
 

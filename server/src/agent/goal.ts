@@ -2,7 +2,7 @@ import type { Session } from '@localdex/shared';
 import { getSettings } from '../config.js';
 import { streamChat } from '../lmstudio.js';
 import { bus } from './bus.js';
-import { renderTranscript } from './compact.js';
+import { renderTranscript, verifiedFileFacts } from './compact.js';
 import { goalAssessPrompt } from './prompts.js';
 
 export interface Assessment {
@@ -22,17 +22,20 @@ export async function assessGoal(session: Session, signal: AbortSignal): Promise
   // Use the tail of the transcript so the audit fits comfortably in context.
   const recent = session.messages.slice(-30);
   const transcript = renderTranscript(recent).slice(-40_000);
+  // Judge the files as they are, not as the agent described them.
+  const facts = await verifiedFileFacts(session.messages).catch(() => '');
 
   try {
     const res = await streamChat({
       model,
       messages: [
         { role: 'system', content: goalAssessPrompt(goal.brief, goal.doneCriteria, goal.mode) },
-        { role: 'user', content: `Transcript excerpt (most recent last):\n\n${transcript}\n\nRespond with the JSON object only.` },
+        { role: 'user', content: `Transcript excerpt (most recent last):\n\n${transcript}${facts ? `\n\n${facts}` : ''}\n\nRespond with the JSON object only.` },
       ],
       tools: [],
       temperature: 0,
       signal,
+      reasoning: 'off',
     });
     const parsed = parseAssessment(res.content);
     if (goal.mode === 'loop') parsed.done = false;

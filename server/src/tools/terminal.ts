@@ -4,6 +4,7 @@ import { createRequire } from 'node:module';
 import type { IPty } from 'node-pty';
 import { defaultCwd, resolvePath, shellNeedsApproval } from './permissions.js';
 import { fail, ok, optNum, optStr, str, truncate, type ToolDef } from './types.js';
+import { DECLINED_COMMAND } from './types.js';
 
 const require = createRequire(import.meta.url);
 const SHELL = process.env.SHELL || (process.platform === 'win32' ? 'powershell.exe' : '/bin/zsh');
@@ -61,7 +62,7 @@ export const terminal_open: ToolDef = {
     const command = optStr(args.command);
     if (command && shellNeedsApproval(command)) {
       const approved = await ctx.requestApproval(command, cwd);
-      if (!approved) return fail('The user declined to run this command.');
+      if (!approved) return fail(DECLINED_COMMAND);
     }
     let pty: typeof import('node-pty');
     try {
@@ -124,7 +125,7 @@ export const terminal_send: ToolDef = {
     const raw = args.raw === true;
     if (!raw && shellNeedsApproval(input)) {
       const approved = await ctx.requestApproval(input, term.cwd);
-      if (!approved) return fail('The user declined to run this command.');
+      if (!approved) return fail(DECLINED_COMMAND);
     }
     term.pty.write(raw ? input : input + '\r');
     await sleep(optNum(args.wait_ms) ?? 1500);

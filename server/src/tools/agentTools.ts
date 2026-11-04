@@ -80,29 +80,69 @@ export const update_plan: ToolDef = {
   },
   async run(args, ctx) {
     if (!ctx.updatePlan) return fail('Plan updates are not available here.');
-    let raw = args.steps;
-    if (typeof raw === 'string') {
-      try {
-        raw = JSON.parse(raw);
-      } catch {
-        return fail('steps must be an array of {title, status}.');
-      }
-    }
-    if (!Array.isArray(raw)) return fail('steps must be an array of {title, status}.');
-    const steps: PlanStep[] = raw.map((s, i) => {
-      const o = (s ?? {}) as Record<string, unknown>;
-      const status = String(o.status ?? 'pending');
-      return {
-        id: `s${i + 1}`,
-        title: String(o.title ?? o.step ?? o.content ?? `Step ${i + 1}`),
-        status: (['pending', 'in_progress', 'done', 'skipped'].includes(status) ? status : 'pending') as PlanStep['status'],
-      };
-    });
+    const steps = normalizePlan(args);
+    if (!steps) return fail('steps must be a list, e.g. {"steps": [{"title": "Write the file", "status": "in_progress"}, {"title": "Run tests", "status": "pending"}]}');
     ctx.updatePlan(steps);
     const summary = steps.map((s) => `${mark(s.status)} ${s.title}`).join('\n');
-    return ok(`Plan updated:\n${summary}`);
+    const open = steps.some((s) => s.status !== 'done' && s.status !== 'skipped');
+    return ok(`Plan updated:\n${summary}${open ? '\nWhen a step finishes, call update_plan again with the whole list and that step set to "done".' : ''}`);
   },
 };
+
+const STATUS_WORDS: Array<[RegExp, PlanStep['status']]> = [
+  [/^(done|complete|completed|finished|success|ok|x|✓|✔|true|yes|closed|resolved)$/i, 'done'],
+  [/^(in[ _-]?progress|active|doing|current|started|running|wip|working|>|ongoing)$/i, 'in_progress'],
+  [/^(skipped|skip|cancelled|canceled|dropped|-|n\/a|not needed)$/i, 'skipped'],
+  [/^(pending|todo|to do|open|not started|waiting|queued|next|planned|false|no|\s*)$/i, 'pending'],
+];
+
+function statusFrom(v: unknown): PlanStep['status'] {
+  if (v === true) return 'done';
+  const t = String(v ?? '').trim();
+  for (const [re, st] of STATUS_WORDS) if (re.test(t)) return st;
+  return 'pending';
+}
+
+/**
+ * Accept the many shapes small models send: strings ("Write file", "[x] Write file"), objects with
+ * title/step/content/text/name/task/description, done/completed booleans, status synonyms, and
+ * the list under steps/plan/items/tasks/todos (or the whole argument being the list).
+ */
+export function normalizePlan(args: Record<string, unknown> | unknown[]): PlanStep[] | null {
+  let raw: unknown = Array.isArray(args) ? args : (args.steps ?? args.plan ?? args.items ?? args.tasks ?? args.todos);
+  if (typeof raw === 'string') {
+    const parsed = (() => {
+      try {
+        return JSON.parse(raw as string) as unknown;
+      } catch {
+        return null;
+      }
+    })();
+    // A plain multi-line string: one step per line.
+    raw = parsed ?? (raw as string).split('\n').map((l) => l.trim()).filter(Boolean);
+  }
+  if (!Array.isArray(raw) || raw.length === 0) return null;
+  return raw.slice(0, 30).map((s, i) => {
+    if (typeof s === 'string' || typeof s === 'number') {
+      const text = String(s).trim();
+      const m = /^(?:[-*•]|\d+[.)])?\s*\[(.)\]\s*(.*)$/.exec(text) ?? /^([✓✔✗>])\s*(.*)$/.exec(text);
+      if (m) {
+        const marker = m[1];
+        const st: PlanStep['status'] = /[xX✓✔]/.test(marker) ? 'done' : marker === '>' ? 'in_progress' : marker === '-' ? 'skipped' : 'pending';
+        return { id: `s${i + 1}`, title: m[2].trim() || `Step ${i + 1}`, status: st };
+      }
+      return { id: `s${i + 1}`, title: text.replace(/^(?:[-*•]|\d+[.)])\s*/, '') || `Step ${i + 1}`, status: 'pending' };
+    }
+    const o = (s ?? {}) as Record<string, unknown>;
+    const title = o.title ?? o.step ?? o.content ?? o.text ?? o.name ?? o.task ?? o.description ?? o.label;
+    let status: PlanStep['status'] = statusFrom(o.status ?? o.state);
+    if (o.status === undefined && o.state === undefined) {
+      if (o.done === true || o.completed === true || o.checked === true) status = 'done';
+      else if (o.in_progress === true || o.active === true) status = 'in_progress';
+    }
+    return { id: `s${i + 1}`, title: String(title ?? `Step ${i + 1}`).trim() || `Step ${i + 1}`, status };
+  });
+}
 
 function mark(s: PlanStep['status']): string {
   return s === 'done' ? '[x]' : s === 'in_progress' ? '[>]' : s === 'skipped' ? '[-]' : '[ ]';

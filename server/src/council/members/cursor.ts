@@ -1,3 +1,4 @@
+import { execFile } from 'node:child_process';
 import { createRequire } from 'node:module';
 import { pathToFileURL } from 'node:url';
 import { getSettings } from '../../config.js';
@@ -44,26 +45,59 @@ interface CursorSdk {
 
 let sdkPromise: Promise<CursorSdk | null> | null = null;
 let sdkPath: string | undefined;
+let sdkLoadError: string | undefined;
+/** Set once Cursor rejects `systemPrompt` for this account (the feature is access-gated). */
+let systemPromptGated = false;
 
-/** Load @cursor/sdk lazily. LOCALDEX_CURSOR_SDK can point at another module (used by tests). */
+/**
+ * Load @cursor/sdk lazily. LOCALDEX_CURSOR_SDK can point at another module (used by tests).
+ * Only a successful load is cached: if the package is installed while LocalDex is running (or the first
+ * import fails), the next status check / sign-in tries again instead of reporting "not installed" until a restart.
+ */
 function loadSdk(): Promise<CursorSdk | null> {
   if (!sdkPromise) {
-    sdkPromise = (async () => {
+    const attempt = (async () => {
       try {
         const override = process.env.LOCALDEX_CURSOR_SDK;
+        let mod: unknown;
         if (override) {
           sdkPath = override;
-          return (await import(pathToFileURL(override).href)) as CursorSdk;
+          mod = await import(pathToFileURL(override).href);
+        } else {
+          const require = createRequire(import.meta.url);
+          sdkPath = require.resolve('@cursor/sdk');
+          mod = await import('@cursor/sdk' as string);
         }
-        const require = createRequire(import.meta.url);
-        sdkPath = require.resolve('@cursor/sdk');
-        return (await import('@cursor/sdk' as string)) as CursorSdk;
-      } catch {
+        // Some module shapes put the API under `default` (CJS interop).
+        const m = mod as Partial<CursorSdk> & { default?: Partial<CursorSdk> };
+        const api = (m.Cursor ? m : m.default?.Cursor ? m.default : null) as CursorSdk | null;
+        if (!api) throw new Error('@cursor/sdk loaded but does not export Cursor/Agent (unexpected version?)');
+        sdkLoadError = undefined;
+        return api;
+      } catch (e) {
+        sdkLoadError = (e as Error).message;
         return null;
       }
     })();
+    sdkPromise = attempt;
+    void attempt.then((r) => {
+      if (!r && sdkPromise === attempt) sdkPromise = null;
+    });
   }
   return sdkPromise;
+}
+
+/**
+ * Open a sign-in page in a specific macOS app (`open -a`). No shell is involved (args are passed as an array), only
+ * https URLs are opened, and if the app can't be launched the system default browser is used instead.
+ */
+export function openInApp(app: string, url: string): void {
+  if (!/^https:\/\//i.test(url)) return;
+  const fallback = (): void => void execFile('open', [url], () => undefined);
+  if (process.platform !== 'darwin' || !/^[\w .+-]{1,60}$/.test(app)) return fallback();
+  execFile('open', ['-a', app, url], (err) => {
+    if (err) fallback();
+  });
 }
 
 /** Read-only roles: block every Cursor tool that changes files or runs commands. */
@@ -81,7 +115,7 @@ export const cursorMember: MemberAdapter = {
   async status() {
     const base = { id: 'cursor' as const, label: 'Cursor', loginCommand: 'Use "Sign in" here (opens Cursor in your browser)', canLoginInApp: true };
     const sdk = await loadSdk();
-    if (!sdk) return { ...base, installed: false, signedIn: false, billing: 'unknown' as MemberBilling };
+    if (!sdk) return { ...base, installed: false, signedIn: false, billing: 'unknown' as MemberBilling, lastError: sdkLoadError };
     try {
       const s = await sdk.Cursor.auth.status();
       const signedIn = s.status === 'logged-in' || !!process.env.CURSOR_API_KEY;
@@ -100,9 +134,12 @@ export const cursorMember: MemberAdapter = {
 
   async login(onUrl, signal) {
     const sdk = await loadSdk();
-    if (!sdk) return { ok: false, error: '@cursor/sdk is not installed (run npm install in the LocalDex folder).' };
+    if (!sdk) return { ok: false, error: `@cursor/sdk could not be loaded${sdkLoadError ? `: ${sdkLoadError}` : ' (run npm install in the LocalDex folder)'}` };
     try {
-      const r = await sdk.Cursor.auth.login({ openBrowser: true, onLoginUrl: onUrl, signal, apiKeyName: 'LocalDex council' });
+      const app = getSettings().council.loginBrowser?.trim();
+      // With a chosen browser we open the page ourselves; otherwise the SDK uses the system default.
+      const openBrowser = app ? (url: string) => openInApp(app, url) : true;
+      const r = await sdk.Cursor.auth.login({ openBrowser, onLoginUrl: onUrl, signal, apiKeyName: 'LocalDex council' });
       return { ok: true, account: r.email };
     } catch (e) {
       return { ok: false, error: (e as Error).message };
@@ -123,11 +160,21 @@ export const cursorMember: MemberAdapter = {
     const timer = setTimeout(onAbort, o.timeoutMs);
     o.signal.addEventListener('abort', onAbort, { once: true });
 
+    // Cursor gates `systemPrompt` server-side; accounts without access get "[invalid_argument] unknown option
+    // '--system-prompt'" on the first send. Once seen, send the instructions inside the prompt text instead.
+    const useSystemPrompt = !systemPromptGated && !!o.instructions?.trim();
+    const promptText = useSystemPrompt || !o.instructions?.trim() ? o.prompt : `${o.instructions}\n\n---\n\n${o.prompt}`;
+    const retryWithoutSystemPrompt = (msg: string): boolean => {
+      if (!useSystemPrompt || !/system-prompt|systemPrompt/i.test(msg)) return false;
+      systemPromptGated = true;
+      return true;
+    };
+
     // systemPrompt and disallowedTools are not persisted on the agent, so a resume passes them again.
     const options = {
       name: 'LocalDex council',
       model: { id: model },
-      systemPrompt: o.instructions,
+      ...(useSystemPrompt ? { systemPrompt: o.instructions } : {}),
       // Only the user's own Cursor settings unless the user opted in to project config (see trustProjectConfig).
       local: { cwd: o.cwd, dirs: o.extraDirs, settingSources: getSettings().council.trustProjectConfig ? ['user', 'project'] : ['user'] },
       ...(o.access === 'read' ? { disallowedTools: MUTATING_TOOLS } : { disallowedTools: ['delete'] }),
@@ -144,7 +191,7 @@ export const cursorMember: MemberAdapter = {
         }
       }
       agent ??= await sdk.Agent.create(options);
-      run = await agent.send(o.prompt);
+      run = await agent.send(promptText);
       if (o.signal.aborted) onAbort();
       for await (const m of run.stream()) {
         if (m.type === 'assistant') {
@@ -173,6 +220,7 @@ export const cursorMember: MemberAdapter = {
       }
       if (res.status === 'error') {
         const msg = res.error?.message ?? 'Cursor run failed';
+        if (retryWithoutSystemPrompt(msg)) return cursorMember.run(o);
         const limited = detectLimit(msg) || res.error?.code === 'resource_exhausted';
         return { ok: false, text: final, error: msg, limited, limitResetsAt: limited ? parseResetAt(msg) : undefined, billing, usage, model, sessionId: sessionId() };
       }
@@ -180,6 +228,7 @@ export const cursorMember: MemberAdapter = {
     } catch (e) {
       const err = e as Error & { name?: string; code?: string };
       const msg = err.message || String(e);
+      if (retryWithoutSystemPrompt(msg)) return cursorMember.run(o);
       const limited = err.name === 'RateLimitError' || detectLimit(msg);
       const notSignedIn = err.name === 'AuthenticationError' || /api key is required|unauthenticated/i.test(msg);
       return {

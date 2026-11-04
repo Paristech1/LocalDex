@@ -840,6 +840,24 @@ export function CouncilSettingsTab({ settings, patch }: TabProps) {
                       <Button size="sm" variant="primary" disabled={!st.installed} onClick={() => send({ type: 'council_login', member: id })}>
                         Sign in to {MEMBER_META[id].label}
                       </Button>
+                      {id === 'cursor' && st.installed && (
+                        <label className="flex items-center gap-1 text-ink-400">
+                          Open in
+                          <select className={inputCls} value={c.loginBrowser ?? ''} onChange={(e) => setC({ loginBrowser: e.target.value })}>
+                            <option value="">System default</option>
+                            <option value="Comet">Comet</option>
+                            <option value="Google Chrome">Google Chrome</option>
+                            <option value="Safari">Safari</option>
+                            <option value="Arc">Arc</option>
+                            <option value="Firefox">Firefox</option>
+                          </select>
+                        </label>
+                      )}
+                      {!st.installed && (
+                        <span className="text-ink-400">
+                          The Cursor SDK isn’t loaded yet{st.lastError ? <>: <span className="text-danger break-words">{st.lastError}</span></> : ''}. Run <span className="font-mono">npm install</span> in the LocalDex folder, then press “Re-check members”.
+                        </span>
+                      )}
                       {login?.member === id && !login.done && <span className="text-ink-400 pulse">waiting for the browser…</span>}
                       {login?.member === id && login.error && <span className="text-danger">{login.error}</span>}
                     </div>
@@ -900,6 +918,13 @@ export function CouncilSettingsTab({ settings, patch }: TabProps) {
             <option value="plan_build_review">Plan → Build → Review</option>
             <option value="second_opinion">Build + second opinion</option>
             <option value="vote">Council vote</option>
+          </select>
+        </Field>
+        <Field label="When the local model gets stuck (Solo)" hint="Stuck = LM Studio errors, tool calls keep failing, the same call repeats, or it thinks without acting. Auto sends the request, with what the local agent already did, to the council using the access rules below.">
+          <select className={inputCls} value={c.autoEscalate ?? 'suggest'} onChange={(e) => setC({ autoEscalate: e.target.value as CouncilSettings['autoEscalate'] })}>
+            <option value="suggest">Suggest Hand to council</option>
+            <option value="auto">Hand it to the council automatically</option>
+            <option value="off">Do nothing</option>
           </select>
         </Field>
         <Field label="Router" hint="Rules are instant and free. The local model can classify fuzzier requests.">

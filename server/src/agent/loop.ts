@@ -1,12 +1,13 @@
 import type { AgentId, ChatMessage, PlanStep, ToolCall, ToolSchema } from '@localdex/shared';
-import { streamChat } from '../lmstudio.js';
+import { isCorruptCall, streamChat } from '../lmstudio.js';
 import { executeTool } from '../tools/index.js';
 import type { CouncilRequest, ToolContext } from '../tools/types.js';
 import { bus } from './bus.js';
 import { getSettings } from '../config.js';
 import { ConsultNudger, consultEnabled } from './consultNudge.js';
 
-export type StopReason = 'done' | 'max_steps' | 'aborted' | 'error';
+/** 'stuck': the local model could not make progress (see LoopResult.error for why); the runner may route the request to the council. */
+export type StopReason = 'done' | 'max_steps' | 'aborted' | 'error' | 'stuck';
 
 export interface LoopParams {
   sessionId: string;
@@ -38,6 +39,55 @@ export interface LoopResult {
 
 const MAX_CONSECUTIVE_FAILURES = 4;
 const MAX_NUDGES = 2;
+/** Same tool call with the same arguments and the same result this many times: warn the model. */
+const REPEAT_WARN = 3;
+/** …and this many times: stop, the local model is stuck. */
+const REPEAT_STOP = 5;
+/** Runaway-thinking cut-offs in one run before giving up. */
+const MAX_RUNAWAYS = 2;
+/** "N tool calls in a row failed" warnings in one run before giving up. */
+const MAX_FAILURE_WARNINGS = 2;
+
+/** Stable key for a tool call: name + arguments with keys sorted and whitespace normalised. */
+export function callKey(name: string, args: string): string {
+  let norm = args.trim();
+  try {
+    norm = JSON.stringify(sortKeys(JSON.parse(args)));
+  } catch {
+    norm = norm.replace(/\s+/g, ' ');
+  }
+  return `${name}\u0000${norm}`;
+}
+
+function sortKeys(v: unknown): unknown {
+  if (Array.isArray(v)) return v.map(sortKeys);
+  if (v && typeof v === 'object') {
+    return Object.fromEntries(Object.keys(v as Record<string, unknown>).sort().map((k) => [k, sortKeys((v as Record<string, unknown>)[k])]));
+  }
+  return typeof v === 'string' ? v.trim() : v;
+}
+
+/** Tracks identical tool calls that keep producing identical results. */
+export class RepeatTracker {
+  private seen = new Map<string, { count: number; result: string }>();
+  private warned = new Set<string>();
+
+  /** Returns 'warn' or 'stop' when a call has repeated with no change in result; null otherwise. */
+  observe(name: string, args: string, result: string): { level: 'warn' | 'stop'; count: number } | null {
+    // Reading state that the model itself is changing (plan, worker, ask) is not a loop.
+    if (name === 'update_plan' || name === 'ask_user' || name === 'delegate_to_worker') return null;
+    const key = callKey(name, args);
+    const prev = this.seen.get(key);
+    const count = prev && prev.result === result ? prev.count + 1 : 1;
+    this.seen.set(key, { count, result });
+    if (count >= REPEAT_STOP) return { level: 'stop', count };
+    if (count >= REPEAT_WARN && !this.warned.has(key)) {
+      this.warned.add(key);
+      return { level: 'warn', count };
+    }
+    return null;
+  }
+}
 
 /** Heuristic: does a reply with no parsed tool calls look like a botched attempt at one? */
 function looksLikeToolAttempt(content: string, toolNames: string[]): boolean {
@@ -55,7 +105,23 @@ export async function runLoop(p: LoopParams): Promise<LoopResult> {
   const { sessionId, agent } = p;
   let lastText = '';
   let consecutiveFailures = 0;
+  let failureWarnings = 0;
   let nudges = 0;
+  let runaways = 0;
+  let finishGateUsed = false;
+  let planGateUsed = false;
+  let planTouched = false;
+  let planSteps: PlanStep[] = [];
+  let lastRoundFailed = false;
+  let lastFailure = '';
+  const repeats = new RepeatTracker();
+  // Commands the user denied during this run: the same command is refused without asking again.
+  const denied = new Set<string>();
+  const stuck = (why: string): LoopResult => {
+    bus.log('warn', `[${agent}] local model is stuck: ${why}`);
+    p.onPersist?.();
+    return { text: lastText, steps: 0, reason: 'stuck', error: why };
+  };
   const consult = new ConsultNudger(
     consultEnabled({
       councilAvailable: !!p.council,
@@ -87,6 +153,11 @@ export async function runLoop(p: LoopParams): Promise<LoopResult> {
         signal: p.signal,
         onDelta: (delta) => bus.emit({ type: 'assistant_delta', sessionId, agent, delta }),
         onReasoning: (delta) => bus.emit({ type: 'reasoning_delta', sessionId, agent, delta }),
+        onRestart: () => {
+          // Partial output from the failed attempt is thrown away: start the live bubble over.
+          bus.emit({ type: 'turn_end', sessionId, agent });
+          bus.emit({ type: 'turn_start', sessionId, agent });
+        },
       });
     } catch (e) {
       const err = e as Error;
@@ -102,6 +173,20 @@ export async function runLoop(p: LoopParams): Promise<LoopResult> {
 
     if (result.usage) p.onUsage?.(result.usage);
 
+    if (result.runaway) {
+      bus.emit({ type: 'turn_end', sessionId, agent });
+      runaways++;
+      if (runaways > MAX_RUNAWAYS) return stuck(`it kept thinking without acting (cut off ${runaways} times in a row)`);
+      // The reasoning is not kept: it is long and did not lead anywhere.
+      p.messages.push({
+        role: 'user',
+        content:
+          '[system] You thought for a long time without acting. Stop deliberating. Either make the next tool call now, or, if the task is finished, give your final answer in a few sentences.',
+        ts: Date.now(),
+      });
+      continue;
+    }
+
     const assistant: ChatMessage = {
       role: 'assistant',
       content: result.content || null,
@@ -115,6 +200,29 @@ export async function runLoop(p: LoopParams): Promise<LoopResult> {
     if (result.parsedFromText) bus.log('warn', `[${agent}] recovered tool call(s) from plain text output`);
 
     if (result.toolCalls.length === 0) {
+      // Finishing right after a failed tool call: small models often announce success anyway. Push back once.
+      if (!finishGateUsed && lastRoundFailed) {
+        finishGateUsed = true;
+        bus.log('warn', `[${agent}] tried to finish right after a failed tool call; asked it to deal with the failure first`);
+        p.messages.push({
+          role: 'user',
+          content: `[system] Your last tool call failed (${lastFailure}), so that step did not happen. Do not report it as done. Fix the call and continue, or tell the user plainly what failed and what is still not done.`,
+          ts: Date.now(),
+        });
+        continue;
+      }
+      // Finishing with plan steps still open: small models declare victory early. Push back once.
+      const open = planSteps.filter((s) => s.status === 'pending' || s.status === 'in_progress');
+      if (!planGateUsed && planTouched && open.length) {
+        planGateUsed = true;
+        bus.log('warn', `[${agent}] tried to finish with ${open.length} plan step(s) still open; asked it to finish or explain`);
+        p.messages.push({
+          role: 'user',
+          content: `[system] Your plan still has unfinished steps: ${open.map((s) => `"${s.title}"`).join(', ')}. Do them now (call the tools; do not just describe them), then update the plan. If a step cannot be done, say which one and why. Do not claim a step happened unless a tool result shows it.`,
+          ts: Date.now(),
+        });
+        continue;
+      }
       if (result.finishReason === 'length') {
         bus.log('warn', `[${agent}] response was cut off (finish_reason=length)`);
       }
@@ -134,16 +242,32 @@ export async function runLoop(p: LoopParams): Promise<LoopResult> {
       return { text: lastText, steps: step + 1, reason: 'done' };
     }
     nudges = 0;
+    runaways = 0;
 
     bus.emit({ type: 'agent_status', sessionId, agent, status: 'tool' });
     const ctx: ToolContext = {
       sessionId,
       agent,
       signal: p.signal,
-      requestApproval: (cmd, cwd) => bus.requestApproval(sessionId, agent, cmd, cwd, p.signal),
+      requestApproval: async (cmd, cwd) => {
+        const key = `${cwd}\u0000${cmd.trim().replace(/\s+/g, ' ')}`;
+        if (denied.has(key)) {
+          bus.log('info', `[${agent}] refused a command the user already denied: ${cmd.slice(0, 120)}`);
+          return false;
+        }
+        const yes = await bus.requestApproval(sessionId, agent, cmd, cwd, p.signal);
+        if (!yes) denied.add(key);
+        return yes;
+      },
       askUser: (q) => bus.askUser(sessionId, agent, q, p.signal),
       delegate: p.delegate,
-      updatePlan: p.updatePlan,
+      updatePlan: p.updatePlan
+        ? (steps) => {
+            planTouched = true;
+            planSteps = steps;
+            p.updatePlan!(steps);
+          }
+        : undefined,
       council: p.council,
     };
 
@@ -163,9 +287,24 @@ export async function runLoop(p: LoopParams): Promise<LoopResult> {
     p.onPersist?.();
     if (p.signal.aborted) return { text: lastText, steps: step + 1, reason: 'aborted' };
 
+    const failed = outcomes.filter((o) => !o.ok);
+    lastRoundFailed = failed.length > 0;
+    lastFailure = failed.length ? `${failed[0].call.function.name}: ${failed[0].content.split('\n')[0].slice(0, 160)}` : '';
     const repeatHint = consult.observe(outcomes.map((o) => ({ name: o.call.function.name, args: o.call.function.arguments, ok: o.ok })));
+    let loopWarning: string | null = null;
+    for (const o of outcomes) {
+      const r = repeats.observe(o.call.function.name, o.call.function.arguments, o.content);
+      if (r?.level === 'stop') return stuck(`it ran ${o.call.function.name} with the same arguments ${r.count} times and got the same result each time`);
+      if (r?.level === 'warn' && !loopWarning) {
+        loopWarning = `[system] You have now run ${o.call.function.name} with exactly the same arguments ${r.count} times and got the same result every time. Repeating it will not change anything. Use the result you already have, try something clearly different, or give your final answer.`;
+      }
+    }
     consecutiveFailures = allFailed ? consecutiveFailures + 1 : 0;
-    if (consecutiveFailures >= MAX_CONSECUTIVE_FAILURES) {
+    if (loopWarning) {
+      p.messages.push({ role: 'user', content: loopWarning, ts: Date.now() });
+    } else if (consecutiveFailures >= MAX_CONSECUTIVE_FAILURES) {
+      failureWarnings++;
+      if (failureWarnings > MAX_FAILURE_WARNINGS) return stuck(`tool calls kept failing (${consecutiveFailures} in a row, after ${MAX_FAILURE_WARNINGS} warnings)`);
       p.messages.push({
         role: 'user',
         content: `[system] ${consecutiveFailures} tool calls in a row failed. Stop retrying the same thing: explain the problem to the user and ask how to proceed, or try a clearly different approach.${consult.failuresHint()}`,
@@ -206,7 +345,10 @@ async function executeCalls(calls: ToolCall[], ctx: ToolContext): Promise<Outcom
       /* show raw */
     }
     bus.emit({ type: 'tool_start', sessionId: ctx.sessionId, agent: ctx.agent, callId: call.id, name: call.function.name, args });
-    const r = await executeTool(call, ctx);
+    // Never run a call whose arguments are broken (chat-template tokens, prose spilled into a path…).
+    const r = isCorruptCall(call)
+      ? { ok: false, content: `This ${call.function.name} call was malformed (its arguments contained chat-template tokens or were not a JSON object), so LocalDex did not run it. Send the call again with clean JSON arguments only.` }
+      : await executeTool(call, ctx);
     bus.emit({
       type: 'tool_end',
       sessionId: ctx.sessionId,

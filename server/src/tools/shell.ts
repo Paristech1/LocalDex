@@ -1,6 +1,7 @@
 import { spawn } from 'node:child_process';
 import { defaultCwd, resolvePath, shellNeedsApproval } from './permissions.js';
 import { fail, ok, optNum, optStr, str, truncate, type ToolDef } from './types.js';
+import { DECLINED_COMMAND } from './types.js';
 
 const SHELL = process.env.SHELL || (process.platform === 'win32' ? 'powershell.exe' : '/bin/zsh');
 
@@ -29,7 +30,7 @@ export const shell_run: ToolDef = {
 
     if (shellNeedsApproval(command)) {
       const approved = await ctx.requestApproval(command, cwd);
-      if (!approved) return fail('The user declined to run this command.');
+      if (!approved) return fail(DECLINED_COMMAND);
     }
 
     return new Promise((resolve) => {

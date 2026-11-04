@@ -71,3 +71,7 @@ export function truncate(s: string, max = MAX_OUTPUT): string {
   const tail = s.slice(-Math.floor(max * 0.25));
   return `${head}\n\n... [truncated ${s.length - max} chars] ...\n\n${tail}`;
 }
+
+/** What the model is told after the user presses Deny. Small models retry a bare "declined", so be explicit. */
+export const DECLINED_COMMAND =
+  'The user declined to run this command, so it did not run. Do not run it again: LocalDex will refuse the same command for the rest of this request. Continue without it, use a different approach the user is likely to accept, or explain to the user why it is needed and ask.';
