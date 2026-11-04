@@ -8,7 +8,7 @@ export DEMO_DIR="$TMP/demo" LOCALDEX_HOME="$TMP/home" MOCK_PORT="${MOCK_PORT:-17
 mkdir -p "$DEMO_DIR" "$LOCALDEX_HOME"
 cat > "$LOCALDEX_HOME/config.json" <<JSON
 { "baseUrl": "http://127.0.0.1:$MOCK_PORT/v1", "model": "gemma-mock", "toolMode": "auto", "reasoning": "auto",
-  "approvedFolders": ["$DEMO_DIR"], "shellApproval": "dangerous", "maxSteps": 20 }
+  "approvedFolders": ["$DEMO_DIR"], "shellApproval": "dangerous", "maxSteps": 20, "autoTitle": false }
 JSON
 cd "$HERE/../.."
 npx tsx "$HERE/local.test.mts"

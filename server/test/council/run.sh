@@ -13,7 +13,7 @@ echo '{"security":{"auth":{"selectedType":"oauth-personal"}}}' > "$GEMINI_CLI_HO
 echo '{}' > "$GEMINI_CLI_HOME/.gemini/oauth_creds.json"
 echo '{"active":"paris@example.com"}' > "$GEMINI_CLI_HOME/.gemini/google_accounts.json"
 cat > "$LOCALDEX_HOME/config.json" <<JSON
-{ "approvedFolders": ["$DEMO_DIR"],
+{ "approvedFolders": ["$DEMO_DIR"], "autoTitle": false,
   "council": { "enabled": true, "allowWrite": true, "confirmWrites": true,
     "roles": { "planner": ["claude", "gemini", "codex"], "builder": ["cursor", "codex", "claude"], "reviewer": ["codex", "gemini", "claude"],
                "researcher": ["gemini", "claude", "codex"], "quick": ["local", "gemini"] },

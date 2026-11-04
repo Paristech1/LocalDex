@@ -26,6 +26,7 @@ import { resetReads } from './tools/readTracker.js';
 import { forgetInstructions } from './agent/instructions.js';
 import { unavailableTools } from './tools/index.js';
 import { sandboxStatus } from './sandbox.js';
+import { exportFileName, exportMarkdown, searchSessions } from './sessionTools.js';
 import { closeAllMcp, mcpStatuses, reloadMcp } from './mcp/client.js';
 import { LIMITS, listSkills, removeSkill, setSkillEnabled } from './skills/store.js';
 import { BIND_HOST, checkRequest, checkUpgrade } from './security.js';
@@ -94,6 +95,18 @@ app.post('/api/setup/playground', (c) => {
 // ---------- Skills ----------
 
 app.get('/api/skills', (c) => c.json({ skills: listSkills() }));
+
+// U1: search every session's title and messages; export one session as Markdown or JSON.
+app.get('/api/sessions/search', (c) => c.json({ results: searchSessions(c.req.query('q') ?? '') }));
+app.get('/api/sessions/:id/export', (c) => {
+  const s = getSession(c.req.param('id'));
+  if (!s) return c.json({ error: 'not found' }, 404);
+  const json = c.req.query('format') === 'json';
+  const name = exportFileName(s, json ? 'json' : 'md');
+  c.header('Content-Disposition', `attachment; filename="${name}"`);
+  if (json) return c.body(JSON.stringify(s, null, 2), 200, { 'Content-Type': 'application/json; charset=utf-8' });
+  return c.body(exportMarkdown(s), 200, { 'Content-Type': 'text/markdown; charset=utf-8' });
+});
 
 app.post('/api/skills/upload', async (c) => {
   if (Number(c.req.header('content-length') ?? 0) > LIMITS.maxUploadBytes + 1024 * 1024) {
@@ -273,7 +286,10 @@ async function handle(ws: WebSocket, ev: ClientEvent): Promise<void> {
     case 'rename_session': {
       const s = getSession(ev.id);
       if (!s) return;
-      s.title = ev.title.slice(0, 80) || s.title;
+      const title = ev.title.trim().slice(0, 80);
+      if (!title) return;
+      s.title = title;
+      s.titleSource = 'user';
       saveSession(s);
       bus.emit({ type: 'sessions', sessions: listSessions() });
       return;

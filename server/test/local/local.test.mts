@@ -1065,6 +1065,60 @@ console.log('\n# Y. Shell sandbox + permission presets');
   }
 }
 
+// ---------- Z: Sessions: search, rename, auto-title, export (U1) ----------
+console.log('\n# Z. Sessions: search, auto-title, export');
+{
+  const st = await import(`${SRC}/sessionTools.ts`);
+  const { saveNow, getSession } = await import(`${SRC}/store.ts`);
+  const a = createSession('gemma-mock');
+  a.title = 'Kubernetes ingress notes';
+  a.messages.push({ role: 'user', content: 'How do I configure the nginx ingress controller?', ts: 1 }, { role: 'assistant', content: 'Use an Ingress resource with an annotation.', ts: 2 });
+  saveNow(a);
+  const b = createSession('gemma-mock');
+  b.title = 'Pancake recipe';
+  b.messages.push({ role: 'user', content: 'Fluffy pancakes with buttermilk', ts: 1 }, { role: 'tool', tool_call_id: 'x', name: 'read_file', content: 'ingress ingress ingress', ts: 2 } as any);
+  saveNow(b);
+  const hits = st.searchSessions('ingres controler');
+  check('search: typo-tolerant match on message text, best first', hits[0]?.id === a.id && /ingress controller/i.test(hits[0].snippet), JSON.stringify(hits.slice(0, 2)));
+  check('search: tool output is not indexed', !st.searchSessions('ingress').some((h: any) => h.id === b.id), JSON.stringify(st.searchSessions('ingress').map((h: any) => h.id)));
+  check('search: title matches too', st.searchSessions('pancake')[0]?.id === b.id);
+  check('search: empty query returns nothing', st.searchSessions('  ').length === 0);
+
+  const c = createSession('gemma-mock');
+  c.title = 'Fix: the `build` step';
+  c.messages.push(
+    { role: 'system', content: 'SYSTEM PROMPT TEXT', ts: 0 },
+    { role: 'user', content: 'Fix the build', ts: 1 },
+    { role: 'assistant', content: null, tool_calls: [{ id: 't1', type: 'function', function: { name: 'shell_run', arguments: '{"command":"npm run build"}' } }], ts: 2 },
+    { role: 'tool', tool_call_id: 't1', name: 'shell_run', content: 'error ``` in output', ok: false, ts: 3 } as any,
+    { role: 'assistant', content: 'Fixed the import.', ts: 4 },
+  );
+  const md = st.exportMarkdown(c);
+  check('export md: title, roles, tool call and result in collapsible blocks, no system prompt', md.startsWith('# Fix: the `build` step') && /### You\n\nFix the build/.test(md) && /Tool call: <code>shell_run<\/code>/.test(md) && /Tool result \(shell_run\) — failed/.test(md) && /### LocalDex\n\nFixed the import\./.test(md) && !md.includes('SYSTEM PROMPT TEXT'), md.slice(0, 400));
+  check('export md: fences survive backticks inside tool output', /````\nerror ``` in output\n````/.test(md));
+  check('export file name is safe', st.exportFileName(c, 'md') === `localdex-fix-the-build-step-${c.id}.md`, st.exportFileName(c, 'md'));
+  check('title cleanup strips quotes, "Title:" and the period', st.cleanTitle('Title: "Fix the login redirect."\n') === 'Fix the login redirect');
+
+  updateSettings({ autoTitle: true });
+  const d = createSession('gemma-mock');
+  const before = requests.length;
+  script = [say('Here is the fix.'), say('"Login redirect loop fix."')];
+  await runnerFor(d).handleUserMessage('the login page keeps redirecting to itself after sign in, can you look');
+  for (let i = 0; i < 40 && getSession(d.id)?.titleSource !== 'auto'; i++) await new Promise((r) => setTimeout(r, 50));
+  const titleReq = requests[requests.length - 1];
+  check('auto-title: set after the first run from one short call', d.title === 'Login redirect loop fix' && d.titleSource === 'auto', `${d.title} / ${d.titleSource}`);
+  check('auto-title: the title call has no tools and runs after the user run', requests.length - before === 2 && !(titleReq.tools?.length) && /title/i.test(titleReq.messages[0].content), JSON.stringify(titleReq?.tools));
+  const e = createSession('gemma-mock');
+  e.title = 'My own name';
+  e.titleSource = 'user';
+  const before2 = requests.length;
+  script = [say('ok')];
+  await runnerFor(e).handleUserMessage('something else entirely');
+  await new Promise((r) => setTimeout(r, 200));
+  check('auto-title: never overwrites a title the user set', e.title === 'My own name' && requests.length - before2 === 1, `${e.title} ${requests.length - before2}`);
+  updateSettings({ autoTitle: false });
+}
+
 server.close();
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

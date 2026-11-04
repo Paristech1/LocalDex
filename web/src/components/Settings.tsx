@@ -159,6 +159,9 @@ function WorkspaceTab({ settings, patch }: TabProps) {
         <div className="mt-3">
           <Toggle label="Files must be read before they are edited (and re-read if they changed meanwhile)" checked={settings.requireReadBeforeEdit !== false} onChange={(v) => patch({ requireReadBeforeEdit: v })} />
         </div>
+        <div className="mt-2">
+          <Toggle label="Name new sessions automatically (one short local-model call after the first answer)" checked={settings.autoTitle !== false} onChange={(v) => patch({ autoTitle: v })} />
+        </div>
       </div>
     </>
   );

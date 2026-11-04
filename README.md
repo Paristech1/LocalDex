@@ -137,6 +137,13 @@ Slash commands in Solo: `/plan <task>` (plan first, read-only until approved; **
 commands (`/ask`, `/build`, `/review`, `/vote`, `/arena` …) are listed under
 [Model council](#model-council-cloud-models-on-your-subscriptions).
 
+### Sessions: search, rename, export
+
+- **Search** (box at the top of the sidebar) looks through every session's title and messages: typo-tolerant and prefix matching, best match first, with a snippet. Tool output and internal notes are not indexed.
+- **Rename**: double-click a session's name, or the ✎ button.
+- **Automatic names**: after the first answer in a new Solo session, the local model writes a 3–7 word title (one short call with no tools, after your run so it never delays it). A name you set yourself is never replaced. Off switch: Settings → Workspace.
+- **Export** (⤓ on a session): Markdown (messages in order, tool calls and results in collapsible blocks, archived parts after Compact & Resume at the end) or the raw JSON session file. Also at `GET /api/sessions/<id>/export?format=md|json`.
+
 ## Settings
 
 - **Workspace** – approved folders (first one is the default cwd), **Permissions** preset, shell approval mode.

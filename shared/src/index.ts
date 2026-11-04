@@ -187,6 +187,8 @@ export interface TokenUsage {
 export interface Session {
   id: string;
   title: string;
+  /** Where the title came from: the first line of the first message (default), the local model (auto), or the user. */
+  titleSource?: 'default' | 'auto' | 'user';
   createdAt: number;
   updatedAt: number;
   model: string | null;
@@ -744,6 +746,8 @@ export interface Settings {
   requireReadBeforeEdit: boolean;
   /** Load ~/.localdex/AGENTS.md and the project's AGENTS.md / CLAUDE.md / LOCALDEX.md into the system prompt. Default on. */
   projectInstructions: boolean;
+  /** After the first Solo run, the local model writes a short session title (one small call). Default on. */
+  autoTitle: boolean;
   /** SearXNG base URL for web_search (empty = no search provider). */
   webSearchUrl: string;
   workerConcurrency: number;
@@ -892,6 +896,7 @@ export const DEFAULT_SETTINGS: Settings = {
   permissionPreset: 'full',
   requireReadBeforeEdit: true,
   projectInstructions: true,
+  autoTitle: true,
   webSearchUrl: '',
   workerConcurrency: 2,
   systemPrompt: '',

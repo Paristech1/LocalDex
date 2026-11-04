@@ -4,6 +4,7 @@ import { enabledTools } from '../tools/index.js';
 import { saveSession } from '../store.js';
 import { bus } from './bus.js';
 import { compactMain, maybeCompactMain, verifiedFileFacts } from './compact.js';
+import { autoTitle, isDefaultTitle } from '../sessionTools.js';
 import { assessGoal, goalCouncilAssessTask, parseAssessment } from './goal.js';
 import { beginTurn, endTurn } from '../checkpoints.js';
 import { forgetInstructions, pullInstructions } from './instructions.js';
@@ -87,7 +88,7 @@ export class SessionRunner {
       bus.log('info', 'Correction queued; it will be delivered before the next model call.');
       return;
     }
-    if (this.session.messages.length === 0 || this.session.title === 'New session') {
+    if (this.session.titleSource !== 'user' && (this.session.messages.length === 0 || this.session.title === 'New session')) {
       this.session.title = content.trim().split('\n')[0].slice(0, 60) || 'New session';
     }
     // Solo-only `/plan <task>`: read-only plan mode until the user approves. In Council mode `/plan …` is a council
@@ -115,7 +116,20 @@ export class SessionRunner {
     this.persist();
     this.sync();
     if (this.councilMode) await this.runCouncilTurn(content, access, notRisky);
-    else await this.run();
+    else {
+      await this.run();
+      this.maybeAutoTitle();
+    }
+  }
+
+  private titleTried = false;
+  /** U1: after the first Solo run, ask the local model for a short title (once per session per server start). */
+  private maybeAutoTitle(): void {
+    if (this.titleTried || this.councilMode || !isDefaultTitle(this.session)) return;
+    this.titleTried = true;
+    void autoTitle(this.session).then((changed) => {
+      if (changed) this.sync();
+    });
   }
 
   get planning(): boolean {
