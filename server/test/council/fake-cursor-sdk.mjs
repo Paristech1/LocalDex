@@ -42,6 +42,7 @@ function makeAgent(opts, agentId, resumedFrom) {
               yield { type: 'tool_call', agent_id: 'a1', run_id: 'r1', call_id: 'c2', name: 'edit', status: 'running', args: { path: 'src/rateLimit.ts' } };
               fs.mkdirSync(path.join(cwd, 'src'), { recursive: true });
               fs.writeFileSync(path.join(cwd, 'src/rateLimit.ts'), '// sliding window rate limiter (cursor)\nexport const rateLimit = (max = 60) => (ip: string) => true;\n');
+              c.bigBuild(cwd);
               await c.sleep(300);
               yield { type: 'tool_call', agent_id: 'a1', run_id: 'r1', call_id: 'c2', name: 'edit', status: 'completed', result: 'wrote src/rateLimit.ts' };
             }

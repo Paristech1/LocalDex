@@ -18,6 +18,8 @@ import type {
 } from '@localdex/shared';
 import { MEMBER_IDS, isBuilderRole, quorumLabel } from '@localdex/shared';
 import { getSettings } from '../config.js';
+import { contextLengthFor } from '../lmstudio.js';
+import { saveSpill } from '../spill.js';
 import { bus } from '../agent/bus.js';
 import { approvedFolders } from '../tools/permissions.js';
 import { MEMBERS, markLimited, memberStatuses, noteError } from './registry.js';
@@ -29,6 +31,9 @@ import {
   checksSummary,
   critiquePrompt,
   fixPrompt,
+  mergeReviewPrompt,
+  partialReviewPrompt,
+  regroundPrompt,
   judgePrompt,
   memberInstructions,
   parseArenaPick,
@@ -42,6 +47,7 @@ import {
   reviewerPrompt,
   visionPrompt,
   votePrompt,
+  type DiffPresentation,
 } from './prompts.js';
 import { detectCheckCommand, runChecks, type CheckRun } from './checks.js';
 import { describeKinds, existingRedactions, redactSecrets } from './redact.js';
@@ -54,7 +60,16 @@ import { LETTERS, aggregateRanking, anonymize, parseRanking, rankingForJudge, ra
 const MAX_RUNS_KEPT = 30;
 const MAX_OUTPUT = 20_000;
 const MAX_TRANSCRIPT_ITEMS = 300;
-const MAX_DIFF = 40_000;
+/** Cloud members' windows are big but not free: what a reviewer gets inline is capped here whatever the diff size. */
+const MAX_CLOUD_DIFF = 160_000;
+/** Assumed window of a cloud member (Claude/Codex/Gemini/Cursor are all ≥200k tokens). */
+const CLOUD_CONTEXT_TOKENS = 200_000;
+/** Window of the local model when LM Studio hasn't told us. */
+const LOCAL_CONTEXT_FALLBACK = 32_768;
+/** Share of a reviewer's window the diff may take (the rest is the task, the report, the plan and its own reasoning). */
+const DIFF_WINDOW_SHARE = 0.35;
+/** A local reviewer with a diff over budget reviews it in at most this many file groups, then merges. */
+const MAX_REVIEW_PARTS = 6;
 /** Diff kept on the run for the "Changes waiting" box. */
 const MAX_UI_DIFF = 20_000;
 export const DROPPED_AFTER_GRACE = 'Dropped after the grace period (quorum reached)';
@@ -210,10 +225,10 @@ async function planBuildReview(ctx: CouncilContext, run: CouncilRun, task: strin
   // Each round: project checks → reviewer → QA. The first gate that fails sends the builder into a fix round.
   const gate = checksGateFor(runCwd(run), accessFor(run, builderRole));
   let report = builder.output ?? '';
-  let g: Gates = { checks: null, review: null, reviewOk: false, reviewMissing: false, qa: null, qaOk: false, qaMissing: false };
+  let g: Gates = emptyGates();
   let fixes = 0;
   while (!ctx.signal.aborted) {
-    g = { checks: null, review: null, reviewOk: false, reviewMissing: false, qa: null, qaOk: false, qaMissing: false };
+    g = emptyGates();
     g.checks = await runChecksStep(ctx, run, gate, fixes);
     let feedback = '';
     let why = '';
@@ -222,20 +237,31 @@ async function planBuildReview(ctx: CouncilContext, run: CouncilRun, task: strin
       why = 'checks failed';
     } else {
       const checksText = checksSummary(g.checks);
-      const diff = runDiff(run, cwd, before);
-      g.review = await runRole(ctx, run, 'reviewer', 'read', reviewerPrompt(task, report, diff, planText || undefined, checksText), statuses, [builder.member]);
+      const changes = runChanges(ctx, run, cwd, before);
+      const reviewed = await reviewChanges(ctx, run, task, report, changes, planText || undefined, checksText, statuses, [builder.member]);
+      g.review = reviewed.step;
       if (!g.review || g.review.status !== 'done') break;
-      ({ ok: g.reviewOk, missing: g.reviewMissing } = await readVerdict(ctx, run, g.review, 'review'));
+      const rv = await readVerdict(ctx, run, g.review, 'review', { inlined: reviewed.inlined, changes });
+      g.review = rv.step;
+      g.reviewOk = rv.ok;
+      g.reviewMissing = rv.missing;
+      g.reviewUngrounded = rv.ungrounded;
       if (!g.reviewOk) {
-        feedback = fixPrompt(task, g.reviewMissing ? `${g.review.output ?? ''}\n\n(The reviewer gave no verdict; treat its notes as requested fixes.)` : g.review.output ?? '');
-        why = g.reviewMissing ? 'no verdict' : '';
+        const notes = g.review.output ?? '';
+        feedback = fixPrompt(task, g.reviewUngrounded ? `${notes}\n\n(The reviewer judged without inspecting the work, so its verdict did not count; treat any concrete notes as requested fixes and re-check your work against the task.)` : g.reviewMissing ? `${notes}\n\n(The reviewer gave no verdict; treat its notes as requested fixes.)` : notes);
+        why = g.reviewUngrounded ? 'review did not inspect the work' : g.reviewMissing ? 'no verdict' : '';
       } else if (c.qaStep && !ctx.signal.aborted) {
-        g.qa = await runRole(ctx, run, 'qa', 'read', qaPrompt(task, report, diff, stripVerdictLine(g.review.output ?? ''), checksText), statuses, [builder.member, g.review.member]);
+        const reviewNotes = stripVerdictLine(g.review.output ?? '');
+        g.qa = await runRole(ctx, run, 'qa', 'read', (m) => qaPrompt(task, report, presentChanges(ctx, run, changes, m), reviewNotes, checksText), statuses, [builder.member, g.review.member]);
         if (g.qa?.status === 'done') {
-          ({ ok: g.qaOk, missing: g.qaMissing } = await readVerdict(ctx, run, g.qa, 'qa'));
+          const qv = await readVerdict(ctx, run, g.qa, 'qa', { inlined: fitsInline(changes, g.qa.member), changes });
+          g.qa = qv.step;
+          g.qaOk = qv.ok;
+          g.qaMissing = qv.missing;
+          g.qaUngrounded = qv.ungrounded;
           if (!g.qaOk) {
-            feedback = qaFixPrompt(task, g.qa.output ?? '');
-            why = 'QA';
+            feedback = qaFixPrompt(task, g.qaUngrounded ? `${g.qa.output ?? ''}\n\n(QA judged without inspecting the work, so its verdict did not count; re-check your work against the task.)` : g.qa.output ?? '');
+            why = g.qaUngrounded ? 'QA did not inspect the work' : 'QA';
           }
         }
       }
@@ -266,9 +292,16 @@ interface Gates {
   reviewOk: boolean;
   /** The reviewer gave no readable verdict, even when asked again (counts as changes requested). */
   reviewMissing: boolean;
+  /** The reviewer judged without inspecting anything, even when asked again (counts as changes requested). */
+  reviewUngrounded: boolean;
   qa: CouncilStep | null;
   qaOk: boolean;
   qaMissing: boolean;
+  qaUngrounded: boolean;
+}
+
+function emptyGates(): Gates {
+  return { checks: null, review: null, reviewOk: false, reviewMissing: false, reviewUngrounded: false, qa: null, qaOk: false, qaMissing: false, qaUngrounded: false };
 }
 
 interface ChecksGate {
@@ -332,18 +365,69 @@ async function runChecksStep(ctx: CouncilContext, run: CouncilRun, gate: ChecksG
   }
 }
 
+interface Verdict {
+  ok: boolean;
+  /** No readable verdict even after asking again. */
+  missing: boolean;
+  /** The verdict was given blind and stayed blind when asked to look (counts as changes requested). */
+  ungrounded: boolean;
+  /** The step whose verdict counted (the original, or the follow-up that replaced it). */
+  step: CouncilStep;
+}
+
+/** What the member was judging; lets the grounding gate tell whether it could have known anything without looking. */
+interface Grounding {
+  /** The full diff was in the prompt, so a verdict without tool calls is still informed. */
+  inlined: boolean;
+  changes: ChangeSet;
+}
+
+/**
+ * Did the member inspect the work? Cloud members show tool calls in their transcript; the local worker's report says
+ * when it made none. A prompt that held the whole diff counts too.
+ */
+function isGrounded(step: CouncilStep, inlined: boolean): boolean {
+  if (inlined) return true;
+  if (step.transcript.some((t) => t.kind === 'tool')) return true;
+  if (step.member === 'local') return !/\[note: this worker made NO tool calls/i.test(step.output ?? '');
+  return false;
+}
+
 /**
  * Read a reviewer's or QA's verdict. A reply without one gets one short follow-up asking the same member for the
- * verdict line only; if that fails too, it counts as a rejection.
+ * verdict line only; if that fails too, it counts as a rejection. With `grounding` (and the setting on), a verdict
+ * from a member that neither saw the diff nor made a tool call does not count: it is asked once to inspect the
+ * work; if it still doesn't, the result is changes requested, marked `ungrounded`.
  */
-async function readVerdict(ctx: CouncilContext, run: CouncilRun, step: CouncilStep, kind: 'review' | 'qa'): Promise<{ ok: boolean; missing: boolean }> {
+async function readVerdict(ctx: CouncilContext, run: CouncilRun, step: CouncilStep, kind: 'review' | 'qa', grounding?: Grounding): Promise<Verdict> {
   const parse = (t: string): boolean | null => {
     const v = kind === 'review' ? parseVerdict(t) : parseQaVerdict(t);
     return v === 'unknown' ? null : v === 'approve' || v === 'pass';
   };
+  const gate = !!grounding && getSettings().council.requireGroundedReview !== false;
+  if (gate && !isGrounded(step, grounding.inlined)) {
+    step.ungrounded = true;
+    step.transcript.push({ kind: 'note', text: `${label(step.member)} gave a verdict without inspecting anything (no tool calls, diff not in the prompt), so it does not count. Asked to look first.` });
+    bus.log('warn', `[council] ${kind}: ${label(step.member)} judged without inspecting the work; asking it to look first`);
+    if (ctx.signal.aborted) return { ok: false, missing: true, ungrounded: true, step };
+    const again = await runStep(ctx, run, {
+      role: step.role as StepSpec['role'],
+      member: step.member,
+      access: 'read',
+      prompt: regroundPrompt(kind, grounding.changes.files, grounding.changes.savedAt),
+      note: 'judged without inspecting the work, asked to look first',
+    });
+    if (again.status !== 'done') return { ok: false, missing: true, ungrounded: true, step: again };
+    if (!isGrounded(again, false)) {
+      again.ungrounded = true;
+      again.transcript.push({ kind: 'note', text: 'Still no tool calls: this verdict does not count (changes requested).' });
+      return { ok: false, missing: true, ungrounded: true, step: again };
+    }
+    step = again;
+  }
   const first = parse(step.output ?? '');
-  if (first !== null) return { ok: first, missing: false };
-  if (ctx.signal.aborted) return { ok: false, missing: true };
+  if (first !== null) return { ok: first, missing: false, ungrounded: false, step };
+  if (ctx.signal.aborted) return { ok: false, missing: true, ungrounded: false, step };
   const again = await runStep(ctx, run, {
     role: step.role as StepSpec['role'],
     member: step.member,
@@ -352,7 +436,112 @@ async function readVerdict(ctx: CouncilContext, run: CouncilRun, step: CouncilSt
     note: 'no verdict given, asked to restate it',
   });
   const second = again.status === 'done' ? parse(again.output ?? '') : null;
-  return second === null ? { ok: false, missing: true } : { ok: second, missing: false };
+  // The restated line is only the verdict; the original step keeps the findings.
+  return second === null ? { ok: false, missing: true, ungrounded: false, step } : { ok: second, missing: false, ungrounded: false, step };
+}
+
+// ---------- the changes a reviewer sees: sized to its context window ----------
+
+/** The full (redacted) diff of a run plus its file list and --stat summary. */
+interface ChangeSet {
+  files: string[];
+  stat: string;
+  /** Complete diff, never truncated here. */
+  diff: string;
+  /** Where the full diff was saved for members whose window can't take it (set on first need). */
+  savedAt?: string;
+}
+
+/** Characters of diff a member can take inline: a share of its window, capped for cloud members. */
+export function diffBudgetChars(member: CouncilMemberRef): number {
+  if (member === 'local') {
+    const ctx = contextLengthFor(getSettings().model) || LOCAL_CONTEXT_FALLBACK;
+    return Math.max(4_000, Math.floor(ctx * DIFF_WINDOW_SHARE) * 4);
+  }
+  return Math.min(MAX_CLOUD_DIFF, Math.floor(CLOUD_CONTEXT_TOKENS * DIFF_WINDOW_SHARE) * 4);
+}
+
+function fitsInline(changes: ChangeSet, member: CouncilMemberRef): boolean {
+  return changes.diff.length <= diffBudgetChars(member);
+}
+
+/**
+ * How this member gets the changes: the whole diff when it fits its budget, else the --stat summary plus the path of
+ * the saved full diff and an instruction to read the files itself (the grounding gate then checks that it did).
+ */
+function presentChanges(ctx: CouncilContext, run: CouncilRun, changes: ChangeSet, member: CouncilMemberRef): DiffPresentation {
+  if (!changes.diff && !changes.files.length) return { kind: 'none' };
+  if (fitsInline(changes, member)) return { kind: 'inline', diff: changes.diff };
+  changes.savedAt ??= saveSpill(ctx.session.id, `council-${run.id}-diff`, changes.diff);
+  return { kind: 'stat', stat: changes.stat, files: changes.files, savedAt: changes.savedAt, chars: changes.diff.length };
+}
+
+/** Split a unified diff into per-file chunks (the file name and its hunk text). */
+function splitDiff(diff: string): Array<{ file: string; text: string }> {
+  const out: Array<{ file: string; text: string }> = [];
+  for (const chunk of diff.split(/^(?=diff --git )/m)) {
+    if (!chunk.trim()) continue;
+    const m = /^diff --git a\/(.*?) b\//.exec(chunk);
+    out.push({ file: m?.[1] ?? '(other)', text: chunk });
+  }
+  return out;
+}
+
+/** Pack per-file chunks into at most `maxParts` groups that each fit `budget`; null when they can't. */
+function groupChunks(chunks: Array<{ file: string; text: string }>, budget: number, maxParts: number): Array<{ files: string[]; text: string }> | null {
+  const groups: Array<{ files: string[]; text: string }> = [];
+  for (const c of chunks) {
+    const text = c.text.length > budget ? `${c.text.slice(0, budget)}\n… [this file's diff was cut here; read the file for the rest]` : c.text;
+    const last = groups.at(-1);
+    if (last && last.text.length + text.length <= budget) {
+      last.files.push(c.file);
+      last.text += text;
+    } else groups.push({ files: [c.file], text });
+  }
+  return groups.length <= maxParts ? groups : null;
+}
+
+/**
+ * The review step of plan → build → review. Cloud reviewers get the diff inline up to their budget, else the stat and
+ * saved path. The local reviewer, whose window is small, reviews a too-big diff in file groups (one step each) and
+ * then merges its notes into one verdict step; when even that is too many parts, it gets the stat and reads files.
+ * Returns the step whose verdict is read, and whether the member saw the full diff (so the grounding gate knows).
+ */
+async function reviewChanges(
+  ctx: CouncilContext,
+  run: CouncilRun,
+  task: string,
+  report: string,
+  changes: ChangeSet,
+  plan: string | undefined,
+  checksText: string,
+  statuses: MemberStatus[],
+  avoid: CouncilMemberRef[],
+): Promise<{ step: CouncilStep | null; inlined: boolean }> {
+  const pick = pickMember('reviewer', statuses, avoid) ?? pickMember('reviewer', statuses);
+  if (pick?.member === 'local' && !fitsInline(changes, 'local') && changes.files.length > 1) {
+    const groups = groupChunks(splitDiff(changes.diff), diffBudgetChars('local'), MAX_REVIEW_PARTS);
+    if (groups) {
+      const parts: Array<{ files: string[]; notes: string }> = [];
+      for (const [i, g] of groups.entries()) {
+        if (ctx.signal.aborted) break;
+        const step = await runStep(ctx, run, {
+          role: 'reviewer',
+          member: 'local',
+          access: 'read',
+          prompt: partialReviewPrompt(task, report, i + 1, groups.length, g.files, g.text, plan),
+          note: `${pick.note} · part ${i + 1}/${groups.length}: ${g.files.slice(0, 3).join(', ')}${g.files.length > 3 ? `, +${g.files.length - 3}` : ''}`,
+        });
+        if (step.status !== 'done') return { step, inlined: true };
+        parts.push({ files: g.files, notes: step.output ?? '' });
+      }
+      if (ctx.signal.aborted) return { step: null, inlined: true };
+      const merged = await runStep(ctx, run, { role: 'reviewer', member: 'local', access: 'read', prompt: mergeReviewPrompt(task, parts, checksText), note: `${pick.note} · merged ${parts.length} parts` });
+      return { step: merged, inlined: true };
+    }
+  }
+  const step = await runRole(ctx, run, 'reviewer', 'read', (m) => reviewerPrompt(task, report, presentChanges(ctx, run, changes, m), plan, checksText), statuses, avoid);
+  return { step, inlined: step ? fitsInline(changes, step.member) : false };
 }
 
 function stripVerdictLine(review: string): string {
@@ -376,12 +565,12 @@ function gatesHeader(g: Gates, gate: ChecksGate, qaOn: boolean): string {
   } else if (gate.declined) parts.push('Checks skipped (you declined)');
   if (g.review?.status === 'done') {
     const who = label(g.review.member);
-    parts.push(g.reviewOk ? `Approved by ${who}` : `Changes still requested by ${who}${g.reviewMissing ? ' (no verdict given)' : ''}`);
+    parts.push(g.reviewOk ? `Approved by ${who}` : `Changes still requested by ${who}${g.reviewUngrounded ? ' (did not inspect the work)' : g.reviewMissing ? ' (no verdict given)' : ''}`);
     good &&= g.reviewOk;
     if (g.reviewOk && qaOn) {
       if (g.qa?.status === 'done') {
         const q = label(g.qa.member);
-        parts.push(g.qaOk ? `QA passed by ${q}` : `QA failed by ${q}${g.qaMissing ? ' (no verdict given)' : ''}`);
+        parts.push(g.qaOk ? `QA passed by ${q}` : `QA failed by ${q}${g.qaUngrounded ? ' (did not inspect the work)' : g.qaMissing ? ' (no verdict given)' : ''}`);
         good &&= g.qaOk;
       } else {
         parts.push(`QA skipped (${g.qa?.error ?? 'no member available'})`);
@@ -400,7 +589,8 @@ async function secondOpinion(ctx: CouncilContext, run: CouncilRun, task: string,
   const before = gitSnapshot(cwd);
   const builder = await runRole(ctx, run, builderRole, accessFor(run, builderRole), builderPrompt(task), statuses);
   if (!builder || builder.status !== 'done') return `**The build step did not complete.** ${builder?.error ?? noMemberMessage(builderRole, statuses)}`;
-  const critic = await runRole(ctx, run, 'reviewer', 'read', critiquePrompt(task, builder.output ?? '', runDiff(run, cwd, before)), statuses, [builder.member]);
+  const changes = runChanges(ctx, run, cwd, before);
+  const critic = await runRole(ctx, run, 'reviewer', 'read', (m) => critiquePrompt(task, builder.output ?? '', presentChanges(ctx, run, changes, m)), statuses, [builder.member]);
   return [
     `**Built by ${label(builder.member)}**${critic?.status === 'done' ? ` · second opinion from ${label(critic.member)}` : ''}`,
     `### What changed\n${builder.output ?? ''}`,
@@ -715,7 +905,7 @@ async function runRole(
   run: CouncilRun,
   role: CouncilRole,
   access: CouncilAccess,
-  prompt: string,
+  promptFor: string | ((member: CouncilMemberRef) => string),
   statuses: MemberStatus[],
   avoid: CouncilMemberRef[] = [],
   continuation?: (member: CouncilMemberRef) => Continuation | undefined,
@@ -734,6 +924,8 @@ async function runRole(
       : carried
         ? `${pick.note} · continued from ${label(carried.from)} ${carried.reason}`
         : `${pick.note} (retry after ${label(last!.member)} failed)`;
+    // Prompts can depend on the member (a reviewer gets as much diff as its context window takes).
+    const prompt = typeof promptFor === 'string' ? promptFor : promptFor(pick.member);
     const step = await runStep(ctx, run, {
       role,
       member: pick.member,
@@ -1072,9 +1264,13 @@ function worktreeInstructions(wt: CouncilWorktree): string {
   return `Note: ${wt.cwd} is a separate copy (git worktree) of the user's project at ${wt.projectDir}. Work only in this copy; the user reviews your changes and applies them afterwards. Do not commit, switch branches or touch the original folder.`;
 }
 
-/** The changes reviewers see: from the run's copy, or from the project folder since the build started. */
-function runDiff(run: CouncilRun, cwd: string, before: GitSnap): string {
-  return run.worktree?.status === 'pending' ? worktreeDiff(run.worktree).diff : gitDiffSince(cwd, before);
+/** The changes reviewers see: from the run's copy, or from the project folder since the build started. Full diff, not truncated. */
+function runChanges(_ctx: CouncilContext, run: CouncilRun, cwd: string, before: GitSnap): ChangeSet {
+  if (run.worktree?.status === 'pending') {
+    const d = worktreeDiff(run.worktree, Number.POSITIVE_INFINITY);
+    return { files: d.files, stat: d.stat, diff: d.diff };
+  }
+  return gitChangesSince(cwd, before);
 }
 
 /** End of run: record what changed in the copy, or remove the copy when nothing did. */
@@ -1228,20 +1424,24 @@ export function gitSnapshot(cwd: string): GitSnap {
   return { repo: true, head, dirty };
 }
 
-export function gitDiffSince(cwd: string, before: GitSnap): string {
-  if (!before.repo) return '';
+/** New changes in the folder since the snapshot: full redacted diff of tracked files, untracked files listed and shown in full (so a reviewer can judge new files too). */
+export function gitChangesSince(cwd: string, before: GitSnap): ChangeSet {
+  if (!before.repo) return { files: [], stat: '', diff: '' };
   const changed = git(cwd, ['status', '--porcelain'])
     .out.split('\n')
     .map((l) => ({ code: l.slice(0, 2), file: l.slice(3).trim() }))
     .filter((x) => x.file && !before.dirty.has(x.file));
-  if (!changed.length) return before.dirty.size ? '(no new changes outside files that were already modified before this run)' : '';
+  if (!changed.length) return { files: [], stat: '', diff: before.dirty.size ? '(no new changes outside files that were already modified before this run)' : '' };
   const tracked = changed.filter((x) => x.code !== '??').map((x) => x.file);
   const untracked = changed.filter((x) => x.code === '??').map((x) => x.file);
   let diff = tracked.length ? git(cwd, ['diff', '--no-color', 'HEAD', '--', ...tracked]).out : '';
-  if (untracked.length) diff += `\nNew files:\n${untracked.map((f) => `+ ${f}`).join('\n')}`;
-  // Redact before truncating so a cut can't leave half a key behind the marker.
-  diff = redactIfEnabled(diff);
-  return diff.length > MAX_DIFF ? `${diff.slice(0, MAX_DIFF)}\n… [diff truncated]` : diff;
+  let stat = tracked.length ? git(cwd, ['diff', '--stat=100', '--no-color', 'HEAD', '--', ...tracked]).out.trimEnd() : '';
+  if (untracked.length) {
+    // `git diff --no-index /dev/null <file>` renders a new file as a normal "diff --git" chunk (exit code 1 is expected).
+    for (const f of untracked) diff += `\n${git(cwd, ['diff', '--no-color', '--no-index', '--', '/dev/null', f]).out}`;
+    stat += `${stat ? '\n' : ''}New files:\n${untracked.map((f) => `+ ${f}`).join('\n')}`;
+  }
+  return { files: [...tracked, ...untracked], stat, diff: redactIfEnabled(diff) };
 }
 
 /** One-line summary of a run for chat labels: "claude → cursor → codex". */

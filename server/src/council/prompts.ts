@@ -45,12 +45,34 @@ export function visionPrompt(task: string, images: string[]): string {
   return `Task from the user:\n${task}\n\n${where}`;
 }
 
-export function reviewerPrompt(task: string, report: string, diff: string, plan?: string, checks?: string): string {
+/**
+ * How the changes are handed to a reviewer/QA member. `inline`: the whole diff is in the prompt. `stat`: the diff is
+ * too big for this member's context window, so it gets the --stat summary, the path of the saved full diff, and is
+ * told to read the changed files itself. `none`: no git diff available.
+ */
+export type DiffPresentation = { kind: 'inline'; diff: string } | { kind: 'stat'; stat: string; files: string[]; savedAt?: string; chars: number } | { kind: 'none' };
+
+export function describeChanges(d: DiffPresentation): string {
+  switch (d.kind) {
+    case 'inline':
+      return `Changes (git diff):\n${d.diff}`;
+    case 'stat':
+      return [
+        `Changes: the diff is ${d.chars} characters, too big to include here. Summary (git diff --stat):\n${d.stat}`,
+        `Inspect the changes yourself before giving a verdict: read each changed file in the project folder${d.savedAt ? `, or read the full diff saved at ${d.savedAt} (read_file with start_line/end_line, or grep it)` : ' (or run git diff there)'}. Changed files:\n${d.files.map((f) => `- ${f}`).join('\n')}`,
+      ].join('\n\n');
+    case 'none':
+      return 'No git diff is available; inspect the files the builder says it changed.';
+  }
+}
+
+export function reviewerPrompt(task: string, report: string, diff: string | DiffPresentation, plan?: string, checks?: string): string {
+  const changes = typeof diff === 'string' ? (diff ? { kind: 'inline' as const, diff } : { kind: 'none' as const }) : diff;
   return [
     `Task from the user:\n${task}`,
     plan ? `Plan that was followed:\n${plan}` : '',
     `Builder's report:\n${report || '(no report)'}`,
-    diff ? `Changes (git diff):\n${diff}` : 'No git diff is available; inspect the files the builder says it changed.',
+    describeChanges(changes),
     checks ?? '',
     'Review the changes. Start your reply with exactly one line: "VERDICT: APPROVE" or "VERDICT: CHANGES_REQUESTED". Then list concrete issues (file:line, what is wrong, how to fix). Only request changes for real problems, not taste.',
   ]
@@ -58,11 +80,45 @@ export function reviewerPrompt(task: string, report: string, diff: string, plan?
     .join('\n\n');
 }
 
+/** One part of a review split by file groups (the diff didn't fit the reviewer's window in one go). */
+export function partialReviewPrompt(task: string, report: string, part: number, parts: number, files: string[], diff: string, plan?: string): string {
+  return [
+    `Task from the user:\n${task}`,
+    plan ? `Plan that was followed:\n${plan}` : '',
+    `Builder's report:\n${report || '(no report)'}`,
+    `This is part ${part} of ${parts} of the review: the full change was too big to review at once, so you only get these files now:\n${files.map((f) => `- ${f}`).join('\n')}`,
+    `Changes in these files (git diff):\n${diff}`,
+    'Review only these files. List concrete issues (file:line, what is wrong, how to fix), or say "No issues in these files." Do not give an overall verdict yet.',
+  ]
+    .filter(Boolean)
+    .join('\n\n');
+}
+
+/** Merge pass after partial reviews: one verdict over all parts. */
+export function mergeReviewPrompt(task: string, parts: Array<{ files: string[]; notes: string }>, checks?: string): string {
+  return [
+    `Task from the user:\n${task}`,
+    `The change was reviewed in ${parts.length} parts (by file). Notes from each part:`,
+    ...parts.map((p, i) => `--- Part ${i + 1}: ${p.files.join(', ')} ---\n${p.notes.trim() || '(no notes)'}`),
+    checks ?? '',
+    'Combine the parts into one review. Start your reply with exactly one line: "VERDICT: APPROVE" or "VERDICT: CHANGES_REQUESTED". Then list the concrete issues that remain (file:line, what is wrong, how to fix). Only request changes for real problems, not taste.',
+  ]
+    .filter(Boolean)
+    .join('\n\n');
+}
+
+/** The member gave a verdict without inspecting anything: ask it to look at the work first, then judge again. */
+export function regroundPrompt(kind: 'review' | 'qa', files: string[], savedAt?: string): string {
+  const line = kind === 'review' ? '"VERDICT: APPROVE" or "VERDICT: CHANGES_REQUESTED"' : '"QA: PASS" or "QA: FAIL"';
+  const where = files.length ? `Changed files:\n${files.map((f) => `- ${f}`).join('\n')}` : 'Inspect the files the builder says it changed.';
+  return `Your ${kind === 'review' ? 'review' : 'QA report'} gave a verdict without reading anything: you made no tool calls, and the diff was not in your prompt, so it does not count. Read the changed files now (and the tests${savedAt ? `, or the full diff at ${savedAt}` : ''}), then judge again.\n\n${where}\n\nStart your reply with exactly one line, ${line}, then your findings.`;
+}
+
 export function fixPrompt(task: string, review: string): string {
   return `Task from the user:\n${task}\n\nA reviewer checked your changes and requested fixes:\n${review}\n\nFix every valid issue (say why if you disagree with one). Finish with a short report of what you changed.`;
 }
 
-export function critiquePrompt(task: string, report: string, diff: string): string {
+export function critiquePrompt(task: string, report: string, diff: string | DiffPresentation): string {
   return reviewerPrompt(task, report, diff).replace('Review the changes.', 'Give a second opinion on this work.');
 }
 
@@ -117,11 +173,12 @@ export function checksFixPrompt(task: string, c: ChecksNote): string {
   return `Task from the user:\n${task}\n\nThe project's checks failed after your changes:\n$ ${c.command}\n(exit ${c.code ?? 'killed'})\n${c.tail.trim() || '(no output)'}\n\nFix what makes them fail (do not weaken or delete the checks). Finish with a short report of what you changed.`;
 }
 
-export function qaPrompt(task: string, report: string, diff: string, review: string, checks: string): string {
+export function qaPrompt(task: string, report: string, diff: string | DiffPresentation, review: string, checks: string): string {
+  const changes = typeof diff === 'string' ? (diff ? { kind: 'inline' as const, diff } : { kind: 'none' as const }) : diff;
   return [
     `Task from the user:\n${task}`,
     `Builder's report:\n${report || '(no report)'}`,
-    diff ? `Changes (git diff):\n${diff}` : 'No git diff is available; inspect the files the builder says it changed.',
+    describeChanges(changes),
     review ? `The reviewer approved it with these notes:\n${review}` : '',
     checks,
     'Try to break this change. List concrete failing inputs, edge cases and regressions, each with repro steps (exact input or command, expected vs actual). Only report real failures you can show, not style. End your reply with exactly one line: "QA: PASS" (nothing breaks) or "QA: FAIL" (at least one real failure).',

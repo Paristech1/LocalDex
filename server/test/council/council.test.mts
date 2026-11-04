@@ -235,10 +235,10 @@ updateSettings({ council: { ...getSettings().council, trustProjectConfig: false 
 
   // Diffs handed to the reviewer are redacted too.
   reset();
-  const { gitSnapshot, gitDiffSince } = await import(`${SRC}/council/orchestrator.ts`);
+  const { gitSnapshot, gitChangesSince } = await import(`${SRC}/council/orchestrator.ts`);
   const snap = gitSnapshot(DEMO);
   fs.writeFileSync(`${DEMO}/README.md`, `# Demo\nSTRIPE_KEY=${'sk_' + 'live_4eC39HqLyjWDarjtT1zdp7dc'}\n`);
-  const diff = gitDiffSince(DEMO, snap);
+  const diff = gitChangesSince(DEMO, snap).diff;
   check('redact: git diff for reviewers is redacted', /\[REDACTED:stripe-key\]/.test(diff) && !diff.includes('4eC39HqLyjWDarjtT1zdp7dc'), diff.split('\n').filter((l: string) => l.startsWith('+')).join(' '));
 
   reset();
@@ -1382,6 +1382,88 @@ updateSettings({ council: { ...getSettings().council, allowWrite: true } });
   gr.setGoal({ mode: 'goal', brief: 'x', doneCriteria: '', maxIterations: 1, lead: 'council' });
   check('goal lead: council off → falls back to local', gs.goal.lead === 'local');
   updateSettings({ council: prev });
+}
+
+// 31. F3 reviewer grounding gate + F4 diff budget per reviewer
+{
+  const { diffBudgetChars } = await import(`${SRC}/council/orchestrator.ts`);
+  const prev = getSettings().council;
+  const prevCtx = getSettings().contextLength;
+  updateSettings({ council: { ...prev, builderWorktree: false, qaStep: false, checksGate: false, maxFixRounds: 0, confirmWrites: false, allowWrite: true, requireGroundedReview: true } });
+  const roles = (x: any) => x.steps.map((s: any) => s.role).join(',');
+  const prompts = (m: string) => { try { return fs.readFileSync(path.join(CTL, `${m}.log.jsonl`), 'utf8').trim().split('\n').map((l) => JSON.parse(l).prompt as string); } catch { return [] as string[]; } };
+  const spillDir = path.join(process.env.LOCALDEX_HOME!, 'spill');
+  check('grounding: setting defaults to on', DEFAULT_COUNCIL.requireGroundedReview === true);
+
+  // Small diff: it is in the prompt, so a reviewer that makes no tool calls is still informed → counts.
+  reset(); flag('review_blind', true);
+  let run = await runCouncil(ctx(), { pattern: 'plan_build_review', role: 'builder', task: 'Add rate limiting to the API', note: 'test' });
+  let rev = run.steps.find((s: any) => s.role === 'reviewer');
+  check('grounding: blind reviewer with the diff inline counts', roles(run) === 'planner,builder,reviewer' && !rev.ungrounded && /^\*\*✅ Approved by Codex/.test(run.result ?? ''), `${roles(run)} ${(run.result ?? '').split('\n')[0]}`);
+  check('grounding: small diff is inline', /Changes \(git diff\):[\s\S]*rateLimit/.test(prompts('codex').at(-1) ?? ''));
+
+  // Big diff (6 × 40 KB > the cloud budget): the reviewer gets the stat + saved path and must look; a blind verdict doesn't count.
+  reset(); flag('review_blind', true); fs.writeFileSync(path.join(CTL, 'builder_big'), '6x40000');
+  run = await runCouncil(ctx(), { pattern: 'plan_build_review', role: 'builder', task: 'Add rate limiting to the API', note: 'test' });
+  const revs = run.steps.filter((s: any) => s.role === 'reviewer');
+  const first = prompts('codex').at(-2) ?? '';
+  check('budget: cloud reviewer over budget gets stat + saved diff path, not the diff', /too big to include here/.test(first) && /git diff --stat/.test(first) && /src\/big3\.ts/.test(first) && !/export const v3_100 /.test(first) && first.length < 20_000, `len=${first.length}`);
+  const saved = /saved at (\S+)/.exec(first)?.[1] ?? '';
+  check('budget: full diff saved under the spill folder', saved.startsWith(spillDir) && fs.existsSync(saved) && fs.statSync(saved).size > 200_000, saved);
+  check('grounding: blind verdict → asked to look → still blind → changes requested', revs.length === 2 && revs[0].ungrounded === true && revs[1].ungrounded === true && /asked to look first/.test(revs[1].note ?? '') && /without reading anything/.test(prompts('codex').at(-1) ?? ''), `${revs.length} ${revs.map((s: any) => s.note).join(' | ')}`);
+  check('grounding: header says the reviewer did not inspect the work', /^\*\*⚠️ Changes still requested by Codex \(did not inspect the work\)/.test(run.result ?? ''), (run.result ?? '').split('\n')[0]);
+
+  // Blind only once: the re-ask inspects (tool call) and its verdict counts.
+  reset(); flag('review_blind_once', true); fs.writeFileSync(path.join(CTL, 'builder_big'), '6x40000');
+  run = await runCouncil(ctx(), { pattern: 'plan_build_review', role: 'builder', task: 'Add rate limiting to the API', note: 'test' });
+  const revs2 = run.steps.filter((s: any) => s.role === 'reviewer');
+  check('grounding: re-ask that inspects counts', revs2.length === 2 && revs2[0].ungrounded === true && !revs2[1].ungrounded && /^\*\*✅ Approved by Codex/.test(run.result ?? ''), (run.result ?? '').split('\n')[0]);
+
+  // Setting off: the blind verdict is taken as before.
+  reset(); flag('review_blind', true); fs.writeFileSync(path.join(CTL, 'builder_big'), '6x40000');
+  updateSettings({ council: { ...getSettings().council, requireGroundedReview: false } });
+  run = await runCouncil(ctx(), { pattern: 'plan_build_review', role: 'builder', task: 'Add rate limiting to the API', note: 'test' });
+  check('grounding off: blind approval counts', roles(run) === 'planner,builder,reviewer' && /^\*\*✅ Approved by Codex/.test(run.result ?? ''), (run.result ?? '').split('\n')[0]);
+  updateSettings({ council: { ...getSettings().council, requireGroundedReview: true } });
+
+  // QA gets the same gate (small diff so the reviewer passes; QA blind with the setting on but the diff inline → counts).
+  reset(); flag('review_blind', true); updateSettings({ council: { ...getSettings().council, qaStep: true } });
+  run = await runCouncil(ctx(), { pattern: 'plan_build_review', role: 'builder', task: 'Add rate limiting to the API', note: 'test' });
+  check('grounding: QA with the diff inline counts', roles(run) === 'planner,builder,reviewer,qa' && /QA passed by Gemini/.test(run.result ?? ''), `${roles(run)} ${(run.result ?? '').split('\n')[0]}`);
+  updateSettings({ council: { ...getSettings().council, qaStep: false } });
+
+  // F4: budgets follow the window. Local: 35% of the context window × 4 chars; cloud: capped.
+  updateSettings({ contextLength: 32_768 });
+  check('budget: local 32k window → ~45k chars of diff', diffBudgetChars('local') === Math.floor(32_768 * 0.35) * 4, String(diffBudgetChars('local')));
+  updateSettings({ contextLength: 8_192 });
+  check('budget: tiny window keeps a floor', diffBudgetChars('local') >= 4_000);
+  check('budget: cloud members capped at 160k chars', diffBudgetChars('claude') === 160_000 && diffBudgetChars('codex') === 160_000);
+  updateSettings({ contextLength: 32_768 });
+
+  // Local reviewer over budget: the diff is split by file into groups that fit, one step each, then a merge step with the verdict.
+  reset(); fs.writeFileSync(path.join(CTL, 'builder_big'), '6x20000');
+  const prevModel = getSettings().model;
+  updateSettings({ model: 'stand-in-local-model', council: { ...getSettings().council, roles: { ...getSettings().council.roles, reviewer: ['local', 'codex'] } } });
+  const localPrompts: string[] = [];
+  const localCtx = { ...ctx(), delegateLocal: async (_n: string, t: string) => { localPrompts.push(t); return /This is part \d+ of \d+/.test(t) ? 'No issues in these files.' : 'VERDICT: APPROVE\nAll parts clean.'; } };
+  run = await runCouncil(localCtx, { pattern: 'plan_build_review', role: 'builder', task: 'Add rate limiting to the API', note: 'test' });
+  const parts = localPrompts.filter((p) => /This is part \d+ of \d+/.test(p));
+  const merge = localPrompts.find((p) => /reviewed in \d+ parts/.test(p)) ?? '';
+  const budget = diffBudgetChars('local');
+  const covered = new Set(parts.flatMap((p) => [...p.matchAll(/^- (src\/\S+)$/gm)].map((m) => m[1])));
+  check('budget: local reviewer splits a big diff into file groups', parts.length >= 2 && parts.length <= 6 && run.steps.filter((s: any) => s.role === 'reviewer').length === parts.length + 1, `${parts.length} parts`);
+  check('budget: every changed file is in exactly one part', ['src/big1.ts', 'src/big2.ts', 'src/big3.ts', 'src/big4.ts', 'src/big5.ts', 'src/big6.ts', 'src/rateLimit.ts'].every((f) => covered.has(f)) && parts.flatMap((p) => [...p.matchAll(/^- (src\/\S+)$/gm)]).length === covered.size, [...covered].join(','));
+  check('budget: each part stays within the local budget (plus a small prompt overhead)', parts.every((p) => p.length <= budget + 3_000), parts.map((p) => p.length).join(','));
+  check('budget: merge step carries the verdict and the parts\' notes', /No issues in these files/.test(merge) && /^\*\*✅ Approved by Local/.test(run.result ?? ''), (run.result ?? '').split('\n')[0]);
+  const merged = run.steps.filter((s: any) => s.role === 'reviewer').at(-1);
+  check('budget: split review counts as grounded (full diff seen)', !merged.ungrounded && /merged \d+ parts/.test(merged.note ?? ''), merged.note);
+
+  // Local reviewer, small diff: one step, diff inline, no split.
+  reset(); localPrompts.length = 0;
+  run = await runCouncil(localCtx, { pattern: 'plan_build_review', role: 'builder', task: 'Add rate limiting to the API', note: 'test' });
+  check('budget: small diff → single local review with the diff inline', localPrompts.length === 1 && /Changes \(git diff\):[\s\S]*rateLimit/.test(localPrompts[0]) && roles(run) === 'planner,builder,reviewer', roles(run));
+
+  updateSettings({ model: prevModel, contextLength: prevCtx, council: prev });
 }
 
 console.log(`\n${pass} passed, ${fail} failed. events: ${JSON.stringify(events)}`);

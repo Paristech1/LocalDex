@@ -22,9 +22,11 @@ const a = process.argv.slice(2);
   }
   const lead = 'Let me look at the code first.\n';
   for (const ch of lead.match(/.{1,8}/gs)) { c.out({ type: 'stream_event', event: { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: ch } } }); await c.sleep(40); }
-  c.out({ type: 'assistant', message: { content: [{ type: 'text', text: lead }, { type: 'tool_use', id: 'toolu_1', name: 'Read', input: { file_path: 'src/math.ts' } }] } });
-  await c.sleep(400);
-  c.out({ type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: 'toolu_1', content: [{ type: 'text', text: 'export function add(a: number, b: number) {\n  return a + b;\n}' }], is_error: false }] } });
+  if (!c.blind(role)) {
+    c.out({ type: 'assistant', message: { content: [{ type: 'text', text: lead }, { type: 'tool_use', id: 'toolu_1', name: 'Read', input: { file_path: 'src/math.ts' } }] } });
+    await c.sleep(400);
+    c.out({ type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: 'toolu_1', content: [{ type: 'text', text: 'export function add(a: number, b: number) {\n  return a + b;\n}' }], is_error: false }] } });
+  }
   const text = c.answer(role, 'claude', prompt);
   for (const ch of text.match(/.{1,12}/gs)) { c.out({ type: 'stream_event', event: { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: ch } } }); await c.sleep(25); }
   c.out({ type: 'assistant', message: { content: [{ type: 'text', text }] } });

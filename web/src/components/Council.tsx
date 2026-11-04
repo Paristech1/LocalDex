@@ -537,6 +537,11 @@ function StepRow({ step, now, defaultOpen }: { step: CouncilStep; now: number; d
             continued session
           </span>
         )}
+        {step.ungrounded && (
+          <span className="text-[10px] px-1 rounded bg-warn/15 text-warn whitespace-nowrap" title="This verdict was given without inspecting anything (no tool calls, and the diff was not in the prompt), so it did not count">
+            did not inspect
+          </span>
+        )}
         <span className="flex-1" />
         <span className="text-[10px] text-ink-400 whitespace-nowrap shrink-0">
           {elapsed ? dur(elapsed) : ''}
@@ -1023,6 +1028,7 @@ export function CouncilSettingsTab({ settings, patch }: TabProps) {
         </div>
         <Toggle label="Run the project's checks before review (asks before running)" checked={c.checksGate !== false} onChange={(v) => setC({ checksGate: v })} />
         <Toggle label="QA tries to break approved changes" checked={c.qaStep !== false} onChange={(v) => setC({ qaStep: v })} />
+        <Toggle label="Reviewer and QA verdicts only count after inspecting the work (tool calls or the full diff)" checked={c.requireGroundedReview !== false} onChange={(v) => setC({ requireGroundedReview: v })} />
         <Toggle label="Always plan and review risky changes" checked={c.riskRouting} onChange={(v) => setC({ riskRouting: v })} />
         <Toggle label="Advisers rank each other's answers (blind) before the judge" checked={c.peerReview !== false} onChange={(v) => setC({ peerReview: v })} />
         <Toggle label="Subscription only (refuse members signed in with an API key)" checked={c.requirePlanBilling} onChange={(v) => setC({ requirePlanBilling: v })} />

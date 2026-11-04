@@ -279,6 +279,12 @@ export interface CouncilSettings {
   checkTimeoutMinutes: number;
   /** Plan → build → review: after approval, a QA member tries to break the change (read-only). */
   qaStep: boolean;
+  /**
+   * A reviewer or QA verdict only counts when the member actually inspected the work: it made at least one tool call,
+   * or the full diff was in its prompt. An ungrounded "APPROVE" is asked to look first; if it still doesn't, it counts
+   * as changes requested. Default on.
+   */
+  requireGroundedReview: boolean;
   /** Council mode: a follow-up to the same member continues that member's own session instead of resending chat history. Default on. */
   continueSessions: boolean;
   /**
@@ -373,6 +379,8 @@ export interface CouncilStep {
   handoff?: { from: CouncilMemberRef; text: string };
   /** The member continued its own session from the previous turn (only the new message was sent). */
   continued?: boolean;
+  /** A review/QA verdict given without inspecting anything (no tool calls, diff not in the prompt): not counted. */
+  ungrounded?: boolean;
 }
 
 export interface CouncilRun {
@@ -678,6 +686,7 @@ export const DEFAULT_COUNCIL: CouncilSettings = {
   checkCommand: '',
   checkTimeoutMinutes: 10,
   qaStep: true,
+  requireGroundedReview: true,
   continueSessions: true,
   builderWorktree: true,
   autoEscalate: 'suggest',

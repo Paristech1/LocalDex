@@ -2,6 +2,30 @@
 const fs = require('fs'); const path = require('path');
 const CTL = process.env.FAKE_CTL || path.join(__dirname, '..', 'fakectl');
 exports.flag = (name) => fs.existsSync(path.join(CTL, name));
+exports.flagText = (name) => { try { return fs.readFileSync(path.join(CTL, name), 'utf8').trim(); } catch { return ''; } };
+// Reviewer/QA grounding tests: with review_blind, review/QA stand-ins make no tool calls before judging.
+// review_blind_once blinds only the first review/QA call (the re-ask then inspects).
+exports.blind = (role) => {
+  if (role !== 'reviewer' && role !== 'qa') return false;
+  if (exports.flag('review_blind')) return true;
+  if (exports.flag('review_blind_once') && !fs.existsSync(path.join(CTL, 'blinded_once'))) { fs.writeFileSync(path.join(CTL, 'blinded_once'), '1'); return true; }
+  return false;
+};
+// Diff budget tests: builder_big holds "<files>x<bytes>", e.g. "6x20000" → the builder also writes src/big1.ts … big6.ts of ~20 KB each.
+exports.bigBuild = (cwd) => {
+  const m = /^(\d+)x(\d+)$/.exec(exports.flagText('builder_big'));
+  if (!m) return [];
+  const out = [];
+  for (let i = 1; i <= Number(m[1]); i++) {
+    const f = `src/big${i}.ts`;
+    const lines = [];
+    let size = 0;
+    for (let n = 0; size < Number(m[2]); n++) { const l = `export const v${i}_${n} = ${n}; // generated line ${n} of file ${i}`; lines.push(l); size += l.length + 1; }
+    fs.writeFileSync(path.join(cwd, f), lines.join('\n') + '\n');
+    out.push(f);
+  }
+  return out;
+};
 // Record what a stand-in received so tests can assert on args/prompts: <ctl>/<name>.last.json and <name>.log.jsonl
 exports.record = (name, data) => { try { fs.mkdirSync(CTL, { recursive: true }); const line = JSON.stringify({ ts: Date.now(), ...data }); fs.writeFileSync(path.join(CTL, name + '.last.json'), line); fs.appendFileSync(path.join(CTL, name + '.log.jsonl'), line + '\n'); } catch {} };
 // A fresh vendor session id per run, e.g. claude-3f9a1c2b.
