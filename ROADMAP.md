@@ -64,7 +64,7 @@ Each task lists **Why** (the evidence), **Where** (files), **Borrow** (the DeepS
 | 2 | C1 | Save oversized tool output to a file, show head/tail + path (context-aware budget) | P0 | M | ✅ done |
 | 2 | C2 | Trim old tool results before summarizing | P1 | S | ✅ done |
 | 2 | C3 | Keep the prompt prefix stable for prompt caching | P1 | S | ✅ done (TTFT not measured: no LM Studio in CI) |
-| 2 | C4 | Load project instructions (`AGENTS.md` / `CLAUDE.md` / `LOCALDEX.md`) | P1 | S |
+| 2 | C4 | Load project instructions (`AGENTS.md` / `CLAUDE.md` / `LOCALDEX.md`) | P1 | S | ✅ done |
 | 3 | S1 | Read-before-edit + stale-file check | P0 | S | ✅ done |
 | 3 | S2 | Per-turn checkpoints: changed-files card, diffs, **Undo this turn** | P0 | L | ✅ done |
 | 3 | S3 | Shell sandbox (macOS Seatbelt / Linux bwrap) + permission presets | P1 | M |

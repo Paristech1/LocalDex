@@ -595,6 +595,48 @@ console.log('\n# Q. Stable prompt prefix');
   updateSettings({ capabilities: prevCaps });
 }
 
+// ---------- R: project instruction files (C4) ----------
+console.log('\n# R. Project instructions');
+{
+  const { mainSystemPrompt, workerSystemPrompt } = await import(`${SRC}/agent/prompts.ts`);
+  const { GLOBAL_INSTRUCTIONS, PROJECT_BUDGET, forgetInstructions } = await import(`${SRC}/agent/instructions.ts`);
+  const { getSettings } = await import(`${SRC}/config.ts`);
+  check('setting defaults to on', getSettings().projectInstructions === true);
+  check('no files → no section', !/Project instructions \(/.test(mainSystemPrompt()));
+  fs.writeFileSync(path.join(DEMO, 'AGENTS.md'), '# Demo conventions\nUse tabs. Run `npm test` before reporting done.\n');
+  fs.writeFileSync(path.join(DEMO, 'CLAUDE.md'), 'CLAUDE ONLY\n');
+  fs.writeFileSync(GLOBAL_INSTRUCTIONS, 'Always answer in British English.\n');
+  const sp = mainSystemPrompt();
+  check('project AGENTS.md text is in the system prompt (AGENTS.md wins over CLAUDE.md)', /Project instructions \(.*AGENTS\.md\):\n# Demo conventions\nUse tabs\./.test(sp) && !/CLAUDE ONLY/.test(sp));
+  check('global ~/.localdex/AGENTS.md is in the system prompt too, before the project one', sp.indexOf('Always answer in British English.') > 0 && sp.indexOf('Always answer in British English.') < sp.indexOf('# Demo conventions'));
+  check('workers get the instructions as well', /Use tabs\./.test(workerSystemPrompt('w1')));
+  // 50 KB file: truncated to the budget with a notice.
+  fs.writeFileSync(path.join(DEMO, 'AGENTS.md'), `# Big\n${'rule line that goes on and on\n'.repeat(1_700)}`);
+  const big = mainSystemPrompt();
+  const section = big.slice(big.indexOf('Project instructions ('));
+  check('50 KB file is truncated with a notice', /only the first 8192 are loaded/.test(section) && section.length < PROJECT_BUDGET + 600, String(section.length));
+  // Nested file: appended as context when the agent works in that subfolder, once.
+  fs.writeFileSync(path.join(DEMO, 'AGENTS.md'), '# Demo conventions\nUse tabs.\n');
+  fs.mkdirSync(path.join(DEMO, 'pkg/api'), { recursive: true });
+  fs.writeFileSync(path.join(DEMO, 'pkg/api/AGENTS.md'), 'API rules: every route needs a test.\n');
+  fs.writeFileSync(path.join(DEMO, 'pkg/api/routes.ts'), 'export const r = 1;\n');
+  const sess = createSession('gemma-mock');
+  const rn = runnerFor(sess);
+  script = [textCalls({ name: 'read_file', arguments: { path: 'pkg/api/routes.ts' } }), textCalls({ name: 'read_file', arguments: { path: 'pkg/api/routes.ts' } }), say('ok')];
+  await rn.handleUserMessage('look at the api');
+  const nested = sess.messages.filter((m: any) => m.role === 'user' && /^\[context\] Instructions for pkg\/api\//.test(m.content));
+  check('nested AGENTS.md appended once as context after the agent touched the folder', nested.length === 1 && /every route needs a test/.test(nested[0].content), String(nested.length));
+  check('nested file is not in the system prompt (prefix stays stable)', !/every route needs a test/.test((sess.messages[0] as any).content));
+  const idx = sess.messages.indexOf(nested[0]);
+  check('context line arrives after the tool result that touched the folder', sess.messages.slice(0, idx).some((m: any) => m.role === 'tool'));
+  // Off switch.
+  updateSettings({ projectInstructions: false });
+  check('setting off: nothing loaded', !/Use tabs\./.test(mainSystemPrompt()));
+  updateSettings({ projectInstructions: true });
+  fs.rmSync(path.join(DEMO, 'AGENTS.md')); fs.rmSync(path.join(DEMO, 'CLAUDE.md')); fs.rmSync(GLOBAL_INSTRUCTIONS); fs.rmSync(path.join(DEMO, 'pkg'), { recursive: true });
+  forgetInstructions(sess.id);
+}
+
 server.close();
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

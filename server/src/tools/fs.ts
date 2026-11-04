@@ -8,6 +8,7 @@ import { describeText, describeTextLine, fixDoubleEscapedText } from '../jsonRep
 import { inlineBudgetChars } from '../spill.js';
 import { editRefusal, fingerprint, recordRead } from './readTracker.js';
 import { beforeEdit } from '../checkpoints.js';
+import { noteTouched } from '../agent/instructions.js';
 
 export const read_file: ToolDef = {
   schema: {
@@ -30,6 +31,7 @@ export const read_file: ToolDef = {
   async run(args, ctx) {
     // Saved tool output (LocalDex's spill folder) may be read back; everything else must be in an approved folder.
     const p = resolvePath(str(args.path, 'path'), { read: true });
+    noteTouched(ctx.sessionId, p);
     const stat = await fs.stat(p).catch((e: NodeJS.ErrnoException) => {
       if (e.code !== 'ENOENT') throw e;
       return null;
@@ -93,6 +95,7 @@ export const write_file: ToolDef = {
     const content = repaired.text;
     const refused = await editRefusal(ctx.sessionId, ctx.agent, p);
     if (refused) return fail(refused);
+    noteTouched(ctx.sessionId, p);
     beforeEdit(ctx.sessionId, p);
     await fs.mkdir(path.dirname(p), { recursive: true });
     const existed = await fs
@@ -135,6 +138,7 @@ export const edit_file: ToolDef = {
     if (oldStr === '') return fail('old_string must not be empty.');
     const refused = await editRefusal(ctx.sessionId, ctx.agent, p);
     if (refused) return fail(refused);
+    noteTouched(ctx.sessionId, p);
     beforeEdit(ctx.sessionId, p);
     const content = await fs.readFile(p, 'utf8');
     const count = content.split(oldStr).length - 1;
@@ -165,8 +169,9 @@ export const list_dir: ToolDef = {
       },
     },
   },
-  async run(args) {
+  async run(args, ctx) {
     const p = resolvePath(optStr(args.path) ?? defaultCwd());
+    noteTouched(ctx.sessionId, p);
     const entries = await fs.readdir(p, { withFileTypes: true });
     entries.sort((a, b) => Number(b.isDirectory()) - Number(a.isDirectory()) || a.name.localeCompare(b.name));
     const lines = await Promise.all(

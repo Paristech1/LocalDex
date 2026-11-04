@@ -1,4 +1,5 @@
 import os from 'node:os';
+import { projectInstructions } from './instructions.js';
 import { getSettings } from '../config.js';
 import { enabledTools } from '../tools/index.js';
 import { approvedFolders } from '../tools/permissions.js';
@@ -53,6 +54,7 @@ export function mainSystemPrompt(): string {
     `Planning: for multi-step work, call update_plan first with the steps, then keep it current as you progress.`,
     `Delegation: for independent sub-tasks (e.g. "write tests" while you implement), call delegate_to_worker, giving each worker complete, self-contained instructions. Several delegate calls in one turn run in parallel. Reuse a worker's name to continue its context. Review workers' reports and integrate them.`,
     councilNote(),
+    projectInstructions(),
     custom ? `User instructions:\n${custom}` : '',
   ]
     .filter(Boolean)
@@ -85,6 +87,7 @@ export function workerSystemPrompt(name: string): string {
     SHARED_RULES,
     mcpPromptNotes('worker'),
     skillsPromptNotes(),
+    projectInstructions(),
     custom ? `User instructions:\n${custom}` : '',
   ]
     .filter(Boolean)

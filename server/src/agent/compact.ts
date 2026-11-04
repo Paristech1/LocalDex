@@ -7,6 +7,7 @@ import { contextLengthFor, estimateTokens, streamChat } from '../lmstudio.js';
 import { bus } from './bus.js';
 import { compactPrompt, mainSystemPrompt, workerSystemPrompt } from './prompts.js';
 import { resetReads } from '../tools/readTracker.js';
+import { forgetInstructions } from './instructions.js';
 
 const MAX_TRANSCRIPT_CHARS = 160_000;
 const MIN_MESSAGES_TO_COMPACT = 4;
@@ -119,8 +120,9 @@ export async function compactMain(session: Session, signal?: AbortSignal, reason
   session.archive.push(session.messages.slice());
   session.compactSummary = summary;
   session.compactions += 1;
-  // The reads that allowed edits are no longer in the context.
+  // The reads that allowed edits are no longer in the context; nor are nested instruction files.
   resetReads(session.id, 'main');
+  forgetInstructions(session.id);
   session.usage.lastPromptTokens = 0;
   session.messages.splice(
     0,

@@ -114,6 +114,18 @@ LocalDex can read your files and run commands, so it only accepts your own brows
 - The WebSocket and every `/api` route reject requests from other websites (foreign `Origin`) and from rebinding tricks (foreign `Host`). Other websites you visit can no longer drive the agent through your localhost.
 - If you serve the UI from another local hostname, add it with `LOCALDEX_ALLOWED_HOSTS=name1,name2`.
 
+## Project instructions
+
+LocalDex loads instruction files into the system prompt, each under its own byte budget so one never crowds out the other:
+
+- `~/.localdex/AGENTS.md` – your own rules for every project (first 4 KB).
+- `<approved folder>/AGENTS.md`, or `CLAUDE.md`, or `LOCALDEX.md` (first match wins; first 8 KB).
+- Instruction files in subfolders are appended as a `[context]` message the first time the agent reads, edits or lists
+  something in that folder (first 4 KB each), so the system prompt itself stays stable.
+
+A file over its budget is cut at a line end with a notice saying so. Workers get the same instructions. Turn it off in
+**Settings → Instructions → Load instruction files**. Pattern borrowed from DeepSeek Harness `agent-instructions` (reimplemented).
+
 ## Skills
 
 A skill is a folder with a `SKILL.md` (frontmatter `name` + `description`, then instructions) plus any files it needs. Skills live in `~/.localdex/skills/<name>/`.

@@ -461,6 +461,15 @@ function PromptTab({ settings, patch }: TabProps) {
       <Button variant="primary" onClick={() => patch({ systemPrompt: text })} disabled={text === settings.systemPrompt}>
         Save instructions
       </Button>
+      <div className="pt-4 border-t border-ink-700">
+        <h3 className="font-medium">Project instruction files</h3>
+        <p className="text-xs text-ink-400 mt-1">
+          <code>~/.localdex/AGENTS.md</code> (yours, first 4 KB) and the project's <code>AGENTS.md</code>, <code>CLAUDE.md</code> or <code>LOCALDEX.md</code> (first 8 KB) are loaded into the system prompt. Instruction files in subfolders are added when the agent works there.
+        </p>
+        <div className="mt-2">
+          <Toggle label="Load instruction files" checked={settings.projectInstructions !== false} onChange={(v) => patch({ projectInstructions: v })} />
+        </div>
+      </div>
     </>
   );
 }

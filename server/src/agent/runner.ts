@@ -6,6 +6,7 @@ import { bus } from './bus.js';
 import { compactMain, maybeCompactMain, verifiedFileFacts } from './compact.js';
 import { assessGoal, goalCouncilAssessTask, parseAssessment } from './goal.js';
 import { beginTurn, endTurn } from '../checkpoints.js';
+import { pullInstructions } from './instructions.js';
 import { runLoop } from './loop.js';
 import { CLOCK_EVERY_MS, CLOCK_PREFIX, clockLine, goalContinuePrompt, mainSystemPrompt } from './prompts.js';
 import { WorkerManager } from './workers.js';
@@ -366,7 +367,8 @@ export class SessionRunner {
   private pullCorrections = (): string[] => {
     const out = this.corrections;
     this.corrections = [];
-    return out.map((m) => m.content);
+    // Nested AGENTS.md files found while the agent worked in subfolders arrive the same way (appended, never in the prefix).
+    return [...pullInstructions(this.session.id), ...out.map((m) => m.content)];
   };
 
   private async run(): Promise<void> {
