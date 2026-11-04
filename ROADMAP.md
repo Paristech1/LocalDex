@@ -13,7 +13,7 @@
 
 | Rule | Detail |
 |---|---|
-| Branching | Phase 0 creates an integration branch, `dev/roadmap`. Each task then gets its own branch off `dev/roadmap` (`feat/<id>-<slug>`) and a PR back into `dev/roadmap`. **Never push to `main` and never merge a PR yourself.** Paris merges. |
+| Branching | H1 is already done and the merged work is on `main`. Each task gets its own branch off `main` (`feat/<id>-<slug>`) and a PR into `main`. **Never push to `main` and never merge a PR yourself.** Paris merges. |
 | Gate every commit | `npm run typecheck`, `npm run test:council -w server` and `npm run test:local -w server` must all pass. Add tests for each task to the existing suites (mock LM Studio in `server/test/local`, fake vendor CLIs in `server/test/council/fakebin`). |
 | Verify, don't trust | Check files on disk and run commands yourself. Do not accept a model's self-report, including your own subagents'. |
 | Small model first | The main target is **Gemma 4 12B on an M4 Mac mini with 16 GB RAM, at 32k context, in LM Studio**. New model-facing tools ship **off by default** or with the smallest schema that works, because every extra tool makes small models less reliable. |
@@ -356,15 +356,16 @@ When a sandboxed command fails with a write denial, show "Command was blocked by
 | `workflow` scripts that fan out subagents | The council orchestrator already covers multi-agent patterns. |
 | `agent-team` shared task board | LM Studio serves one request per loaded model, so parallel local agents queue anyway. |
 | `repeat-tool-reminder` | LocalDex already has a stronger version (warn at 3, stop at 5, plus thinking cut-offs). |
-| Liveshare, OpenTelemetry, telemetry, plugin market, DeepSeek account/API, reasoning translation, webworker runtime | Out of scope for a private, local-first tool, or tied to DeepSeek's own services. |
+| Liveshare, OpenTelemetry, telemetry, DeepSeek account/API, reasoning translation, webworker runtime | Out of scope for a private, local-first tool, or tied to DeepSeek's own services. |
 | `claude-code-mods` bridge | Interesting, but niche. S5 covers the useful part (hooks). |
+| A LocalDex plugin system (Plugins page, install flow, index, presets) | **Parked, not rejected.** Paris wants to revisit it later. A full design (packs vs. out-of-process code plugins, consent screen, pinned installs) is in git history at commit `15ed621`. |
 
 ---
 
 ## 10. When you finish a task
 
 1. The gates pass, new tests are added, and the README is updated (with a Model experience note for new tools).
-2. Open a PR into `main` (or `dev/roadmap` if Paris revives it) that has: a summary, evidence (test output, screenshots for UI work), any security impact, and **"Borrowed from: packages/<path>"** if a DeepSeek Harness pattern was used.
+2. Open a PR into `main` that has: a summary, evidence (test output, screenshots for UI work), any security impact, and **"Borrowed from: packages/<path>"** if a DeepSeek Harness pattern was used.
 3. Tick the task off in the section 1 table in this file, in the same PR.
 4. Stop and ask Paris before anything irreversible or anything that changes a security default.
 
@@ -412,10 +413,3 @@ npm run typecheck && npm run test:local -w server && npm run test:council -w ser
 ```
 
 Read `README.md` for user-visible behavior added in this batch. Tick section 1 and update README when you finish the next task.
-
----
-
-1. The gates pass, new tests are added, and the README is updated (with a Model experience note for new tools).
-2. Open a PR into `dev/roadmap` that has: a summary, evidence (test output, screenshots for UI work), any security impact, and **"Borrowed from: packages/<path>"** if a DeepSeek Harness pattern was used.
-3. Tick the task off in the section 1 table in this file, in the same PR.
-4. Stop and ask Paris before anything irreversible or anything that changes a security default.
