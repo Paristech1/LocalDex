@@ -12,6 +12,10 @@ export interface ToolContext {
   sessionId: string;
   agent: AgentId;
   signal: AbortSignal;
+  /** The model that will read the result (sizes inline output to its context window). */
+  model?: string | null;
+  /** This tool call's id (names the file when the output is saved to disk). */
+  callId?: string;
   /** Ask the user to approve a shell command. Resolves true/false. */
   requestApproval(command: string, cwd: string): Promise<boolean>;
   /** Ask the user a free-form question. */
@@ -64,7 +68,11 @@ export function optBool(v: unknown): boolean | undefined {
   return undefined;
 }
 
-export const MAX_OUTPUT = 30_000;
+/**
+ * Safety cap on what a tool hands back at all. Output over the model's inline budget is then saved to a file and
+ * shown as head + tail + path by the agent loop (see spill.ts), so this only guards memory, not the context window.
+ */
+export const MAX_OUTPUT = 1_000_000;
 export function truncate(s: string, max = MAX_OUTPUT): string {
   if (s.length <= max) return s;
   const head = s.slice(0, Math.floor(max * 0.7));

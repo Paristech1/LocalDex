@@ -24,7 +24,7 @@ export const grep: ToolDef = {
   },
   async run(args, ctx) {
     const pattern = str(args.pattern, 'pattern');
-    const target = resolvePath(optStr(args.path) ?? defaultCwd());
+    const target = resolvePath(optStr(args.path) ?? defaultCwd(), { read: true });
     const max = optNum(args.max_results) ?? 200;
     const rgArgs = ['--line-number', '--no-heading', '--color=never', '--max-count', '500', '-g', '!node_modules', '-g', '!.git', '-g', '!dist'];
     if (optBool(args.case_insensitive)) rgArgs.push('-i');

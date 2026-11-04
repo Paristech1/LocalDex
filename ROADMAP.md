@@ -61,7 +61,7 @@ Each task lists **Why** (the evidence), **Where** (files), **Borrow** (the DeepS
 | 1 | F3 | Reviewer grounding gate (no tool calls → no verdict) | P0 | S | ✅ done |
 | 1 | F4 | Diff budget sized to each reviewer's context window | P0 | M | ✅ done |
 | 1 | F5 | Harden the Playwright MCP defaults | P0 | S | ✅ done (d6d41de) |
-| 2 | C1 | Save oversized tool output to a file, show head/tail + path (context-aware budget) | P0 | M |
+| 2 | C1 | Save oversized tool output to a file, show head/tail + path (context-aware budget) | P0 | M | ✅ done |
 | 2 | C2 | Trim old tool results before summarizing | P1 | S |
 | 2 | C3 | Keep the prompt prefix stable for prompt caching | P1 | S |
 | 2 | C4 | Load project instructions (`AGENTS.md` / `CLAUDE.md` / `LOCALDEX.md`) | P1 | S |

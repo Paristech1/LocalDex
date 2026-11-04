@@ -19,6 +19,7 @@ import { createSession, deleteSession, flushAll, getSession, listSessions, saveS
 import { bus } from './agent/bus.js';
 import { dropRunner, runnerFor } from './agent/runner.js';
 import { PTY_UNAVAILABLE_NOTE, closeAllTerminals, ptyAvailable } from './tools/terminal.js';
+import { deleteSpill } from './spill.js';
 import { unavailableTools } from './tools/index.js';
 import { closeAllMcp, mcpStatuses, reloadMcp } from './mcp/client.js';
 import { LIMITS, listSkills, removeSkill, setSkillEnabled } from './skills/store.js';
@@ -256,6 +257,7 @@ async function handle(ws: WebSocket, ev: ClientEvent): Promise<void> {
       dropRunner(ev.id);
       // Its waiting copies could never be applied any more.
       if (gone) discardSessionCopies(gone);
+      deleteSpill(ev.id);
       deleteSession(ev.id);
       bus.emit({ type: 'sessions', sessions: listSessions() });
       return;

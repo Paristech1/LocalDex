@@ -354,6 +354,52 @@ check('auto: request handed to the council by itself', s2.messages.some((m: any)
 for (let i = 0; i < 400 && runner2.running; i++) await new Promise((r) => setTimeout(r, 50));
 updateSettings({ council: { enabled: false } as any });
 
+// ---------- M: oversized tool output is saved to a file, head + tail + path stay inline (C1) ----------
+console.log('\n# M. Spill');
+{
+  const { inlineBudgetChars, spillDir, SPILL_DIR } = await import(`${SRC}/spill.ts`);
+  const { resolvePath } = await import(`${SRC}/tools/permissions.ts`);
+  const { getSettings } = await import(`${SRC}/config.ts`);
+  const prevCtxLen = getSettings().contextLength;
+  updateSettings({ contextLength: 32768 });
+  const budget = inlineBudgetChars('gemma-mock');
+  check('budget: 32k window → 30% of it × 4 chars', budget === Math.floor(32768 * 0.3) * 4, String(budget));
+  check('budget: unknown model falls back to a 32k window', inlineBudgetChars('nope') === budget);
+  approve = true;
+  // 500 KB of numbered lines from a shell command.
+  r = await runWith([textCalls({ name: 'shell_run', arguments: { command: "node -e \"for(let i=1;i<=20000;i++)console.log('line '+i+' '+'x'.repeat(16))\"" } }), say('done')], 'Print a lot.');
+  const out = toolResults(r.messages)[0]?.content ?? '';
+  const saved = /Full output: (\S+)\./.exec(out)?.[1] ?? '';
+  check('spill: inline result stays under the budget', out.length <= budget + 400 && out.length > budget / 2, `len=${out.length} budget=${budget}`);
+  check('spill: shows head and tail with a marker between', /line 1 x/.test(out) && /line 20000 x/.test(out) && /\[\.\.\.\]/.test(out) && /showing start and end/.test(out));
+  check('spill: full output saved under the session spill folder', saved.startsWith(spillDir('t')) && fs.existsSync(saved) && fs.readFileSync(saved, 'utf8').split('\n').length > 20000, saved);
+  check('spill: file is private to LocalDex (not in the approved folder)', !saved.startsWith(DEMO) && saved.startsWith(SPILL_DIR));
+  // The model can read the saved file back with read_file (paginated to the window) and grep it, but never write there.
+  r = await runWith([textCalls({ name: 'read_file', arguments: { path: saved, start_line: 19990 } }), say('ok')], 'Read the rest.');
+  const tail = toolResults(r.messages)[0]?.content ?? '';
+  check('spill: read_file may read the saved file', /\| line 19990 x/.test(tail) && /\| line 20000 x/.test(tail) && !/outside the approved folders/.test(tail), tail.slice(0, 200));
+  r = await runWith([textCalls({ name: 'grep', arguments: { pattern: 'line 12345 ', path: saved } }), say('ok')], 'Find it.');
+  check('spill: grep may search the saved file', /line 12345 x/.test(toolResults(r.messages)[0]?.content ?? ''), toolResults(r.messages)[0]?.content.slice(0, 200));
+  let threw = '';
+  try { resolvePath(saved); } catch (e) { threw = (e as Error).message; }
+  check('spill: writes to the spill folder are refused', /outside the approved folders|protected pattern/.test(threw), threw);
+  try { resolvePath(path.join(SPILL_DIR, '..', 'config.json'), { read: true }); threw = ''; } catch (e) { threw = (e as Error).message; }
+  check('spill: read exception does not open the rest of ~/.localdex', /outside the approved folders|protected pattern/.test(threw), threw);
+  // read_file on a big project file: cut at a line boundary with a "continue at" hint, no file of a file.
+  fs.writeFileSync(path.join(DEMO, 'big.log'), Array.from({ length: 5000 }, (_, i) => `entry ${i + 1} ${'y'.repeat(40)}`).join('\n') + '\n');
+  r = await runWith([textCalls({ name: 'read_file', arguments: { path: 'big.log' } }), say('ok')], 'Read big.log.');
+  const big = toolResults(r.messages)[0]?.content ?? '';
+  const next = Number(/start_line=(\d+)/.exec(big)?.[1] ?? 0);
+  check('read_file: stops at the budget with a continue hint', big.length <= budget + 400 && next > 1 && next < 5000 && /entry 1 y/.test(big) && !/Full output:/.test(big), `len=${big.length} next=${next}`);
+  check('read_file: hint names the first unread line', next > 0 && !new RegExp(`\\n\\s*${next}\\| entry ${next} `).test(big) && new RegExp(`\\n\\s*${next - 1}\\| entry ${next - 1} `).test(big));
+  // Deleting the session removes its saved outputs.
+  const { deleteSpill } = await import(`${SRC}/spill.ts`);
+  deleteSpill('t');
+  check('spill: deleted with the session', !fs.existsSync(spillDir('t')));
+  approve = false;
+  updateSettings({ contextLength: prevCtxLen });
+}
+
 server.close();
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

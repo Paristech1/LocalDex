@@ -2,6 +2,7 @@ import type { AgentId, ChatMessage, PlanStep, ToolCall, ToolSchema } from '@loca
 import { isCorruptCall, streamChat } from '../lmstudio.js';
 import { executeTool } from '../tools/index.js';
 import type { CouncilRequest, ToolContext } from '../tools/types.js';
+import { inlineBudgetChars, spill } from '../spill.js';
 import { bus } from './bus.js';
 import { getSettings } from '../config.js';
 import { ConsultNudger, consultEnabled } from './consultNudge.js';
@@ -249,6 +250,7 @@ export async function runLoop(p: LoopParams): Promise<LoopResult> {
       sessionId,
       agent,
       signal: p.signal,
+      model: p.model,
       requestApproval: async (cmd, cwd) => {
         const key = `${cwd}\u0000${cmd.trim().replace(/\s+/g, ' ')}`;
         if (denied.has(key)) {
@@ -332,6 +334,9 @@ interface Outcome {
  * and any non-delegation call waits for in-flight delegations first (the model usually wants
  * to read what the workers produced).
  */
+/** Tools whose results are bounded by their own arguments (read_file paginates itself; the rest are short). */
+const SPILL_EXEMPT = new Set<string>(['read_file', 'update_plan', 'ask_user']);
+
 async function executeCalls(calls: ToolCall[], ctx: ToolContext): Promise<Outcome[]> {
   const results: Outcome[] = new Array(calls.length);
   let parallel: Promise<void>[] = [];
@@ -348,7 +353,13 @@ async function executeCalls(calls: ToolCall[], ctx: ToolContext): Promise<Outcom
     // Never run a call whose arguments are broken (chat-template tokens, prose spilled into a path…).
     const r = isCorruptCall(call)
       ? { ok: false, content: `This ${call.function.name} call was malformed (its arguments contained chat-template tokens or were not a JSON object), so LocalDex did not run it. Send the call again with clean JSON arguments only.` }
-      : await executeTool(call, ctx);
+      : await executeTool(call, { ...ctx, callId: call.id });
+    // Oversized results never go into the context whole: the full text is saved and the model gets head + tail + path.
+    if (SPILL_EXEMPT.has(call.function.name) === false) {
+      const s = spill(r.content, { sessionId: ctx.sessionId, callId: `${ctx.agent}-${call.id}`, budgetChars: inlineBudgetChars(ctx.model ?? null), label: `${call.function.name} output` });
+      if (s.path) bus.log('info', `[${ctx.agent}] ${call.function.name}: ${s.omitted} chars of output saved to ${s.path}`);
+      r.content = s.text;
+    }
     bus.emit({
       type: 'tool_end',
       sessionId: ctx.sessionId,

@@ -2,6 +2,7 @@ import path from 'node:path';
 import os from 'node:os';
 import fs from 'node:fs';
 import { expandHome, getSettings } from '../config.js';
+import { isSpillPath } from '../spill.js';
 
 export class PermissionError extends Error {
   constructor(message: string) {
@@ -21,8 +22,12 @@ const DENY_PATTERNS = [
   /(^|\/)Library\/Keychains(\/|$)/,
 ];
 
-/** Resolve a user-supplied path against the first approved folder and verify it is allowed. */
-export function resolvePath(p: string, opts: { allowDenied?: boolean } = {}): string {
+/**
+ * Resolve a user-supplied path against the first approved folder and verify it is allowed.
+ * `read`: a read-only use; the one place outside the approved folders it may reach is LocalDex's own spill folder
+ * (saved tool output the model was pointed at). Writes never go there.
+ */
+export function resolvePath(p: string, opts: { allowDenied?: boolean; read?: boolean } = {}): string {
   const folders = approvedFolders();
   if (folders.length === 0) {
     throw new PermissionError(
@@ -32,6 +37,7 @@ export function resolvePath(p: string, opts: { allowDenied?: boolean } = {}): st
   const expanded = expandHome(p);
   const abs = path.isAbsolute(expanded) ? path.resolve(expanded) : path.resolve(folders[0], expanded);
   const real = realpathSafe(abs);
+  if (opts.read && isSpillPath(abs) && isSpillPath(real)) return abs;
 
   const inside = folders.some((f) => isInside(real, f) || isInside(abs, f));
   if (!inside) {

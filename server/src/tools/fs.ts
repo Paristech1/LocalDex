@@ -4,8 +4,7 @@ import fg from 'fast-glob';
 import { resolvePath, defaultCwd } from './permissions.js';
 import { fail, ok, optNum, optStr, str, truncate, type ToolDef } from './types.js';
 import { describeText, describeTextLine, fixDoubleEscapedText } from '../jsonRepair.js';
-
-const MAX_READ = 200_000;
+import { inlineBudgetChars } from '../spill.js';
 
 export const read_file: ToolDef = {
   schema: {
@@ -25,22 +24,38 @@ export const read_file: ToolDef = {
       },
     },
   },
-  async run(args) {
-    const p = resolvePath(str(args.path, 'path'));
+  async run(args, ctx) {
+    // Saved tool output (LocalDex's spill folder) may be read back; everything else must be in an approved folder.
+    const p = resolvePath(str(args.path, 'path'), { read: true });
     const stat = await fs.stat(p);
     if (stat.isDirectory()) return fail(`"${p}" is a directory. Use list_dir.`);
     if (stat.size > 5_000_000) return fail(`File is too large (${stat.size} bytes).`);
     const raw = await fs.readFile(p, 'utf8');
     const lines = raw.endsWith('\n') ? raw.slice(0, -1).split('\n') : raw.split('\n');
     const start = Math.max(1, optNum(args.start_line) ?? 1);
-    const end = Math.min(lines.length, optNum(args.end_line) ?? lines.length);
-    const slice = lines.slice(start - 1, end);
+    let end = Math.min(lines.length, optNum(args.end_line) ?? lines.length);
     const width = String(end).length;
-    const body = slice.map((l, i) => `${String(start + i).padStart(width)}| ${l}`).join('\n');
+    // Only as much as the model's context window takes: cut at a line boundary and say where to continue.
+    const budget = inlineBudgetChars(ctx?.model ?? null);
+    let used = 0;
+    let cut = false;
+    const shown: string[] = [];
+    for (let i = start - 1; i < end; i++) {
+      const line = `${String(i + 1).padStart(width)}| ${lines[i]}`;
+      if (shown.length && used + line.length + 1 > budget) {
+        cut = true;
+        end = i;
+        break;
+      }
+      shown.push(line.length > budget ? `${line.slice(0, budget)}… [line cut, ${line.length} chars]` : line);
+      used += line.length + 1;
+    }
+    const body = shown.join('\n');
     // Same line count as write_file/edit_file and `wc -l` users expect: a final newline does not start a new line.
     const total = describeText(raw).lines;
     const header = `${p} (${describeTextLine(raw)}${start > 1 || end < total ? `, showing ${start}-${Math.min(end, total)}` : ''})\n`;
-    return ok(header + truncate(body, MAX_READ));
+    const more = cut ? `\n\n[Stopped at line ${end} to fit the context window; ${total - end} more lines. Call read_file with start_line=${end + 1} to continue, or grep for what you need.]` : '';
+    return ok(header + truncate(body) + more);
   },
 };
 

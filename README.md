@@ -224,6 +224,7 @@ Small local models fail at tool calling in a handful of predictable ways. LocalD
 | 7 | **Thinking forever** without acting. | The reply is cut off after ~6000 characters of reasoning and the model is told to act or answer. Three cut-offs in a row means stuck. |
 | 8 | **Wrong memory of the files** in Compact & Resume summaries and Goal checkpoints. | LocalDex appends a *Files on disk right now* block it checks itself (exists, lines, bytes), and tells the model to trust it over the summary. |
 | 9 | **Still stuck**: LM Studio errors, stuck loops, failures after two warnings, step or goal limits. | The run stops with a visible `[system] Run stopped: …` note. With the council on, **Settings → Council → When the local model gets stuck** decides what happens next: *Suggest* shows **Hand to council ☁**, *Auto* hands the request plus everything the local agent did to the council by itself (same access rules as Hand to council), *Off* does nothing. |
+| 10 | **One tool result floods the context**: a 500 KB test log, a recursive `ls`, a worker's report. | Output over the model's inline budget (30% of its context window, at most ~12.5k tokens; ~39k characters at 32k) is saved whole under `~/.localdex/spill/<session>/` and the model gets the start, the end and the file path. `read_file` stops at a line boundary with "continue at line N" instead. *Model experience:* the model sees head + tail + one notice line and can `read_file`/`grep` the saved file on demand; the saved file is read-only to the model and goes away with the session. Prompt caching is unaffected (results only shrink). Pattern borrowed from DeepSeek Harness `spill-policy` (reimplemented). |
 
 Also useful on small machines: **Settings → Model & Agent → Context window → Reload in LM Studio** unloads the model and loads it again with a bigger context (LM Studio 0.4+). On 16 GB, 32k is a safe size for a 12B model.
 
@@ -265,7 +266,9 @@ web/      Vite + React + Tailwind UI
 
 - The agent runs shell commands with your user privileges inside approved folders. Review what you
   approve; keep *Dangerous only* or *Always ask* for shell approval.
-- Paths such as `~/.ssh`, `~/.aws`, `.env*` and key files are blocked even inside approved folders.
+- Paths such as `~/.ssh`, `~/.aws`, `.env*` and key files are blocked even inside approved folders. The one
+  exception is read-only: `read_file` and `grep` may read saved tool output under `~/.localdex/spill/` (nothing
+  else in `~/.localdex`, and never for writes).
 - Nothing is sent anywhere except your LM Studio server, plus whatever MCP servers you enable (a browser server
   makes web requests). Playwright MCP is not a security boundary; do not pass `--allow-unrestricted-file-access`.
 - The Playwright server drives your installed Google Chrome (`--browser chrome`) with the sandbox on (`--sandbox`).
