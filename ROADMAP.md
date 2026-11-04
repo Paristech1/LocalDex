@@ -383,7 +383,7 @@ When a sandboxed command fails with a write denial, show "Command was blocked by
 | Sessions/UX | U1–U6 | `sessionTools.ts` (search/export/titles), `feedback.ts`, `fork.ts`, `web/src/slash.ts`, `agent/stats.ts` |
 | Ecosystem | E1–E6 | `mcp/gallery.ts`, `cli.ts` + `server/bin/localdex.mjs`, `council/forge.ts`, `doctor.ts`, `schedule.ts`, `voice.ts` |
 
-**Gates at hand-off:** `npm run typecheck` ✓ (also on Linux without node-pty) · `npm run test:local -w server` → **342 passed** · `npm run test:council -w server` → **322 passed** · `npm run build -w web` ✓. The UI was also clicked through in Chrome against a stand-in LM Studio: chat, `/` palette, `@` mentions, search, Settings (Permissions, MCP gallery, edit style, model doctor), Goal schedules. No console errors.
+**Gates at hand-off:** `npm run typecheck` ✓ (also on Linux without node-pty) · `npm run test:local -w server` → **343 passed** · `npm run test:council -w server` → **322 passed** · `npm run build -w web` ✓. The UI was also clicked through in Chrome against a stand-in LM Studio: chat, `/` palette, `@` mentions, search, Settings (Permissions, MCP gallery, edit style, model doctor), Goal schedules. No console errors. CI on `main` (macOS node 20 + 22, Linux install) is green.
 
 ### Things only Paris's machine can confirm
 
