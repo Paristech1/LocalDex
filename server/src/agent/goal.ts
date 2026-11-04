@@ -48,7 +48,25 @@ export async function assessGoal(session: Session, signal: AbortSignal): Promise
   }
 }
 
-function parseAssessment(text: string): Assessment {
+/**
+ * Council-led goals: the finish checkpoint is a council reviewer's job, not the local model's. The reviewer can read the
+ * project itself; it also gets the latest council result and LocalDex's own file facts.
+ */
+export function goalCouncilAssessTask(goal: { brief: string; doneCriteria: string; mode: 'goal' | 'loop'; iteration: number }, lastResult: string, facts: string): string {
+  return `You are the GOAL AUDITOR for an autonomous coding goal. Inspect the project folder yourself before answering; do not trust the report.
+${goal.mode === 'goal' ? `Goal: ${goal.brief}\nDone criteria: ${goal.doneCriteria || '(use your judgement: the goal is fully achieved and verified)'}` : `Ongoing brief: ${goal.brief}`}
+Iterations so far: ${goal.iteration}.
+
+Latest council result:
+${lastResult.slice(0, 6000) || '(none)'}
+${facts ? `\n${facts}\n` : ''}
+Respond with ONLY a JSON object: {"done": boolean, "remaining": string[], "note": string}
+- "done": true only if every part of the goal is complete AND verified (run the tests/builds yourself where relevant).${goal.mode === 'loop' ? ' In loop mode, "done" is always false.' : ''}
+- "remaining": short list of concrete things still to do (empty if done).
+- "note": one sentence of assessment.`;
+}
+
+export function parseAssessment(text: string): Assessment {
   const m = text.match(/\{[\s\S]*\}/);
   if (m) {
     try {

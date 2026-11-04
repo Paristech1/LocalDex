@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import type { GoalMode, PlanStep, WorkerState } from '@localdex/shared';
+import type { GoalLead, GoalMode, PlanStep, WorkerState } from '@localdex/shared';
 import { send, useStore } from '../store';
 import { AssistantBubble, MessageList } from './Message';
 import { ToolCard } from './ToolCard';
@@ -181,17 +181,25 @@ function WorkerCard({ worker: w, sessionId }: { worker: WorkerState; sessionId: 
 function GoalPanel() {
   const session = useStore((s) => s.session);
   const goal = session?.goal;
+  const councilOn = useStore((s) => s.settings?.council.enabled ?? false);
   const [mode, setMode] = useState<GoalMode>('goal');
   const [brief, setBrief] = useState('');
   const [criteria, setCriteria] = useState('');
   const [maxIter, setMaxIter] = useState(10);
+  // Who runs the iterations: follows the session mode until the user picks; the council needs to be on.
+  const sessionLead: GoalLead = session?.mode === 'council' && councilOn ? 'council' : 'local';
+  const [leadPick, setLeadPick] = useState<GoalLead | null>(null);
+  const lead: GoalLead = leadPick ?? sessionLead;
   if (!session) return null;
 
   if (goal?.active) {
     return (
       <div className="space-y-3">
         <div className="rounded-lg border border-accent/40 bg-accent/5 px-3 py-2">
-          <div className="text-xs text-accent font-medium">{goal.mode === 'goal' ? 'Goal active' : 'Loop active'}</div>
+          <div className="text-xs text-accent font-medium">
+            {goal.mode === 'goal' ? 'Goal active' : 'Loop active'}
+            <span className="text-ink-400 font-normal"> · led by {(goal.lead ?? 'local') === 'council' ? 'the council ☁' : 'the local model'}</span>
+          </div>
           <div className="text-sm mt-1 whitespace-pre-wrap">{goal.brief}</div>
           {goal.doneCriteria && (
             <div className="text-xs text-ink-300 mt-2">
@@ -227,8 +235,10 @@ function GoalPanel() {
           </Button>
         </div>
         <p className="text-[11px] text-ink-400">
-          After each turn a finish checkpoint asks the model whether the goal is met. If not, it auto-continues until done or the iteration cap. Stop
-          pauses the current run; Clear removes the goal.
+          {(goal.lead ?? 'local') === 'council'
+            ? 'Each iteration is a council turn with the brief and the last checkpoint. The finish checkpoint is judged by the council reviewer. It auto-continues until done or the iteration cap.'
+            : 'After each turn a finish checkpoint asks the model whether the goal is met. If not, it auto-continues until done or the iteration cap.'}{' '}
+          Stop pauses the current run; Clear removes the goal.
         </p>
       </div>
     );
@@ -240,7 +250,7 @@ function GoalPanel() {
       onSubmit={(e) => {
         e.preventDefault();
         if (!brief.trim()) return;
-        send({ type: 'set_goal', sessionId: session.id, goal: { mode, brief: brief.trim(), doneCriteria: criteria.trim(), maxIterations: maxIter } });
+        send({ type: 'set_goal', sessionId: session.id, goal: { mode, brief: brief.trim(), doneCriteria: criteria.trim(), maxIterations: maxIter, lead } });
       }}
     >
       {goal && !goal.active && (
@@ -271,6 +281,21 @@ function GoalPanel() {
       )}
       <Field label="Max iterations">
         <input type="number" min={1} max={200} className={inputCls} value={maxIter} onChange={(e) => setMaxIter(Number(e.target.value))} />
+      </Field>
+      <Field label="Led by" hint={councilOn ? 'Follows the chat mode unless you pick. Council: each iteration is a council turn, judged by the council reviewer.' : 'Turn on Settings → Council to let the council lead a goal.'}>
+        <div className="flex rounded-md border border-ink-600 overflow-hidden text-xs">
+          {(['local', 'council'] as GoalLead[]).map((l) => (
+            <button
+              key={l}
+              type="button"
+              disabled={l === 'council' && !councilOn}
+              onClick={() => setLeadPick(l)}
+              className={cx('flex-1 py-1.5 disabled:opacity-40', lead === l ? (l === 'council' ? 'bg-[#7cc0f2]/20 text-ink-100' : 'bg-ink-600 text-ink-100') : 'text-ink-300 hover:bg-ink-700')}
+            >
+              {l === 'local' ? 'Local model' : 'Council ☁'}
+            </button>
+          ))}
+        </div>
       </Field>
       <Button type="submit" variant="primary" disabled={!brief.trim()}>
         {mode === 'goal' ? 'Start goal' : 'Start loop'}

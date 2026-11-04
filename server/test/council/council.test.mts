@@ -1332,6 +1332,58 @@ updateSettings({ council: { ...getSettings().council, allowWrite: true } });
   updateSettings({ council: prev, approvedFolders: folders });
 }
 
+// 30. F2: a council-led goal iterates through council members and is judged by the council reviewer (no LM Studio).
+{
+  const { SessionRunner } = await import(`${SRC}/agent/runner.ts`);
+  const prev = getSettings().council;
+  updateSettings({ council: { ...prev, builderWorktree: false, qaStep: false, checksGate: false, confirmWrites: false, allowWrite: true } });
+  const goalSession = (mode: 'council' | 'solo'): any => ({ id: `s-goal-${Math.random().toString(36).slice(2, 8)}`, title: 'New session', createdAt: Date.now(), updatedAt: Date.now(), model: null, messages: [], archive: [], workers: {}, plan: [], goal: null, usage: { promptTokens: 0, completionTokens: 0, lastPromptTokens: 0 }, compactions: 0, compactSummary: null, mode, councilRuns: [] });
+  const noLocal = (s: any) => !s.messages.some((m: any) => m.role === 'user' && /^\[system\] Run stopped/.test(m.content)) && s.model === null;
+
+  // Iteration cap: 2 iterations → council runs for each, one reviewer checkpoint between them, then paused.
+  reset(); approvals = 0;
+  let gs = goalSession('council'); let gr = new SessionRunner(gs);
+  gr.setGoal({ mode: 'goal', brief: 'Add rate limiting to the API with a test', doneCriteria: 'src/rateLimit.ts exists and is tested', maxIterations: 2 });
+  check('goal lead: defaults to the session mode (council)', gs.goal.lead === 'council');
+  await gr.startGoalRun();
+  let roles = gs.councilRuns.map((r: any) => `${r.pattern}:${r.steps.map((x: any) => x.role).join('+')}`);
+  check('council goal: 2 iterations ran as council turns with a reviewer checkpoint between, no local model', gs.councilRuns.length === 3 && gs.councilRuns[1].steps[0]?.role === 'reviewer' && gs.councilRuns[1].steps[0].access === 'read' && gs.goal.iteration === 2 && gs.goal.active === false && noLocal(gs), roles.join(' | '));
+  check('council goal: builder actually changed files, checkpoint note names the judge', fs.existsSync(`${DEMO}/src/rateLimit.ts`) && /judged by/.test(gs.goal.lastAssessment ?? '') && gs.goal.remaining.includes('add the test file'), gs.goal.lastAssessment);
+  check('council goal: paused at the cap with a visible note', /^\[Goal paused\] Reached the iteration cap \(2\)/.test(gs.messages.filter((m: any) => m.role === 'user').at(-1)?.content ?? ''));
+  check('council goal: second iteration carried the last checkpoint', /iteration 2\. Last checkpoint:/.test(gs.councilRuns[2].task) && /add the test file/.test(gs.councilRuns[2].task), gs.councilRuns[2].task.slice(0, 160));
+
+  // The reviewer says done → the goal completes after one iteration.
+  reset(); flag('goal_done', true);
+  gs = goalSession('council'); gr = new SessionRunner(gs);
+  gr.setGoal({ mode: 'goal', brief: 'Add rate limiting', doneCriteria: '', maxIterations: 5 });
+  await gr.startGoalRun();
+  check('council goal: reviewer verdict done → goal complete after 1 iteration', gs.goal.active === false && gs.goal.iteration === 1 && gs.councilRuns.length === 2 && /rate limiter present/.test(gs.goal.lastAssessment ?? '') && noLocal(gs), `${gs.goal.iteration} ${gs.councilRuns.length} ${gs.goal.lastAssessment}`);
+  flag('goal_done', false);
+
+  // Stop during a council-led goal ends it without a local fallback.
+  reset();
+  gs = goalSession('council'); gr = new SessionRunner(gs);
+  gr.setGoal({ mode: 'loop', brief: 'Keep improving the API', doneCriteria: '', maxIterations: 50 });
+  const going = gr.startGoalRun();
+  await new Promise((r) => setTimeout(r, 700));
+  gr.stop();
+  await going;
+  check('council goal: Stop ends the run, goal stays set, nothing local ran', !gr.running && gs.goal.active === true && gs.goal.iteration <= 1 && noLocal(gs), `${gs.goal.iteration} ${gs.councilRuns.map((r: any) => r.status).join(',')}`);
+
+  // Solo session: the goal is local-led (unchanged behaviour); an explicit 'local' pick in Council mode is honoured too.
+  gs = goalSession('solo'); gr = new SessionRunner(gs);
+  gr.setGoal({ mode: 'goal', brief: 'x', doneCriteria: '', maxIterations: 1 });
+  check('goal lead: solo session → local', gs.goal.lead === 'local');
+  gs = goalSession('council'); gr = new SessionRunner(gs);
+  gr.setGoal({ mode: 'goal', brief: 'x', doneCriteria: '', maxIterations: 1, lead: 'local' });
+  check('goal lead: explicit local pick in Council mode is kept', gs.goal.lead === 'local');
+  updateSettings({ council: { ...prev, enabled: false } });
+  gs = goalSession('council'); gr = new SessionRunner(gs);
+  gr.setGoal({ mode: 'goal', brief: 'x', doneCriteria: '', maxIterations: 1, lead: 'council' });
+  check('goal lead: council off → falls back to local', gs.goal.lead === 'local');
+  updateSettings({ council: prev });
+}
+
 console.log(`\n${pass} passed, ${fail} failed. events: ${JSON.stringify(events)}`);
 reset();
 process.exit(fail ? 1 : 0);

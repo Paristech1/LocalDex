@@ -28,7 +28,9 @@ Browser (React UI)  <-- WebSocket -->  LocalDex server (Node)  -->  LM Studio :1
   the next model call.
 - **Goal / Loop** – set a goal with done-criteria; after each turn a finish checkpoint asks the model
   whether it is done and auto-continues if not (bounded by an iteration cap and a Stop button).
-  Loop mode keeps working within a brief indefinitely.
+  Loop mode keeps working within a brief indefinitely. In Council mode the goal is **led by the
+  council** by default: each iteration is a council turn and the checkpoint is a read-only council
+  reviewer; the Goal panel's **Led by** picker switches between the local model and the council.
 - **Compact & Resume** – manual or automatic (at a configurable fraction of the context window):
   the model summarizes decisions, files changed, open items and worker state, and a fresh context
   is seeded with the summary. The full transcript is archived in the session file.
@@ -73,7 +75,7 @@ npm start            # http://localhost:7331
 | **Chat** | Streaming replies, reasoning (collapsible), tool cards, approval and question prompts. Send while running = correction. |
 | **Plan** | Checklist maintained by the model with `update_plan`. |
 | **Workers** | Status, last task, live stream and full transcript per worker. Reset or delete a worker's memory. |
-| **Goal** | Start a Goal (until done) or a Loop (keep working). Shows iteration, last checkpoint, remaining items. |
+| **Goal** | Start a Goal (until done) or a Loop (keep working), led by the local model or the council. Shows iteration, last checkpoint, remaining items. |
 | **Context** | Token usage vs. context window, compactions, "Compact & Resume now", latest summary. |
 | **Log** | Server events: tool-mode detection, recovered tool calls, goal checkpoints, errors. |
 

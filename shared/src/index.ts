@@ -110,8 +110,12 @@ export interface PlanStep {
 }
 
 export type GoalMode = 'goal' | 'loop';
+/** Who runs each iteration: the local model's loop, or a council turn (judged by the council reviewer). */
+export type GoalLead = 'local' | 'council';
 export interface GoalState {
   mode: GoalMode;
+  /** Defaults to the session mode when the goal is set. Absent on goals from older sessions = 'local'. */
+  lead?: GoalLead;
   brief: string;
   doneCriteria: string;
   maxIterations: number;
@@ -823,7 +827,7 @@ export type ClientEvent =
   | { type: 'set_model'; sessionId: string; model: string }
   | { type: 'approval_response'; id: string; approved: boolean }
   | { type: 'ask_user_response'; id: string; answer: string }
-  | { type: 'set_goal'; sessionId: string; goal: { mode: GoalMode; brief: string; doneCriteria: string; maxIterations: number } }
+  | { type: 'set_goal'; sessionId: string; goal: { mode: GoalMode; brief: string; doneCriteria: string; maxIterations: number; lead?: GoalLead } }
   | { type: 'clear_goal'; sessionId: string }
   | { type: 'compact'; sessionId: string }
   | { type: 'set_mode'; sessionId: string; mode: SessionMode }
