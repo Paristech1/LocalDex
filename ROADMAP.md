@@ -494,7 +494,7 @@ On conflict (two plugins add the same command or skill name), the first-enabled 
 | `workflow` scripts that fan out subagents | The council orchestrator already covers multi-agent patterns. |
 | `agent-team` shared task board | LM Studio serves one request per loaded model, so parallel local agents queue anyway. |
 | `repeat-tool-reminder` | LocalDex already has a stronger version (warn at 3, stop at 5, plus thinking cut-offs). |
-| Liveshare, OpenTelemetry, telemetry, plugin market, DeepSeek account/API, reasoning translation, webworker runtime | Out of scope for a private, local-first tool, or tied to DeepSeek's own services. |
+| Liveshare, OpenTelemetry, telemetry, DeepSeek account/API, reasoning translation, webworker runtime | Out of scope for a private, local-first tool, or tied to DeepSeek's own services. |
 | `claude-code-mods` bridge | Interesting, but niche. S5 and P5 cover the useful part (hooks). |
 | Plugin market with a built-in default source | DeepSeek ships no default index, and neither should LocalDex. The user adds sources (P6). |
 
@@ -503,6 +503,6 @@ On conflict (two plugins add the same command or skill name), the first-enabled 
 ## 11. When you finish a task
 
 1. The gates pass, new tests are added, and the README is updated (with a Model experience note for new tools).
-2. Open a PR into `dev/roadmap` that has: a summary, evidence (test output, screenshots for UI work), any security impact, and **"Borrowed from: packages/<path>"** if a DeepSeek Harness pattern was used.
+2. Open a PR into `main` that has: a summary, evidence (test output, screenshots for UI work), any security impact, and **"Borrowed from: packages/<path>"** if a DeepSeek Harness pattern was used.
 3. Tick the task off in the section 1 table in this file, in the same PR.
 4. Stop and ask Paris before anything irreversible or anything that changes a security default.
