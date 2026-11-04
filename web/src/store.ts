@@ -21,6 +21,7 @@ import type {
   Settings,
   SandboxStatus,
   ScheduledGoal,
+  VoiceStatus,
 } from '@localdex/shared';
 
 export interface LiveTool {
@@ -78,6 +79,8 @@ export interface State {
   sandbox: SandboxStatus | null;
   /** E3: GitHub CLI available for "Open PR". */
   forge: ForgeStatus | null;
+  /** E6: local speech-to-text available. */
+  voice: VoiceStatus | null;
   council: MemberStatus[];
   councilStats: CouncilStats | null;
   /** U3: 👍/👎 per local model. */
@@ -113,6 +116,7 @@ let state: State = {
   unavailableTools: {},
   sandbox: null,
   forge: null,
+  voice: null,
   turnDiffs: {},
   jobs: [],
   council: [],
@@ -200,7 +204,7 @@ function liveFor(live: Record<string, LiveAgent>, agent: string): LiveAgent {
 function handle(ev: ServerEvent): void {
   switch (ev.type) {
     case 'hello':
-      set({ settings: ev.settings, sessions: ev.sessions, session: ev.session, models: ev.models, unavailableTools: ev.unavailableTools ?? {}, sandbox: ev.sandbox ?? null, forge: ev.forge ?? null, live: {}, status: {}, prompts: [] });
+      set({ settings: ev.settings, sessions: ev.sessions, session: ev.session, models: ev.models, unavailableTools: ev.unavailableTools ?? {}, sandbox: ev.sandbox ?? null, forge: ev.forge ?? null, voice: ev.voice ?? null, live: {}, status: {}, prompts: [] });
       if (!ev.session) newSession();
       return;
     case 'session': {

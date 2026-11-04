@@ -606,6 +606,13 @@ export interface CouncilWorktree {
   };
 }
 
+/** E6: can LocalDex transcribe speech locally (ffmpeg + whisper.cpp + a model file)? */
+export interface VoiceStatus {
+  available: boolean;
+  model?: string;
+  missing?: string[];
+}
+
 /** E3: can LocalDex open pull requests (GitHub CLI installed and signed in)? */
 export interface ForgeStatus {
   gh: boolean;
@@ -885,6 +892,8 @@ export interface Settings {
   projectInstructions: boolean;
   /** After the first Solo run, the local model writes a short session title (one small call). Default on. */
   autoTitle: boolean;
+  /** E6: local voice input. command = whisper.cpp binary (default: found on PATH), model = ggml model file, language (default auto). Config file only. */
+  voice?: { command?: string; model?: string; language?: string };
   /** A8: edit tool style per model id (absent = edit_file + write_file). */
   editStyle?: Record<string, EditStyle>;
   /** A3: extra language servers for the lsp tool, keyed by file extension (".rb": { command, args }). Config file only. */
@@ -1099,6 +1108,7 @@ export type ServerEvent =
       unavailableTools?: Partial<Record<ToolName, string>>;
       sandbox?: SandboxStatus;
       forge?: ForgeStatus;
+      voice?: VoiceStatus;
     }
   | { type: 'session'; session: Session }
   | { type: 'sessions'; sessions: SessionSummary[] }

@@ -1630,6 +1630,43 @@ console.log('\n# AM. Scheduled goals: due once per slot, approved folders only, 
   check('delete', sch.deleteSchedule(sc.id) && sch.listSchedules().length === 0);
 }
 
+// ---------- AN: Voice input (E6) ----------
+console.log('\n# AN. Voice: local transcription through ffmpeg + whisper.cpp');
+{
+  const { execFileSync } = await import('node:child_process');
+  const v = await import(`${SRC}/voice.ts`);
+  check('transcript cleanup: timestamps and [BLANK_AUDIO] removed', v.cleanTranscript('[00:00:00.000 --> 00:00:02.000]  Fix the\n[00:00:02.000 --> 00:00:03.000]  login bug.\n[BLANK_AUDIO]\n') === 'Fix the login bug.');
+  process.env.LOCALDEX_WHISPER = '/nonexistent/whisper-cli';
+  const off = v.voiceStatus();
+  check('unavailable: says what is missing', !off.available && off.missing!.some((m: string) => /whisper\.cpp/.test(m)) && off.missing!.some((m: string) => /model file/.test(m)), JSON.stringify(off));
+  let threw = '';
+  try { await v.transcribe(Buffer.from('x')); } catch (e) { threw = (e as Error).message; }
+  check('unavailable: transcribe refuses with the list', /Voice input needs/.test(threw));
+  const hasFfmpeg = (() => { try { execFileSync('ffmpeg', ['-version'], { stdio: 'ignore' }); return true; } catch { return false; } })();
+  if (hasFfmpeg) {
+    const HOME = process.env.LOCALDEX_HOME!;
+    fs.mkdirSync(path.join(HOME, 'models'), { recursive: true });
+    fs.writeFileSync(path.join(HOME, 'models', 'ggml-test.bin'), 'fake model');
+    const fake = path.join(HOME, 'fake-whisper.sh');
+    const argLog = path.join(HOME, 'whisper-args.txt');
+    fs.writeFileSync(fake, `#!/bin/bash\necho "$@" > ${argLog}\nfile=""; while [ $# -gt 0 ]; do [ "$1" = "-f" ] && file="$2"; shift; done\n[ -s "$file" ] || { echo "no wav" >&2; exit 1; }\necho "[00:00:00.000 --> 00:00:01.500]  run the tests please"\n`);
+    fs.chmodSync(fake, 0o755);
+    process.env.LOCALDEX_WHISPER = fake;
+    const wav = path.join(HOME, 'tone.webm');
+    execFileSync('ffmpeg', ['-y', '-loglevel', 'error', '-f', 'lavfi', '-i', 'sine=frequency=440:duration=0.5', '-c:a', 'libopus', wav]);
+    check('available once ffmpeg, whisper.cpp and a model are there', v.voiceStatus().available && v.voiceStatus().model === 'ggml-test.bin');
+    const text = await v.transcribe(fs.readFileSync(wav));
+    const args = fs.readFileSync(argLog, 'utf8');
+    check('webm/opus from the browser → 16 kHz WAV → whisper.cpp → clean text', text === 'run the tests please' && /-m .*ggml-test\.bin/.test(args) && /-f .*in\.wav/.test(args) && /-nt/.test(args), `${text} | ${args}`);
+    const leftovers = fs.readdirSync((await import('node:os')).tmpdir()).filter((f: string) => f.startsWith('localdex-voice-'));
+    check('temp audio files are removed', leftovers.length === 0, leftovers.join(','));
+    let bad = '';
+    try { await v.transcribe(Buffer.from('not audio at all')); } catch (e) { bad = (e as Error).message; }
+    check('garbage audio: a clear ffmpeg error', /ffmpeg could not read/.test(bad), bad);
+  } else console.log('  (ffmpeg not installed: real-conversion checks skipped)');
+  delete process.env.LOCALDEX_WHISPER;
+}
+
 server.close();
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

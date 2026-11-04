@@ -30,6 +30,7 @@ import { forgeStatus, openPullRequest, refreshPullRequest } from './council/forg
 import { feedbackStats, rateMessage } from './feedback.js';
 import { searchFiles } from './fileMentions.js';
 import { closeAllLsp } from './lsp.js';
+import { transcribe, voiceStatus } from './voice.js';
 import { attachmentPath, isAttachmentId, saveImage } from './attachments.js';
 import { forkAt, isEditableUserMessage } from './fork.js';
 import { exportFileName, exportMarkdown, searchSessions } from './sessionTools.js';
@@ -106,6 +107,15 @@ app.post('/api/setup/playground', (c) => {
 app.get('/api/skills', (c) => c.json({ skills: listSkills() }));
 
 // U1: search every session's title and messages; export one session as Markdown or JSON.
+// E6: local speech-to-text. Raw audio body (what MediaRecorder produced), transcribed on this machine.
+app.post('/api/transcribe', async (c) => {
+  try {
+    const buf = Buffer.from(await c.req.arrayBuffer());
+    return c.json({ text: await transcribe(buf) });
+  } catch (e) {
+    return c.json({ error: (e as Error).message }, 400);
+  }
+});
 // A7: image attachments (pasted or dropped in the composer). Content is sniffed; only PNG/JPEG/WebP/GIF up to 10 MB.
 app.post('/api/attachments', async (c) => {
   try {
@@ -245,7 +255,7 @@ async function refreshModels(): Promise<void> {
 wss.on('connection', (ws) => {
   const sessions = listSessions();
   const current = sessions[0] ? getSession(sessions[0].id) : null;
-  send(ws, { type: 'hello', settings: getSettings(), sessions, session: current, models: modelsCache, unavailableTools: unavailableTools(), sandbox: sandboxStatus(), forge: forgeStatus() });
+  send(ws, { type: 'hello', settings: getSettings(), sessions, session: current, models: modelsCache, unavailableTools: unavailableTools(), sandbox: sandboxStatus(), forge: forgeStatus(), voice: voiceStatus() });
   send(ws, { type: 'mcp_status', servers: mcpStatuses() });
   send(ws, { type: 'mcp_gallery', entries: mcpGallery() });
   send(ws, { type: 'doctor_reports', reports: doctorReports() });
@@ -427,9 +437,10 @@ async function handle(ws: WebSocket, ev: ClientEvent): Promise<void> {
     case 'set_settings': {
       // MCP server definitions run local programs, so only enable/disable toggles are accepted over the socket.
       // sandboxExtraWritable widens what a sandboxed shell may write: config file only, like MCP commands.
-      const { mcpServers, council, sandboxExtraWritable: _extra, lspServers: _lsp, ...rest } = ev.patch;
+      const { mcpServers, council, sandboxExtraWritable: _extra, lspServers: _lsp, voice: _voice, ...rest } = ev.patch;
       void _extra;
       void _lsp;
+      void _voice;
       if (rest.permissionPreset !== undefined && !['full', 'workspace', 'read-only'].includes(rest.permissionPreset)) delete rest.permissionPreset;
       if (rest.hooksSource !== undefined && !['off', 'localdex', 'claude-code'].includes(rest.hooksSource)) delete rest.hooksSource;
       if (rest.autoReview !== undefined && !['off', 'council', 'local'].includes(rest.autoReview)) delete rest.autoReview;

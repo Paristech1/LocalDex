@@ -28,6 +28,55 @@ function useFileSearch(query: string | undefined): string[] {
   return hits;
 }
 
+/** E6: record with the microphone, transcribe locally (whisper.cpp on this machine), put the text in the draft. */
+function MicButton({ onText, onError }: { onText: (t: string) => void; onError: (e: string | null) => void }) {
+  const [state, setState] = useState<'idle' | 'recording' | 'transcribing'>('idle');
+  const rec = useRef<MediaRecorder | null>(null);
+  const chunks = useRef<Blob[]>([]);
+  const start = async () => {
+    onError(null);
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const mr = new MediaRecorder(stream);
+      chunks.current = [];
+      mr.ondataavailable = (e) => e.data.size && chunks.current.push(e.data);
+      mr.onstop = async () => {
+        stream.getTracks().forEach((t) => t.stop());
+        setState('transcribing');
+        try {
+          const r = await fetch('/api/transcribe', { method: 'POST', headers: { 'content-type': 'application/octet-stream' }, body: new Blob(chunks.current, { type: mr.mimeType }) });
+          const j = (await r.json()) as { text?: string; error?: string };
+          if (!r.ok) throw new Error(j.error ?? `HTTP ${r.status}`);
+          if (j.text) onText(j.text);
+          else onError('Heard nothing: try again a little closer to the microphone.');
+        } catch (e) {
+          onError(`Voice: ${(e as Error).message}`);
+        } finally {
+          setState('idle');
+        }
+      };
+      mr.start();
+      rec.current = mr;
+      setState('recording');
+    } catch (e) {
+      onError(`Microphone: ${(e as Error).message}`);
+    }
+  };
+  const stop = () => rec.current?.state === 'recording' && rec.current.stop();
+  return (
+    <button
+      type="button"
+      onClick={() => (state === 'recording' ? stop() : state === 'idle' ? void start() : undefined)}
+      disabled={state === 'transcribing'}
+      aria-label={state === 'recording' ? 'Stop recording' : 'Dictate'}
+      title={state === 'recording' ? 'Stop: the text goes into the message box for you to check' : 'Dictate (transcribed on this computer; nothing is sent until you press Send)'}
+      className={cx('rounded-md border px-2 py-1 text-[11px]', state === 'recording' ? 'border-danger/60 text-danger pulse' : 'border-ink-600 text-ink-400 hover:text-ink-200', state === 'transcribing' && 'opacity-60')}
+    >
+      {state === 'recording' ? '● Stop' : state === 'transcribing' ? 'Transcribing…' : '🎙'}
+    </button>
+  );
+}
+
 /** A7: upload one image; resolves to its attachment id. */
 async function uploadImage(file: File): Promise<string> {
   if (file.size > 10 * 1024 * 1024) throw new Error('over 10 MB');
@@ -254,6 +303,7 @@ function Composer({
   }, [draft]);
 
   const session = useStore((s) => s.session);
+  const voice = useStore((s) => s.voice);
   const [slashError, setSlashError] = useState<string | null>(null);
   // A7: pasted / dropped images, uploaded to LocalDex and sent with the next message.
   const [images, setImages] = useState<string[]>([]);
@@ -447,6 +497,7 @@ function Composer({
           <span className="truncate">{statusLabel(status as never, detail)}</span>
         </div>
         <div className="flex items-center gap-2">
+          {voice?.available && <MicButton onText={(t) => setText((cur) => (cur.trim() ? `${cur.trimEnd()} ${t}` : t))} onError={setSlashError} />}
           {!council && <PresetPicker />}
           {council && <AccessPicker value={access} onChange={setAccess} />}
           {council && <NotRiskyChip value={notRisky} onChange={setNotRisky} />}

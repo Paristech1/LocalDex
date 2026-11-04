@@ -156,6 +156,8 @@ Exit code 0 = done, 1 = stopped or failed, 2 = bad usage. Questions from the age
 
 Keyboard: `Enter` send, `Shift+Enter` newline, `Cmd/Ctrl+,` settings, `Esc` close.
 
+**Voice** (🎙 in the composer): dictate a message. The audio is converted with `ffmpeg` and transcribed **on this computer** with whisper.cpp, and the text goes into the message box for you to check; nothing is sent until you press Send. It needs `ffmpeg`, whisper.cpp (`brew install whisper-cpp`) and a model file in `~/.localdex/models/` (e.g. `ggml-base.en.bin` from huggingface.co/ggerganov/whisper.cpp). The button only shows when all three are there, and Settings → Workspace says what's missing. Set another binary, model or language in `~/.localdex/config.json` under `"voice": { "command", "model", "language" }`.
+
 **Images**: paste or drop screenshots and mockups into the composer (PNG, JPEG, WebP or GIF, up to 10 MB; checked by content, not by name). Vision models in LM Studio (type `vlm`) receive the image itself. Other models get a placeholder telling them an image was attached that they can't see. To save context, only the three most recent images are sent again; older ones become `[image: path]` text. Vision models also get a `read_image` tool for image files in your folders (hidden for text-only models). In Council mode the members get the image file paths, since their CLIs open files themselves.
 
 **File mentions**: type `@` in the composer to pick a file from your first approved folder (fuzzy match; `node_modules`, `.git`, build folders and protected files like `.env` are left out). Mentioned files are named to the model as a short read hint; their content is not pasted in, so it costs almost no context.

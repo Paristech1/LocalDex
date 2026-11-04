@@ -163,6 +163,7 @@ function WorkspaceTab({ settings, patch }: TabProps) {
             <option value="local">Local model (not recommended)</option>
           </select>
         </Field>
+        <VoiceNote />
         <Field label="Run my hooks (experimental)" hint="Claude Code hook format: PreToolUse can block a tool call, PostToolUse can add feedback, UserPromptSubmit can block a message or add context, Stop can ask for another turn. Hooks can never approve anything, and a hook that fails or times out is skipped. Never loaded from project folders.">
           <select className={inputCls} value={settings.hooksSource ?? 'off'} onChange={(e) => patch({ hooksSource: e.target.value as 'off' | 'localdex' | 'claude-code' })}>
             <option value="off">Off</option>
@@ -209,6 +210,18 @@ function PermissionsPicker({ settings, patch }: TabProps) {
         })}
       </div>
     </Field>
+  );
+}
+
+/** E6: whether dictation works on this machine, and what is missing if not. */
+function VoiceNote() {
+  const voice = useStore((s) => s.voice);
+  if (!voice) return null;
+  return (
+    <div className="text-[11px] text-ink-400 mb-3">
+      <span className="text-ink-200">Voice input (🎙 in the composer): </span>
+      {voice.available ? `on, transcribed on this computer with whisper.cpp (${voice.model}).` : `off. Needs ${voice.missing?.join('; ')}. Restart LocalDex after installing.`}
+    </div>
   );
 }
 
