@@ -26,6 +26,7 @@ import { resetReads } from './tools/readTracker.js';
 import { forgetInstructions } from './agent/instructions.js';
 import { unavailableTools } from './tools/index.js';
 import { sandboxStatus } from './sandbox.js';
+import { feedbackStats, rateMessage } from './feedback.js';
 import { forkAt, isEditableUserMessage } from './fork.js';
 import { exportFileName, exportMarkdown, searchSessions } from './sessionTools.js';
 import { closeAllMcp, mcpStatuses, reloadMcp, restartMcp } from './mcp/client.js';
@@ -229,6 +230,7 @@ wss.on('connection', (ws) => {
   const cached = cachedStatuses();
   if (cached.length) send(ws, { type: 'council_status', members: cached });
   send(ws, { type: 'council_stats', stats: getStats() });
+  send(ws, { type: 'feedback_stats', stats: feedbackStats() });
   void memberStatuses().catch(() => undefined);
   void refreshModels();
 
@@ -286,6 +288,15 @@ async function handle(ws: WebSocket, ev: ClientEvent): Promise<void> {
       forgetInstructions(ev.id);
       deleteSession(ev.id);
       bus.emit({ type: 'sessions', sessions: listSessions() });
+      return;
+    }
+    case 'message_feedback': {
+      const s = getSession(ev.sessionId);
+      if (!s || !Number.isInteger(ev.messageIndex)) return;
+      if (rateMessage(s, ev.messageIndex, ev.rating === 'up' || ev.rating === 'down' ? ev.rating : null, ev.category)) {
+        saveSession(s);
+        bus.emit({ type: 'session', session: s });
+      }
       return;
     }
     case 'fork_session': {

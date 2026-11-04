@@ -738,7 +738,8 @@ function ScoreRow({ id, m }: { id: CouncilMemberRef; m?: CouncilMemberStats }) {
       <td className="text-right px-1" title={builds ? `${m!.builder.approvedFirst} first try · ${m!.builder.approvedAfterFixes} after fixes · ${m!.builder.changesRequested} still changes` : ''}>
         {pct(m ? m.builder.approvedFirst + m.builder.approvedAfterFixes : 0, builds)}
       </td>
-      <td className="text-right pl-1">{reviews ? `${m!.reviewer.approve}/${m!.reviewer.changes}` : DASH}</td>
+      <td className="text-right px-1">{reviews ? `${m!.reviewer.approve}/${m!.reviewer.changes}` : DASH}</td>
+      <td className="text-right pl-1" title="Your 👍 / 👎 on council answers this member worked on">{m && (m.feedback?.up || m.feedback?.down) ? `${m.feedback.up}/${m.feedback.down}` : DASH}</td>
     </tr>
   );
 }
@@ -788,7 +789,8 @@ function Scorecard() {
                 <th className="text-right font-normal px-1" title="Input + output tokens">Tok</th>
                 <th className="text-right font-normal px-1" title="Usage-limit hits">Lim</th>
                 <th className="text-right font-normal px-1" title="Plan → build → review: builds the reviewer approved">Build</th>
-                <th className="text-right font-normal pl-1" title="As reviewer: approved / asked for changes">Rev</th>
+                <th className="text-right font-normal px-1" title="As reviewer: approved / asked for changes">Rev</th>
+                <th className="text-right font-normal pl-1" title="Your ratings: 👍 / 👎 on answers this member worked on">👍/👎</th>
               </tr>
             </thead>
             <tbody>

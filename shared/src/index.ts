@@ -21,6 +21,10 @@ export type ChatMessage =
       via?: string;
       /** The council run this answer came from (for the "changes waiting" chip). */
       councilRunId?: string;
+      /** U3: the user's rating of this answer. */
+      feedback?: MessageFeedback;
+      /** U3: which local model wrote it (set when rated, so later model switches don't move the credit). */
+      model?: string;
     }
   | {
       role: 'tool';
@@ -618,6 +622,31 @@ export interface CouncilMemberStats extends CouncilStepCounts {
   voter: { answers: number; answerChars: number };
   /** Blind peer ranking in votes: sum of ranks and of field sizes; average rank = rankSum / count. */
   peerRanking: { count: number; rankSum: number; ofSum: number };
+  /** U3: the user's 👍/👎 on council answers this member worked on. */
+  feedback: { up: number; down: number };
+}
+
+/** U3: why an answer was rated down (fixed list, so the counts mean something). */
+export const FEEDBACK_CATEGORIES = ['wrong', 'made-up', 'ignored-instructions', 'broke-something', 'too-long', 'too-slow'] as const;
+export type FeedbackCategory = (typeof FEEDBACK_CATEGORIES)[number];
+export const FEEDBACK_LABELS: Record<FeedbackCategory, string> = {
+  wrong: 'Wrong answer',
+  'made-up': 'Claimed things it didn\'t check',
+  'ignored-instructions': 'Ignored my instructions',
+  'broke-something': 'Broke something',
+  'too-long': 'Too long',
+  'too-slow': 'Too slow',
+};
+
+export interface MessageFeedback {
+  rating: 'up' | 'down';
+  category?: FeedbackCategory;
+  ts: number;
+}
+
+/** U3: ratings per local model (council members' ratings live in the council scorecard). */
+export interface FeedbackStats {
+  models: Record<string, { up: number; down: number; categories: Partial<Record<FeedbackCategory, number>> }>;
 }
 
 export interface CouncilStats {
@@ -1018,6 +1047,7 @@ export type ServerEvent =
   /** needsCode: the vendor showed a code in the browser that must be pasted back (council_login_code). */
   | { type: 'council_login'; member: MemberId; url?: string; done?: boolean; error?: string; needsCode?: boolean }
   | { type: 'council_stats'; stats: CouncilStats }
+  | { type: 'feedback_stats'; stats: FeedbackStats }
   | { type: 'agent_status'; sessionId: string; agent: AgentId; status: AgentStatus; detail?: string }
   | { type: 'assistant_delta'; sessionId: string; agent: AgentId; delta: string }
   | { type: 'reasoning_delta'; sessionId: string; agent: AgentId; delta: string }
@@ -1045,6 +1075,8 @@ export type ClientEvent =
   | { type: 'load_session'; id: string }
   | { type: 'delete_session'; id: string }
   | { type: 'rename_session'; id: string; title: string }
+  /** U3: rate an assistant answer (null clears the rating). */
+  | { type: 'message_feedback'; sessionId: string; messageIndex: number; rating: 'up' | 'down' | null; category?: FeedbackCategory }
   /** U4: copy the conversation up to and including message `messageIndex` into a new session and open it. */
   | { type: 'fork_session'; sessionId: string; messageIndex: number }
   /** U4: fork just before user message `messageIndex`, then send `content` in the fork instead (the original is untouched). */

@@ -4,6 +4,7 @@ import type {
   AgentStatus,
   ClientEvent,
   DoctorReport,
+  FeedbackStats,
   CouncilStats,
   JobInfo,
   McpGalleryEntry,
@@ -73,6 +74,8 @@ export interface State {
   sandbox: SandboxStatus | null;
   council: MemberStatus[];
   councilStats: CouncilStats | null;
+  /** U3: 👍/👎 per local model. */
+  feedbackStats: FeedbackStats | null;
   councilLogin: { member: MemberId; url?: string; done?: boolean; error?: string; needsCode?: boolean } | null;
   error: string | null;
   /** Text (and flags) another component asked the composer to load, e.g. "Wrong? Mark not risky" on a run card. */
@@ -106,6 +109,7 @@ let state: State = {
   jobs: [],
   council: [],
   councilStats: null,
+  feedbackStats: null,
   councilLogin: null,
   error: null,
   composerDraft: null,
@@ -233,6 +237,9 @@ function handle(ev: ServerEvent): void {
       return;
     case 'mcp_gallery':
       set({ mcpGallery: ev.entries });
+      return;
+    case 'feedback_stats':
+      set({ feedbackStats: ev.stats });
       return;
     case 'doctor_progress':
       set({ doctorProgress: { model: ev.model, done: ev.done, total: ev.total, label: ev.label } });

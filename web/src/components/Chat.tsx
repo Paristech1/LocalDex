@@ -80,6 +80,7 @@ export function Chat() {
             turns={session.turns}
             onFork={(i) => send({ type: 'fork_session', sessionId: session.id, messageIndex: i })}
             onEdit={running ? undefined : (i, t) => send({ type: 'edit_message', sessionId: session.id, messageIndex: i, content: t })}
+            onRate={(i, rating, category) => send({ type: 'message_feedback', sessionId: session.id, messageIndex: i, rating, ...(category ? { category } : {}) })}
           />
           {afterAnswer && !picker && (
             <div className="-mt-1 mb-2">

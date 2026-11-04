@@ -22,6 +22,7 @@ const emptyMember = (): CouncilMemberStats => ({
   reviewer: { approve: 0, changes: 0, none: 0 },
   voter: { answers: 0, answerChars: 0 },
   peerRanking: { count: 0, rankSum: 0, ofSum: 0 },
+  feedback: { up: 0, down: 0 },
 });
 
 const emptyStats = (): CouncilStats => ({ since: Date.now(), updatedAt: Date.now(), members: {} });
@@ -50,6 +51,7 @@ function cleanMember(raw: unknown): CouncilMemberStats {
     reviewer: cleanGroup(base.reviewer, src.reviewer),
     voter: cleanGroup(base.voter, src.voter),
     peerRanking: cleanGroup(base.peerRanking, src.peerRanking),
+    feedback: cleanGroup(base.feedback, src.feedback),
   };
 }
 
@@ -147,6 +149,13 @@ export function recordPeerRanking(ref: CouncilMemberRef, rank: number, of: numbe
   p.count++;
   p.rankSum += rank;
   p.ofSum += of;
+  save();
+}
+
+/** U3: add (delta 1) or take back (delta -1) the user's rating of an answer this member worked on. */
+export function recordFeedback(ref: CouncilMemberRef, rating: 'up' | 'down', delta: 1 | -1): void {
+  const m = member(ref);
+  m.feedback[rating] = Math.max(0, m.feedback[rating] + delta);
   save();
 }
 

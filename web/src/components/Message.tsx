@@ -1,7 +1,7 @@
 import { memo, useState } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
-import type { ChatMessage, TurnCheckpoint } from '@localdex/shared';
+import { FEEDBACK_CATEGORIES, FEEDBACK_LABELS, type ChatMessage, type FeedbackCategory, type MessageFeedback, type TurnCheckpoint } from '@localdex/shared';
 import { ToolCard } from './ToolCard';
 import { ViaBadge, WorktreeChip } from './Council';
 import { TurnCard } from './TurnCard';
@@ -104,8 +104,12 @@ export function AssistantBubble({
   via,
   councilRunId,
   onFork,
+  feedback,
+  onRate,
 }: {
   onFork?: () => void;
+  feedback?: MessageFeedback;
+  onRate?: (rating: 'up' | 'down' | null, category?: FeedbackCategory) => void;
   content: string | null;
   reasoning?: string;
   children?: React.ReactNode;
@@ -132,6 +136,30 @@ export function AssistantBubble({
         </div>
       )}
       {children}
+      {onRate && content && !streaming && <RateAnswer feedback={feedback} onRate={onRate} />}
+    </div>
+  );
+}
+
+/** U3: 👍/👎 under a finished answer; a 👎 offers a reason. Click the same thumb again to clear it. */
+function RateAnswer({ feedback, onRate }: { feedback?: MessageFeedback; onRate: (rating: 'up' | 'down' | null, category?: FeedbackCategory) => void }) {
+  const [asking, setAsking] = useState(false);
+  const r = feedback?.rating;
+  return (
+    <div className={cx('mt-1 flex flex-wrap items-center gap-1 text-[11px] text-ink-400', !r && !asking && 'opacity-0 group-hover:opacity-100 focus-within:opacity-100')}>
+      <button type="button" aria-label="Good answer" aria-pressed={r === 'up'} className={cx('px-1 rounded hover:text-ink-100', r === 'up' && 'text-accent')} onClick={() => (setAsking(false), onRate(r === 'up' ? null : 'up'))}>
+        👍
+      </button>
+      <button type="button" aria-label="Bad answer" aria-pressed={r === 'down'} className={cx('px-1 rounded hover:text-ink-100', r === 'down' && 'text-danger')} onClick={() => (r === 'down' ? (setAsking(false), onRate(null)) : (setAsking(true), onRate('down')))}>
+        👎
+      </button>
+      {r === 'down' && feedback?.category && !asking && <span>{FEEDBACK_LABELS[feedback.category]}</span>}
+      {asking &&
+        FEEDBACK_CATEGORIES.map((c) => (
+          <button key={c} type="button" className={cx('rounded border px-1.5 py-0.5', feedback?.category === c ? 'border-danger/50 text-danger' : 'border-ink-600 hover:text-ink-100')} onClick={() => (setAsking(false), onRate('down', c))}>
+            {FEEDBACK_LABELS[c]}
+          </button>
+        ))}
     </div>
   );
 }
@@ -148,7 +176,7 @@ export interface PendingTool {
  * `pending`: live state of calls that have no result in `messages` yet; `running`: a run is in flight, so a call
  * without a result is still executing (not "failed").
  */
-export function MessageList({ messages, label, pending, running, turns, onFork, onEdit }: { messages: ChatMessage[]; label?: string; pending?: PendingTool[]; running?: boolean; turns?: TurnCheckpoint[]; onFork?: (index: number) => void; onEdit?: (index: number, text: string) => void }) {
+export function MessageList({ messages, label, pending, running, turns, onFork, onEdit, onRate }: { messages: ChatMessage[]; label?: string; pending?: PendingTool[]; running?: boolean; turns?: TurnCheckpoint[]; onFork?: (index: number) => void; onEdit?: (index: number, text: string) => void; onRate?: (index: number, rating: 'up' | 'down' | null, category?: FeedbackCategory) => void }) {
   const live = new Map((pending ?? []).map((t) => [t.callId, t]));
   const toolResults = new Map<string, Extract<ChatMessage, { role: 'tool' }>>();
   for (const m of messages) if (m.role === 'tool') toolResults.set(m.tool_call_id, m);
@@ -176,7 +204,7 @@ export function MessageList({ messages, label, pending, running, turns, onFork, 
         );
         return (
           <div key={i}>
-          <AssistantBubble content={m.content} reasoning={m.reasoning} label={label} via={m.via} councilRunId={m.councilRunId} onFork={onFork && m.content && !running ? () => onFork(i) : undefined}>
+          <AssistantBubble content={m.content} reasoning={m.reasoning} label={label} via={m.via} councilRunId={m.councilRunId} onFork={onFork && m.content && !running ? () => onFork(i) : undefined} feedback={m.feedback} onRate={onRate && !(running && i === messages.length - 1) ? (r, c) => onRate(i, r, c) : undefined}>
             {m.tool_calls?.map((tc) => {
               const r = toolResults.get(tc.id);
               const p = r ? undefined : live.get(tc.id);

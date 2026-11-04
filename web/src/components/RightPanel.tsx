@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import type { GoalLead, GoalMode, JobInfo, PlanStep, StepStat, WorkerState } from '@localdex/shared';
+import { FEEDBACK_LABELS, type FeedbackCategory, type GoalLead, type GoalMode, type JobInfo, type PlanStep, type StepStat, type WorkerState } from '@localdex/shared';
 import { send, useStore } from '../store';
 import { AssistantBubble, MessageList } from './Message';
 import { ToolCard } from './ToolCard';
@@ -437,12 +437,15 @@ function summarizeStats(stats: StepStat[]) {
 /** Speed is the user experience on a local model: time to first token, output speed, model vs tool time, per step. */
 function StatsPanel() {
   const session = useStore((s) => s.session);
+  const feedback = useStore((s) => s.feedbackStats);
   const stats = session?.stats ?? [];
   const [scope, setScope] = useState<'session' | 'recent'>('recent');
   if (!stats.length) {
     return <Empty>Timings appear here after the first model call: time to first token, output speed, how long the model vs. the tools took, per step.</Empty>;
   }
   const shown = scope === 'recent' ? stats.slice(-20) : stats;
+  const fb = session?.model ? feedback?.models[session.model] : undefined;
+  const topReason = fb ? (Object.entries(fb.categories).sort((a, b) => (b[1] ?? 0) - (a[1] ?? 0))[0] as [FeedbackCategory, number] | undefined) : undefined;
   const sum = summarizeStats(shown);
   const total = sum.modelMs + sum.toolMs || 1;
   const rows = [...shown].reverse();
@@ -455,6 +458,12 @@ function StatsPanel() {
           </button>
         ))}
       </div>
+      {fb && (fb.up > 0 || fb.down > 0) && (
+        <div className="text-ink-300" title="Your 👍/👎 on this model's answers, across all sessions">
+          Your ratings for <span className="font-mono">{session!.model}</span>: 👍 {fb.up} · 👎 {fb.down}
+          {topReason && topReason[1] > 0 ? <span className="text-ink-400"> · most common: {FEEDBACK_LABELS[topReason[0]]}</span> : null}
+        </div>
+      )}
       <div className="grid grid-cols-2 gap-2">
         <StatCard label="Time to first token (median)" value={fmtMs(sum.ttftMedian)} hint="How long the model takes before the first token appears. On a cached prompt this stays low; a reset prompt prefix makes it jump." />
         <StatCard label="Output speed" value={sum.tps ? `${sum.tps.toFixed(1)} tok/s` : '–'} hint="Completion tokens per second once the stream has started (steps with at least 8 tokens)." />

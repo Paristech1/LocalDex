@@ -1244,6 +1244,31 @@ console.log('\n# AC. Fork a session; edit a message and re-run in a fork');
   check('edit: the original keeps its message and answer', src.messages[6].content === 'read it' && src.messages[7].content === 'It says hi.');
 }
 
+// ---------- AD: Message feedback (U3) ----------
+console.log('\n# AD. 👍/👎 on answers: local model and council members');
+{
+  const fb = await import(`${SRC}/feedback.ts`);
+  const { getStats } = await import(`${SRC}/council/stats.ts`);
+  const s = createSession('fb-model-12b');
+  s.messages.push({ role: 'user', content: 'q', ts: 1 }, { role: 'assistant', content: 'local answer', ts: 2 }, { role: 'user', content: 'q2', ts: 3 }, { role: 'assistant', content: 'council answer', via: 'Claude → Codex', councilRunId: 'r1', ts: 4 } as any);
+  s.councilRuns = [{ id: 'r1', steps: [{ member: 'claude', role: 'planner', status: 'done' }, { member: 'codex', role: 'builder', status: 'done' }, { member: 'gemini', role: 'reviewer', status: 'error' }, { member: 'local', role: 'checks', status: 'done' }] }] as any;
+  const m = () => fb.feedbackStats().models['fb-model-12b'];
+  check('rate: only assistant answers can be rated', !fb.rateMessage(s, 0, 'up'));
+  fb.rateMessage(s, 1, 'up');
+  check('rate up: stored on the message, counted for the local model', s.messages[1].feedback?.rating === 'up' && m().up === 1 && (s.messages[1] as any).model === 'fb-model-12b');
+  fb.rateMessage(s, 1, 'down', 'made-up');
+  check('change to down with a reason: counts move, reason counted', m().up === 0 && m().down === 1 && m().categories['made-up'] === 1 && s.messages[1].feedback?.category === 'made-up');
+  fb.rateMessage(s, 1, null);
+  check('clear: rating removed and taken back', !s.messages[1].feedback && m().down === 0 && m().categories['made-up'] === 0);
+  fb.rateMessage(s, 1, 'down', 'not-a-category' as any);
+  check('unknown reason is dropped', s.messages[1].feedback?.rating === 'down' && !s.messages[1].feedback?.category);
+  const before = { c: getStats().members.claude?.feedback?.up ?? 0, x: getStats().members.codex?.feedback?.up ?? 0, g: getStats().members.gemini?.feedback?.up ?? 0, l: getStats().members.local?.feedback?.up ?? 0 };
+  fb.rateMessage(s, 3, 'up');
+  const st = getStats().members;
+  check('council answer: members with finished steps get the credit (not failed steps or the checks step)', st.claude!.feedback.up === before.c + 1 && st.codex!.feedback.up === before.x + 1 && (st.gemini?.feedback?.up ?? 0) === before.g && (st.local?.feedback?.up ?? 0) === before.l, JSON.stringify({ c: st.claude?.feedback, x: st.codex?.feedback }));
+  check('council answer: not counted for the local model', m().up === 0);
+}
+
 server.close();
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);
