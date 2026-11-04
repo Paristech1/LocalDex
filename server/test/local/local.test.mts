@@ -1023,6 +1023,9 @@ console.log('\n# Y. Shell sandbox + permission presets');
   check('no sandbox: background job fails closed too', !closedJob.ok && /needs a sandbox/.test(closedJob.content), closedJob.content);
   delete process.env.LOCALDEX_SANDBOX;
   sbx.resetSandboxCache();
+  updateSettings({ permissionPreset: 'full' }); // never leave a sandboxed preset on for later tests (machines without a sandbox)
+  const sbRo = sbx.seatbeltProfileArgs(['/private/var/folders'], ['/private/var/folders/x/proj'])[1];
+  check('seatbelt read-only: approved folders denied after the temp allow (later rules win)', sbRo.indexOf('(deny file-write* (subpath "/private/var/folders/x/proj"))') > sbRo.indexOf('(allow file-write* (subpath "/private/var/folders"))'), sbRo);
 
   const st = sbx.sandboxStatus();
   console.log(`  (sandbox on this machine: ${st.available ? st.kind : `none — ${st.reason}`})`);

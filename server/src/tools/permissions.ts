@@ -39,7 +39,7 @@ export function resolvePath(p: string, opts: { allowDenied?: boolean; read?: boo
   const real = realpathSafe(abs);
   if (opts.read && isSpillPath(abs) && isSpillPath(real)) return abs;
 
-  const inside = folders.some((f) => isInside(real, f) || isInside(abs, f));
+  const inside = insideApproved(abs, real);
   if (!inside) {
     throw new PermissionError(
       `Path "${abs}" is outside the approved folders (${folders.join(', ')}). Ask the user to approve it.`,
@@ -49,6 +49,17 @@ export function resolvePath(p: string, opts: { allowDenied?: boolean; read?: boo
     throw new PermissionError(`Path "${abs}" matches a protected pattern and cannot be accessed.`);
   }
   return abs;
+}
+
+/**
+ * Is a path inside an approved folder? Compares both the path as given and its symlink-resolved form against both
+ * forms of each folder (macOS: /var/folders IS /private/var/folders, /tmp IS /private/tmp).
+ */
+export function insideApproved(abs: string, real = realpathSafe(abs)): boolean {
+  return approvedFolders().some((f) => {
+    const fr = realpathSafe(f);
+    return isInside(abs, f) || isInside(real, f) || isInside(abs, fr) || isInside(real, fr);
+  });
 }
 
 export function approvedFolders(): string[] {
@@ -64,7 +75,7 @@ function isInside(child: string, parent: string): boolean {
   return rel === '' || (!rel.startsWith('..') && !path.isAbsolute(rel));
 }
 
-function realpathSafe(p: string): string {
+export function realpathSafe(p: string): string {
   try {
     return fs.realpathSync(p);
   } catch {

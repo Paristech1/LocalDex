@@ -128,7 +128,7 @@ function sbpl(p: string): string {
 }
 
 /** sandbox-exec arguments (before the command argv). */
-export function seatbeltProfileArgs(roots: string[]): string[] {
+export function seatbeltProfileArgs(roots: string[], denyRoots: string[] = []): string[] {
   const forms = [
     '(version 1)',
     '(allow default)',
@@ -136,6 +136,8 @@ export function seatbeltProfileArgs(roots: string[]): string[] {
     `(allow file-write* (literal ${sbpl('/dev/null')}) (literal ${sbpl('/dev/tty')}) (subpath ${sbpl('/dev/fd')}))`,
   ];
   if (roots.length) forms.push(`(allow file-write* ${roots.map((r) => `(subpath ${sbpl(r)})`).join(' ')})`);
+  // Read only: the approved folders stay unwritable even when they sit inside an allowed temp area (later rules win).
+  if (denyRoots.length) forms.push(`(deny file-write* ${denyRoots.map((r) => `(subpath ${sbpl(r)})`).join(' ')})`);
   return ['-p', forms.join(' ')];
 }
 
@@ -143,11 +145,13 @@ export function seatbeltProfileArgs(roots: string[]): string[] {
  * bwrap arguments (before `--` and the command argv). Read-only host root, fresh /dev, private PID namespace,
  * a private /tmp in both modes (so writes there never reach the host's /tmp), then writable binds.
  */
-export function bwrapProfileArgs(mode: SandboxMode, roots: string[], readOnlyFolders: string[] = []): string[] {
+export function bwrapProfileArgs(mode: SandboxMode, roots: string[], readOnlyFolders: string[] = [], aliases: Array<[real: string, asGiven: string]> = []): string[] {
   const args = ['--ro-bind', '/', '/', '--dev', '/dev', '--unshare-pid', '--proc', '/proc', '--die-with-parent', '--tmpfs', '/tmp'];
   // The private /tmp hides host paths under /tmp; put the approved folders back (read-only) so reads still work.
   if (mode === 'read-only') for (const f of readOnlyFolders) args.push('--ro-bind', f, f);
   for (const r of roots) args.push('--bind', r, r);
+  // An approved folder reached through a symlink (e.g. under /tmp, which is private here) is also mounted at the path as given.
+  for (const [real, given] of aliases) args.push(mode === 'read-only' ? '--ro-bind' : '--bind', real, given);
   return args;
 }
 
@@ -167,9 +171,11 @@ export function wrapCommand(file: string, args: string[], modeOverride?: Sandbox
     );
   }
   const roots = writableRoots(mode);
-  if (st.kind === 'seatbelt') return { file: '/usr/bin/sandbox-exec', args: [...seatbeltProfileArgs(roots), file, ...args], sandboxed: true };
-  const folders = approvedFolders().map((f) => canonical(f)).filter((f): f is string => !!f);
-  return { file: st.path ?? 'bwrap', args: [...bwrapProfileArgs(mode, roots, folders), '--', file, ...args], sandboxed: true };
+  const raw = approvedFolders();
+  const folders = raw.map((f) => canonical(f)).filter((f): f is string => !!f);
+  const aliases = raw.map((f) => [canonical(f), f] as const).filter((x): x is readonly [string, string] => !!x[0] && x[0] !== x[1]).map(([r, g]) => [r, g] as [string, string]);
+  if (st.kind === 'seatbelt') return { file: '/usr/bin/sandbox-exec', args: [...seatbeltProfileArgs(roots, mode === 'read-only' ? folders : []), file, ...args], sandboxed: true };
+  return { file: st.path ?? 'bwrap', args: [...bwrapProfileArgs(mode, roots, folders, aliases), '--', file, ...args], sandboxed: true };
 }
 
 /** A sandboxed command that failed because the sandbox blocked a write (macOS: EPERM; bwrap: read-only file system). */

@@ -97,8 +97,18 @@ function headTail(text: string, budget: number): string {
 
 /** Is this path inside the spill folder (file tools may read there, never write)? */
 export function isSpillPath(abs: string): boolean {
-  const rel = path.relative(SPILL_DIR, abs);
-  return rel !== '' && !rel.startsWith('..') && !path.isAbsolute(rel);
+  const under = (base: string) => {
+    const rel = path.relative(base, abs);
+    return rel !== '' && !rel.startsWith('..') && !path.isAbsolute(rel);
+  };
+  // The spill folder's symlink-resolved form counts too (macOS: /var/folders IS /private/var/folders).
+  let real = SPILL_DIR;
+  try {
+    real = fs.realpathSync(SPILL_DIR);
+  } catch {
+    /* not created yet */
+  }
+  return under(SPILL_DIR) || under(real);
 }
 
 /** A session was deleted: its saved outputs go with it. */

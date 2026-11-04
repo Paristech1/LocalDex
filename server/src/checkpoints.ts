@@ -5,7 +5,7 @@ import { createHash } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 import type { Session, TurnCheckpoint, TurnFile } from '@localdex/shared';
 import { DATA_DIR } from './config.js';
-import { approvedFolders } from './tools/permissions.js';
+import { insideApproved, approvedFolders, realpathSafe } from './tools/permissions.js';
 import { bus } from './agent/bus.js';
 
 /**
@@ -98,7 +98,8 @@ export function beginTurn(sessionId: string): TurnCheckpoint | null {
   }
   const root = repoRoot(folder);
   const treeStart = root ? writeTree(root) : null;
-  const state: TurnState = { id, dir, folder: root ?? folder, startedAt: Date.now(), treeStart, before: new Map() };
+  // Canonical folder, so paths from git and from the file tools are relative to the same spelling.
+  const state: TurnState = { id, dir, folder: realpathSafe(root ?? folder), startedAt: Date.now(), treeStart, before: new Map() };
   active.set(sessionId, state);
   return { id, startedAt: state.startedAt, folder: state.folder, files: [] };
 }
@@ -107,7 +108,9 @@ export function beginTurn(sessionId: string): TurnCheckpoint | null {
  * A file tool is about to change `abs`: keep its current content once per turn (or note that it did not exist).
  * No-op when no turn is active for the session (e.g. council runs, which have their own copies).
  */
-export function beforeEdit(sessionId: string, abs: string): void {
+export function beforeEdit(sessionId: string, rawAbs: string): void {
+  // Same spelling as git's paths (macOS: /var/folders IS /private/var/folders), so one file is never listed twice.
+  const abs = realpathSafe(rawAbs);
   const t = active.get(sessionId);
   if (!t || t.before.has(abs)) return;
   try {
@@ -263,7 +266,7 @@ export function undoTurn(session: Session, turnId: string): { ok: boolean; error
   const dir = turnDir(session.id, turnId);
   const folders = approvedFolders();
   for (const e of meta.entries) {
-    if (!folders.some((f) => e.abs === f || e.abs.startsWith(f + path.sep))) return { ok: false, error: `${e.rel} is no longer inside an approved folder.` };
+    if (!folders.length || !insideApproved(e.abs)) return { ok: false, error: `${e.rel} is no longer inside an approved folder.` };
     const exists = fs.existsSync(e.abs);
     if (e.afterSha1 === null) {
       if (exists) return { ok: false, error: `${e.rel} was created again after this turn deleted it; undo refused, nothing was changed.` };
