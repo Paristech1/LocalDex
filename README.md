@@ -146,6 +146,10 @@ commands (`/ask`, `/build`, `/review`, `/vote`, `/arena` …) are listed under
 - **Automatic names**: after the first answer in a new Solo session, the local model writes a 3–7 word title (one short call with no tools, after your run so it never delays it). A name you set yourself is never replaced. Off switch: Settings → Workspace.
 - **Export** (⤓ on a session): Markdown (messages in order, tool calls and results in collapsible blocks, archived parts after Compact & Resume at the end) or the raw JSON session file. Also at `GET /api/sessions/<id>/export?format=md|json`.
 
+### Fork and edit
+
+Hover a message for **Fork** / **Fork from here**: the conversation up to that point is copied into a new session (model, mode, plan and worker memory come along; Solo undo history, council copies and members' own vendor sessions don't). **Edit** on one of your messages re-runs from there with the new text, in a fork: the original session keeps its message and answer, so nothing is ever lost. `/fork` copies the whole conversation. A forked session links back to where it came from.
+
 ## Settings
 
 - **Workspace** – approved folders (first one is the default cwd), **Permissions** preset, shell approval mode.

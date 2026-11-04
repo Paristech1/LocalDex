@@ -1209,6 +1209,41 @@ console.log('\n# AB. Model doctor: probes in both protocols, speed, suggestions'
   check('doctor: the forced protocol is not remembered for the model', lm.toolModeCache()['gemma-mock'] === 'text', JSON.stringify(lm.toolModeCache()));
 }
 
+// ---------- AC: Fork / edit and regenerate (U4) ----------
+console.log('\n# AC. Fork a session; edit a message and re-run in a fork');
+{
+  const fk = await import(`${SRC}/fork.ts`);
+  const src = createSession('gemma-mock');
+  src.title = 'Original';
+  src.messages.push(
+    { role: 'system', content: 'sys', ts: 0 },
+    { role: 'user', content: 'list files', ts: 1 },
+    { role: 'assistant', content: null, tool_calls: [{ id: 'a', type: 'function', function: { name: 'list_dir', arguments: '{}' } }, { id: 'b', type: 'function', function: { name: 'glob', arguments: '{}' } }], ts: 2 },
+    { role: 'tool', tool_call_id: 'a', name: 'list_dir', content: 'x.txt', ts: 3 } as any,
+    { role: 'tool', tool_call_id: 'b', name: 'glob', content: 'x.txt', ts: 4 } as any,
+    { role: 'assistant', content: 'There is x.txt.', ts: 5 },
+    { role: 'user', content: 'read it', ts: 6 },
+    { role: 'assistant', content: 'It says hi.', ts: 7 },
+  );
+  src.turns = [{ id: 't1', startedAt: 1, folder: DEMO, files: [] }] as any;
+  src.memberSessions = { claude: { id: 'v1' } } as any;
+  const partial = fk.cleanSlice(src.messages, 4); // assistant with 2 calls, only 1 answered
+  check('fork: a tool call without its result is never kept', partial.length === 2 && partial[1].role === 'user', JSON.stringify(partial.map((m: any) => m.role)));
+  const f = fk.forkAt(src, 6);
+  check('fork: conversation copied up to the point, ending cleanly', f.messages.length === 6 && f.messages[5].content === 'There is x.txt.' && f.id !== src.id, String(f.messages.length));
+  check('fork: model/mode carried; undo history and vendor sessions not', f.model === 'gemma-mock' && !f.turns?.length && !f.memberSessions && f.forkedFrom?.sessionId === src.id && f.title === 'Original (fork)' && f.titleSource === 'auto');
+  f.messages[1].content = 'changed';
+  check('fork: deep copy — editing the fork never touches the original', src.messages[1].content === 'list files' && src.messages.length === 8);
+  check('edit: only real user messages are editable', fk.isEditableUserMessage(src, 6) && !fk.isEditableUserMessage(src, 5) && !fk.isEditableUserMessage(src, 0));
+  // edit_message: fork just before the user message, then send the new text there.
+  const e = fk.forkAt(src, 6, 'Original (edited)');
+  script = [say('It says hello world.')];
+  await runnerFor(e).handleUserMessage('read it slowly');
+  const last = e.messages[e.messages.length - 1];
+  check('edit: the edited message runs in the fork', e.messages.some((m: any) => m.role === 'user' && m.content === 'read it slowly') && last.content === 'It says hello world.', JSON.stringify(e.messages.slice(-2)));
+  check('edit: the original keeps its message and answer', src.messages[6].content === 'read it' && src.messages[7].content === 'It says hi.');
+}
+
 server.close();
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

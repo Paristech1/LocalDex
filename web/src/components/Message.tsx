@@ -32,7 +32,7 @@ export function Reasoning({ text, streaming }: { text: string; streaming?: boole
   );
 }
 
-export function UserBubble({ text }: { text: string }) {
+export function UserBubble({ text, onEdit, onFork }: { text: string; onEdit?: (text: string) => void; onFork?: () => void }) {
   const [open, setOpen] = useState(false);
   const isSystemish = /^\[(Goal|Loop|system|context|Resumed|Handed to council|Plan |job )/.test(text);
   if (isSystemish) {
@@ -49,8 +49,47 @@ export function UserBubble({ text }: { text: string }) {
       </div>
     );
   }
+  return <EditableUserBubble text={text} onEdit={onEdit} onFork={onFork} />;
+}
+
+/** U4: hover actions on your own messages. Edit re-runs from that point in a fork; the original stays as it was. */
+function EditableUserBubble({ text, onEdit, onFork }: { text: string; onEdit?: (text: string) => void; onFork?: () => void }) {
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState(text);
+  if (editing && onEdit) {
+    return (
+      <div className="flex justify-end my-2">
+        <div className="w-[85%] space-y-1">
+          <textarea className="w-full min-h-[80px] rounded-xl border border-accent/60 bg-ink-800 px-3 py-2 text-sm text-ink-100 focus:outline-none" value={draft} onChange={(e) => setDraft(e.target.value)} autoFocus />
+          <div className="flex justify-end gap-2 text-xs">
+            <span className="text-ink-400 mr-auto self-center">Runs in a new session forked from here; this one stays as it is.</span>
+            <button type="button" className="px-2 py-1 text-ink-400 hover:text-ink-100" onClick={() => (setEditing(false), setDraft(text))}>
+              Cancel
+            </button>
+            <button type="button" className="rounded-md bg-accent/20 px-2 py-1 text-accent hover:bg-accent/30 disabled:opacity-40" disabled={!draft.trim() || draft.trim() === text.trim()} onClick={() => (setEditing(false), onEdit(draft.trim()))}>
+              Save & run
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
   return (
-    <div className="flex justify-end my-2">
+    <div className="group flex justify-end items-start gap-1 my-2">
+      {(onEdit || onFork) && (
+        <div className="opacity-0 group-hover:opacity-100 focus-within:opacity-100 flex gap-1 pt-2 text-[11px] text-ink-400">
+          {onEdit && (
+            <button type="button" className="hover:text-ink-100" onClick={() => setEditing(true)} title="Edit and re-run from here (in a fork)">
+              Edit
+            </button>
+          )}
+          {onFork && (
+            <button type="button" className="hover:text-ink-100" onClick={onFork} title="Copy the conversation up to here into a new session">
+              Fork
+            </button>
+          )}
+        </div>
+      )}
       <div className="max-w-[85%] bg-ink-700 text-ink-100 rounded-2xl rounded-br-sm px-4 py-2 whitespace-pre-wrap">{text}</div>
     </div>
   );
@@ -64,7 +103,9 @@ export function AssistantBubble({
   label,
   via,
   councilRunId,
+  onFork,
 }: {
+  onFork?: () => void;
   content: string | null;
   reasoning?: string;
   children?: React.ReactNode;
@@ -74,7 +115,12 @@ export function AssistantBubble({
   councilRunId?: string;
 }) {
   return (
-    <div className={cx('my-2', via && 'border-l-2 border-[#7cc0f2]/40 pl-3')}>
+    <div className={cx('group relative my-2', via && 'border-l-2 border-[#7cc0f2]/40 pl-3')}>
+      {onFork && (
+        <button type="button" onClick={onFork} title="Copy the conversation up to here into a new session" className="absolute right-0 top-0 opacity-0 group-hover:opacity-100 focus:opacity-100 text-[11px] text-ink-400 hover:text-ink-100">
+          Fork from here
+        </button>
+      )}
       {label && <div className="text-[11px] text-ink-400 mb-1 font-mono">{label}</div>}
       {via && <ViaBadge via={via} />}
       {councilRunId && <WorktreeChip runId={councilRunId} />}
@@ -102,7 +148,7 @@ export interface PendingTool {
  * `pending`: live state of calls that have no result in `messages` yet; `running`: a run is in flight, so a call
  * without a result is still executing (not "failed").
  */
-export function MessageList({ messages, label, pending, running, turns }: { messages: ChatMessage[]; label?: string; pending?: PendingTool[]; running?: boolean; turns?: TurnCheckpoint[] }) {
+export function MessageList({ messages, label, pending, running, turns, onFork, onEdit }: { messages: ChatMessage[]; label?: string; pending?: PendingTool[]; running?: boolean; turns?: TurnCheckpoint[]; onFork?: (index: number) => void; onEdit?: (index: number, text: string) => void }) {
   const live = new Map((pending ?? []).map((t) => [t.callId, t]));
   const toolResults = new Map<string, Extract<ChatMessage, { role: 'tool' }>>();
   for (const m of messages) if (m.role === 'tool') toolResults.set(m.tool_call_id, m);
@@ -124,13 +170,13 @@ export function MessageList({ messages, label, pending, running, turns }: { mess
         if (m.role === 'system' || m.role === 'tool') return cards.get(i)?.map((t) => <TurnCard key={t.id} turn={t} />) ?? null;
         if (m.role === 'user') return (
           <div key={i}>
-            <UserBubble text={m.content} />
+            <UserBubble text={m.content} onEdit={onEdit ? (t) => onEdit(i, t) : undefined} onFork={onFork ? () => onFork(i) : undefined} />
             {cards.get(i)?.map((t) => <TurnCard key={t.id} turn={t} />)}
           </div>
         );
         return (
           <div key={i}>
-          <AssistantBubble content={m.content} reasoning={m.reasoning} label={label} via={m.via} councilRunId={m.councilRunId}>
+          <AssistantBubble content={m.content} reasoning={m.reasoning} label={label} via={m.via} councilRunId={m.councilRunId} onFork={onFork && m.content && !running ? () => onFork(i) : undefined}>
             {m.tool_calls?.map((tc) => {
               const r = toolResults.get(tc.id);
               const p = r ? undefined : live.get(tc.id);

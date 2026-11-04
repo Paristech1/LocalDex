@@ -26,6 +26,7 @@ import { resetReads } from './tools/readTracker.js';
 import { forgetInstructions } from './agent/instructions.js';
 import { unavailableTools } from './tools/index.js';
 import { sandboxStatus } from './sandbox.js';
+import { forkAt, isEditableUserMessage } from './fork.js';
 import { exportFileName, exportMarkdown, searchSessions } from './sessionTools.js';
 import { closeAllMcp, mcpStatuses, reloadMcp, restartMcp } from './mcp/client.js';
 import { doctorReports, doctorRunning, runDoctor, stopDoctor } from './doctor.js';
@@ -285,6 +286,26 @@ async function handle(ws: WebSocket, ev: ClientEvent): Promise<void> {
       forgetInstructions(ev.id);
       deleteSession(ev.id);
       bus.emit({ type: 'sessions', sessions: listSessions() });
+      return;
+    }
+    case 'fork_session': {
+      const src = getSession(ev.sessionId);
+      if (!src || !Number.isInteger(ev.messageIndex)) return;
+      const f = forkAt(src, ev.messageIndex + 1);
+      runnerFor(f);
+      send(ws, { type: 'session', session: f });
+      bus.emit({ type: 'sessions', sessions: listSessions() });
+      return;
+    }
+    case 'edit_message': {
+      const src = getSession(ev.sessionId);
+      const content = String(ev.content ?? '').trim();
+      if (!src || !content || !Number.isInteger(ev.messageIndex)) return;
+      if (!isEditableUserMessage(src, ev.messageIndex)) return send(ws, { type: 'error', sessionId: src.id, message: 'Only your own messages can be edited.' });
+      const f = forkAt(src, ev.messageIndex, `${src.title} (edited)`);
+      send(ws, { type: 'session', session: f });
+      bus.emit({ type: 'sessions', sessions: listSessions() });
+      void runnerFor(f).handleUserMessage(content);
       return;
     }
     case 'rename_session': {

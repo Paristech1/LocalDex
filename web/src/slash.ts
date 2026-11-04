@@ -59,6 +59,15 @@ export const SLASH_COMMANDS: SlashCommand[] = [
   },
   { name: 'export', args: '[md|json]', description: 'Download this session as Markdown (or JSON)', mode: 'both', run: ({ session, download }, arg) => download(`/api/sessions/${encodeURIComponent(session.id)}/export?format=${arg === 'json' ? 'json' : 'md'}`) },
   { name: 'new', description: 'Start a new session', mode: 'both', run: () => void newSession() },
+  {
+    name: 'fork',
+    description: 'Copy this whole conversation into a new session and continue there',
+    mode: 'both',
+    run: ({ session }) => {
+      if (!session.messages.length) return 'Nothing to fork yet.';
+      send({ type: 'fork_session', sessionId: session.id, messageIndex: session.messages.length - 1 });
+    },
+  },
   { name: 'council', description: 'Switch this session to Council mode (cloud members)', mode: 'solo', run: ({ session }) => void send({ type: 'set_mode', sessionId: session.id, mode: 'council' }) },
   { name: 'solo', description: 'Switch this session back to Solo mode (local model leads)', mode: 'council', run: ({ session }) => void send({ type: 'set_mode', sessionId: session.id, mode: 'solo' }) },
   // Council commands: sent as the message; the server routes them.

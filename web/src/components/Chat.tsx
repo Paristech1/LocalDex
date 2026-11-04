@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { MEMBER_IDS, RUN_ACCESS_LABELS, defaultRunAccess, type ChatMessage, type CouncilRunAccess, type EscalatePattern, type MemberId, type PermissionPreset } from '@localdex/shared';
-import { send, useStore, type Prompt } from '../store';
+import { loadSession, send, useStore, type Prompt } from '../store';
 import { matchCommands, runIfDirect, type SlashCommand } from '../slash';
 
 function downloadUrl(url: string): void {
@@ -64,7 +64,23 @@ export function Chat() {
       >
         <div className="max-w-3xl mx-auto">
           {session.messages.length <= 1 && !showLive && !liveRun && <Welcome noFolders={!!noFolders} council={councilMode} />}
-          <MessageList messages={session.messages} pending={pendingTools} running={running} turns={session.turns} />
+          {session.forkedFrom && (
+            <div className="my-2 text-center text-[11px] text-ink-400">
+              Forked from{' '}
+              <button type="button" className="underline hover:text-ink-100" onClick={() => loadSession(session.forkedFrom!.sessionId)}>
+                {session.forkedFrom.title}
+              </button>{' '}
+              after {session.forkedFrom.at} messages
+            </div>
+          )}
+          <MessageList
+            messages={session.messages}
+            pending={pendingTools}
+            running={running}
+            turns={session.turns}
+            onFork={(i) => send({ type: 'fork_session', sessionId: session.id, messageIndex: i })}
+            onEdit={running ? undefined : (i, t) => send({ type: 'edit_message', sessionId: session.id, messageIndex: i, content: t })}
+          />
           {afterAnswer && !picker && (
             <div className="-mt-1 mb-2">
               <button type="button" onClick={() => setPicker(true)} className="text-[11px] text-ink-400 hover:text-[#7cc0f2]" title="Send your latest request, with a summary of what the local agent did, to the cloud council. The chat stays in Solo.">

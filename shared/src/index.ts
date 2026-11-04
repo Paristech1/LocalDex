@@ -189,6 +189,8 @@ export interface Session {
   title: string;
   /** Where the title came from: the first line of the first message (default), the local model (auto), or the user. */
   titleSource?: 'default' | 'auto' | 'user';
+  /** U4: this session was forked from another one, with its first `at` messages. */
+  forkedFrom?: { sessionId: string; title: string; at: number };
   createdAt: number;
   updatedAt: number;
   model: string | null;
@@ -1043,6 +1045,10 @@ export type ClientEvent =
   | { type: 'load_session'; id: string }
   | { type: 'delete_session'; id: string }
   | { type: 'rename_session'; id: string; title: string }
+  /** U4: copy the conversation up to and including message `messageIndex` into a new session and open it. */
+  | { type: 'fork_session'; sessionId: string; messageIndex: number }
+  /** U4: fork just before user message `messageIndex`, then send `content` in the fork instead (the original is untouched). */
+  | { type: 'edit_message'; sessionId: string; messageIndex: number; content: string }
   | { type: 'stop'; sessionId: string }
   | { type: 'set_settings'; patch: Partial<Settings> }
   | { type: 'mcp_gallery_add'; id: string; confirmName: string }
