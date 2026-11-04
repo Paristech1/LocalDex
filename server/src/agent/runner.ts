@@ -8,6 +8,7 @@ import { autoTitle, isDefaultTitle } from '../sessionTools.js';
 import { isVisionModel } from '../lmstudio.js';
 import { mentionHint, mentionedFiles } from '../fileMentions.js';
 import { attachmentPath } from '../attachments.js';
+import { hooksActive, runHooks } from '../hooks.js';
 import { assessGoal, goalCouncilAssessTask, parseAssessment } from './goal.js';
 import { beginTurn, endTurn } from '../checkpoints.js';
 import { forgetInstructions, pullInstructions } from './instructions.js';
@@ -116,10 +117,21 @@ export class SessionRunner {
       await this.revisePlan(content);
       return;
     }
+    // S5: the user's UserPromptSubmit hooks may block the message or add context (Solo only).
+    let hookContext: string[] = [];
+    if (!this.councilMode && hooksActive()) {
+      const h = await runHooks('UserPromptSubmit', { session_id: this.session.id, prompt: content });
+      if (h.block) {
+        bus.emit({ type: 'error', sessionId: this.session.id, message: `Your hook blocked this message: ${h.reason}` });
+        return;
+      }
+      hookContext = h.context;
+    }
     // A7: attached images. Council members can't receive images over their CLIs, so they get the file paths instead.
     const imgs = (images ?? []).filter((id) => !!attachmentPath(id)).slice(0, 8);
     if (imgs.length && this.councilMode) content = `${content}\n\n[Attached images (open them with your file tools): ${imgs.map((id) => attachmentPath(id)).join(', ')}]`;
     this.session.messages.push({ role: 'user', content, ts: Date.now(), ...(imgs.length && !this.councilMode ? { images: imgs } : {}) });
+    if (hookContext.length) this.session.messages.push({ role: 'user', content: `[context] From your hooks:\n${hookContext.join('\n')}`, ts: Date.now() });
     // A6: @file mentions become a short read hint (Solo; council members read files themselves).
     if (!this.councilMode) {
       const hint = mentionHint(mentionedFiles(content));
@@ -130,7 +142,22 @@ export class SessionRunner {
     if (this.councilMode) await this.runCouncilTurn(content, access, notRisky);
     else {
       await this.run();
+      await this.stopHooks();
       this.maybeAutoTitle();
+    }
+  }
+
+  /** S5: Stop hooks may ask for another turn (with their reason as the instruction), at most 3 times per message. */
+  private async stopHooks(): Promise<void> {
+    if (!hooksActive()) return;
+    for (let i = 0; i < 3; i++) {
+      if (this.running || this.abort) return;
+      const h = await runHooks('Stop', { session_id: this.session.id, stop_hook_active: i > 0 });
+      if (!h.block) return;
+      this.session.messages.push({ role: 'user', content: `[system] Your hook asked to keep going: ${h.reason ?? 'not done yet'}`, ts: Date.now() });
+      this.persist();
+      this.sync();
+      await this.run();
     }
   }
 

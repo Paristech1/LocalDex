@@ -163,6 +163,13 @@ function WorkspaceTab({ settings, patch }: TabProps) {
             <option value="local">Local model (not recommended)</option>
           </select>
         </Field>
+        <Field label="Run my hooks (experimental)" hint="Claude Code hook format: PreToolUse can block a tool call, PostToolUse can add feedback, UserPromptSubmit can block a message or add context, Stop can ask for another turn. Hooks can never approve anything, and a hook that fails or times out is skipped. Never loaded from project folders.">
+          <select className={inputCls} value={settings.hooksSource ?? 'off'} onChange={(e) => patch({ hooksSource: e.target.value as 'off' | 'localdex' | 'claude-code' })}>
+            <option value="off">Off</option>
+            <option value="localdex">~/.localdex/hooks.json</option>
+            <option value="claude-code">My Claude Code hooks (~/.claude/settings.json)</option>
+          </select>
+        </Field>
         <div className="mt-3">
           <Toggle label="Files must be read before they are edited (and re-read if they changed meanwhile)" checked={settings.requireReadBeforeEdit !== false} onChange={(v) => patch({ requireReadBeforeEdit: v })} />
         </div>

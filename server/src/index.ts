@@ -407,6 +407,8 @@ async function handle(ws: WebSocket, ev: ClientEvent): Promise<void> {
       void _extra;
       void _lsp;
       if (rest.permissionPreset !== undefined && !['full', 'workspace', 'read-only'].includes(rest.permissionPreset)) delete rest.permissionPreset;
+      if (rest.hooksSource !== undefined && !['off', 'localdex', 'claude-code'].includes(rest.hooksSource)) delete rest.hooksSource;
+      if (rest.autoReview !== undefined && !['off', 'council', 'local'].includes(rest.autoReview)) delete rest.autoReview;
       let settings = updateSettings(council ? { ...rest, council: stripCouncilCommands(council) as typeof council } : rest);
       if (mcpServers) {
         settings = applyMcpToggles(mcpServers);

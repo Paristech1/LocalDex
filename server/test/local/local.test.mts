@@ -1512,6 +1512,54 @@ console.log('\n# AJ. Headless CLI: localdex run "<task>"');
   check('CLI options never touch config.json', fs.readFileSync(path.join(process.env.LOCALDEX_HOME!, 'config.json'), 'utf8') === cfgBefore);
 }
 
+// ---------- AK: User hooks (S5) ----------
+console.log('\n# AK. Hooks: PreToolUse blocks, PostToolUse feedback, UserPromptSubmit, Stop; never approve');
+{
+  const hk = await import(`${SRC}/hooks.ts`);
+  const HOME = process.env.LOCALDEX_HOME!;
+  const hdir = path.join(HOME, 'hook-scripts');
+  fs.mkdirSync(hdir, { recursive: true });
+  const w = (n: string, body: string) => (fs.writeFileSync(path.join(hdir, n), `#!/bin/bash\n${body}\n`), fs.chmodSync(path.join(hdir, n), 0o755), path.join(hdir, n));
+  const guard = w('guard.sh', 'input=$(cat); if echo "$input" | grep -q "rm -rf"; then echo "no recursive deletes in this repo" >&2; exit 2; fi; exit 0');
+  const allow = w('allow.sh', 'cat >/dev/null; echo \'{"hookSpecificOutput":{"permissionDecision":"allow"}}\'');
+  const post = w('post.sh', 'cat >/dev/null; echo \'{"hookSpecificOutput":{"additionalContext":"remember to run the linter"}}\'');
+  const prompt = w('prompt.sh', 'input=$(cat); if echo "$input" | grep -q "DROP DATABASE"; then echo \'{"decision":"block","reason":"not allowed here"}\'; else echo "Team rule: use pnpm"; fi');
+  const slow = w('slow.sh', 'sleep 5');
+  let stopCount = 0;
+  const stopFile = path.join(hdir, 'stopped-once');
+  const stop = w('stop.sh', `cat >/dev/null; if [ ! -f ${stopFile} ]; then touch ${stopFile}; echo '{"decision":"block","reason":"also update the changelog"}'; fi`);
+  fs.writeFileSync(path.join(HOME, 'hooks.json'), JSON.stringify({ hooks: {
+    PreToolUse: [{ matcher: 'Bash', hooks: [{ type: 'command', command: guard }, { type: 'command', command: allow }, { type: 'command', command: slow, timeout: 1 }] }],
+    PostToolUse: [{ matcher: 'Read|Edit', hooks: [{ type: 'command', command: post }] }],
+    UserPromptSubmit: [{ hooks: [{ type: 'command', command: prompt }] }],
+    Stop: [{ hooks: [{ type: 'command', command: stop }] }],
+  } }));
+  check('names and fields in Claude Code terms', hk.ccToolName('shell_run') === 'Bash' && hk.ccToolName('edit_file') === 'Edit' && hk.ccToolInput('read_file', { path: 'a' }).file_path === 'a');
+  check('off by default: nothing runs', !hk.hooksActive() && (await hk.runHooks('PreToolUse', { tool_input: { command: 'rm -rf /' } }, 'Bash')).block === false);
+  updateSettings({ hooksSource: 'localdex' });
+  fs.mkdirSync(path.join(DEMO, 'hooked'), { recursive: true });
+  approve = true; // even an approved dangerous command is stopped by the hook first
+  const a0 = approvals;
+  let r = await runWith([textCalls({ name: 'shell_run', arguments: { command: 'rm -rf ./hooked' } }), say('Blocked, so I stopped.'), say('Blocked, so I stopped.')], 'delete hooked');
+  const blockedRes = toolResults(r.messages)[0]?.content ?? '';
+  check('PreToolUse: exit 2 blocks the call; the model sees the reason; no prompt shown', /Blocked by the user's hook: no recursive deletes in this repo/.test(blockedRes) && fs.existsSync(path.join(DEMO, 'hooked')) && approvals === a0, blockedRes);
+  check('a hook that times out is skipped (logged), and "allow" is ignored', logs.some((l) => /\[hook PreToolUse\] skipped \(timed out\)/.test(l)) && logs.some((l) => /"allow" ignored/.test(l)));
+  approve = false;
+  fs.writeFileSync(path.join(DEMO, 'h.txt'), 'x\n');
+  r = await runWith([textCalls({ name: 'read_file', arguments: { path: 'h.txt' } }), say('Read it.')], 'read h.txt');
+  check('PostToolUse: feedback appended to the tool result', /\[hook feedback\] remember to run the linter/.test(toolResults(r.messages)[0]?.content ?? ''), toolResults(r.messages)[0]?.content);
+  const hs = createSession('gemma-mock');
+  const before = requests.length;
+  await runnerFor(hs).handleUserMessage('run DROP DATABASE prod');
+  check('UserPromptSubmit: a blocked message is not sent to the model', requests.length === before && !hs.messages.some((m: any) => /DROP DATABASE/.test(m.content)));
+  script = [say('Done with the task.'), say('Changelog updated too.')];
+  await runnerFor(hs).handleUserMessage('small change please');
+  check('UserPromptSubmit: plain stdout becomes context', hs.messages.some((m: any) => m.role === 'user' && /From your hooks:\nTeam rule: use pnpm/.test(m.content)));
+  check('Stop: a blocking Stop hook gets one more turn with its reason', hs.messages.some((m: any) => /Your hook asked to keep going: also update the changelog/.test(m.content)) && hs.messages.at(-1)?.content === 'Changelog updated too.', JSON.stringify(hs.messages.slice(-3).map((m: any) => String(m.content).slice(0, 50))));
+  updateSettings({ hooksSource: 'off' });
+  void stopCount;
+}
+
 server.close();
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

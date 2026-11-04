@@ -215,6 +215,17 @@ The sandbox is macOS Seatbelt (`sandbox-exec`) or Linux bubblewrap (`sudo apt in
 
 **Settings → Workspace → Auto-review risky commands** (off by default). Before LocalDex asks you about a risky shell command (`rm -rf`, force-push, `sudo`…), a reviewer rates it against a fixed rubric and answers in strict JSON. Only **low risk** (normal project work, or deleting exact files the agent generated) runs without asking. Medium or high risk, an unreadable answer, or a reviewer error shows the normal prompt with the reviewer's reason added. It never auto-approves medium or high risk, sandbox escalations, or MCP calls. The reviewer is the council's quick member (read-only, on your subscription) or, if you choose, the local model. A small local model is not a safe judge, so prefer the council. Every decision goes to the Log panel.
 
+### Hooks (experimental)
+
+**Settings → Workspace → Run my hooks** runs hooks in Claude Code's format during Solo runs, from `~/.localdex/hooks.json` or your own `~/.claude/settings.json`. They are **never loaded from a project folder**, so a cloned repo can't run commands. LocalDex tools are named as Claude Code names them (`Bash`, `Read`, `Write`, `Edit`, `Glob`, `Grep`…), so existing matchers work. Each hook gets the usual JSON on stdin.
+
+- **PreToolUse**: exit 2, `{"decision":"block"}` or `permissionDecision: "deny"` blocks the call, and the model sees your reason.
+- **PostToolUse**: `additionalContext` (or a block reason) is added to the tool result as feedback.
+- **UserPromptSubmit**: can block the message, and plain stdout or `additionalContext` becomes context.
+- **Stop**: a block asks for another turn with your reason, at most 3 times per message.
+
+Hooks can **never approve** anything that would otherwise ask, and `"allow"` is ignored. A hook that crashes or times out (default 60 s) is skipped and logged, never blocking the run.
+
 ## Project instructions
 
 LocalDex loads instruction files into the system prompt, each under its own byte budget so one never crowds out the other:

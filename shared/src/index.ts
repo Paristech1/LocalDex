@@ -842,6 +842,11 @@ export interface Settings {
    * without asking. 'council' = the council's quick member (read-only, your subscription); 'local' = the local model.
    */
   autoReview?: 'off' | 'council' | 'local';
+  /**
+   * S5 (experimental): run your Claude Code hooks (PreToolUse, PostToolUse, UserPromptSubmit, Stop) during Solo runs.
+   * 'localdex' = ~/.localdex/hooks.json, 'claude-code' = ~/.claude/settings.json. Never project files. Default off.
+   */
+  hooksSource?: 'off' | 'localdex' | 'claude-code';
   /** Sandbox + write-tool preset for the local agent's shell and file tools (S3). Default 'full'. */
   permissionPreset: PermissionPreset;
   /** Extra folders sandboxed shells may write (Workspace preset). Edit in ~/.localdex/config.json. */

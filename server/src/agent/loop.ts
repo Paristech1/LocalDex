@@ -5,6 +5,7 @@ import type { CouncilRequest, GoalControl, ToolContext } from '../tools/types.js
 import { inlineBudgetChars, spill } from '../spill.js';
 import { PLAN_MISSING_NUDGE } from './planMode.js';
 import { reviewCommand } from '../autoReview.js';
+import { ccToolInput, ccToolName, hooksActive, runHooks } from '../hooks.js';
 import { bus } from './bus.js';
 import { getSettings } from '../config.js';
 import { ConsultNudger, consultEnabled } from './consultNudge.js';
@@ -405,9 +406,23 @@ async function executeCalls(calls: ToolCall[], ctx: ToolContext): Promise<Outcom
     }
     bus.emit({ type: 'tool_start', sessionId: ctx.sessionId, agent: ctx.agent, callId: call.id, name: call.function.name, args });
     // Never run a call whose arguments are broken (chat-template tokens, prose spilled into a path…).
-    const r = isCorruptCall(call)
-      ? { ok: false, content: `This ${call.function.name} call was malformed (its arguments contained chat-template tokens or were not a JSON object), so LocalDex did not run it. Send the call again with clean JSON arguments only.` }
-      : await executeTool(call, { ...ctx, callId: call.id });
+    let r: { ok: boolean; content: string; images?: string[] };
+    if (isCorruptCall(call)) {
+      r = { ok: false, content: `This ${call.function.name} call was malformed (its arguments contained chat-template tokens or were not a JSON object), so LocalDex did not run it. Send the call again with clean JSON arguments only.` };
+    } else {
+      // S5: the user's PreToolUse hooks may block the call (never approve it).
+      const hookArgs = hooksActive() ? ccToolInput(call.function.name, (typeof args === 'object' && args) ? (args as Record<string, unknown>) : {}) : {};
+      const pre = hooksActive() ? await runHooks('PreToolUse', { session_id: ctx.sessionId, tool_name: ccToolName(call.function.name), tool_input: hookArgs }, ccToolName(call.function.name)) : null;
+      if (pre?.block) r = { ok: false, content: `Blocked by the user's hook: ${pre.reason}` };
+      else {
+        r = await executeTool(call, { ...ctx, callId: call.id });
+        if (hooksActive()) {
+          const post = await runHooks('PostToolUse', { session_id: ctx.sessionId, tool_name: ccToolName(call.function.name), tool_input: hookArgs, tool_response: { ok: r.ok, output: r.content.slice(0, 20_000) } }, ccToolName(call.function.name));
+          const notes = [...(post.block && post.reason ? [post.reason] : []), ...post.context];
+          if (notes.length) r = { ...r, content: `${r.content}\n\n[hook feedback] ${notes.join('\n')}` };
+        }
+      }
+    }
     // Oversized results never go into the context whole: the full text is saved and the model gets head + tail + path.
     if (SPILL_EXEMPT.has(call.function.name) === false) {
       const s = spill(r.content, { sessionId: ctx.sessionId, callId: `${ctx.agent}-${call.id}`, budgetChars: inlineBudgetChars(ctx.model ?? null), label: `${call.function.name} output` });
