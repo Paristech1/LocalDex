@@ -96,7 +96,7 @@ export const terminal_open: ToolDef = {
     const cwd = resolvePath(optStr(args.cwd) ?? defaultCwd());
     const command = optStr(args.command);
     if (command && shellNeedsApproval(command)) {
-      const approved = await ctx.requestApproval(command, cwd);
+      const approved = await ctx.requestApproval(command, cwd, 'shell');
       if (!approved) return fail(DECLINED_COMMAND);
     }
     let pty: PtyModule;
@@ -166,7 +166,7 @@ export const terminal_send: ToolDef = {
     const input = str(args.input, 'input');
     const raw = args.raw === true;
     if (!raw && shellNeedsApproval(input)) {
-      const approved = await ctx.requestApproval(input, term.cwd);
+      const approved = await ctx.requestApproval(input, term.cwd, 'shell');
       if (!approved) return fail(DECLINED_COMMAND);
     }
     term.pty.write(raw ? input : input + '\r');

@@ -1354,6 +1354,37 @@ console.log('\n# AF. Open PR: members-only commit on a new branch, gh pr create,
   fs.rmSync(base, { recursive: true, force: true });
 }
 
+// ---------- AG: Auto-review for approval prompts (S4) ----------
+console.log('\n# AG. Auto-review: low runs without asking; anything else asks with the reason');
+{
+  const ar = await import(`${SRC}/autoReview.ts`);
+  check('verdict: only exact low/allow is allowed', ar.parseVerdict('{"risk":"low","decision":"allow"}', 'x').decision === 'allow' && ar.parseVerdict('{"risk":"high","decision":"allow"}', 'x').decision === 'ask' && ar.parseVerdict('{"risk":"medium","decision":"allow"}', 'x').decision === 'ask' && ar.parseVerdict('sure, go ahead', 'x').decision === 'ask' && ar.parseVerdict('{"risk":"low"', 'x').decision === 'ask');
+  check('verdict: reason kept for the prompt', ar.parseVerdict('{"risk":"medium","decision":"deny","reason":"deletes existing files"}', 'x').reason === 'deletes existing files');
+  updateSettings({ autoReview: 'local' });
+  const promptsSeen: string[] = [];
+  const unsub = bus.subscribe((ev: any) => ev.type === 'approval_request' && promptsSeen.push(ev.command));
+  fs.mkdirSync(path.join(DEMO, 'build'), { recursive: true });
+  fs.writeFileSync(path.join(DEMO, 'build/out.js'), 'x');
+  approve = false;
+  const a0 = approvals;
+  let r = await runWith([textCalls({ name: 'shell_run', arguments: { command: 'rm -rf ./build' } }), say('{"risk":"low","decision":"allow"}'), say('Cleaned.')], 'clean the build output');
+  check('low risk: runs without a prompt', approvals === a0 && !fs.existsSync(path.join(DEMO, 'build')) && logs.some((l) => /\[auto-review\] local .*low risk, ran without asking/.test(l)), `${approvals - a0} prompts`);
+  const reviewReq = requests[requests.length - 2];
+  check('review request: no tools, sees the command and the user request', !(reviewReq.tools?.length) && /rm -rf \.\/build/.test(reviewReq.messages[1].content) && /clean the build output/.test(reviewReq.messages[1].content));
+  fs.mkdirSync(path.join(DEMO, 'keep'), { recursive: true });
+  const a1 = approvals;
+  r = await runWith([textCalls({ name: 'shell_run', arguments: { command: 'rm -rf ./keep' } }), say('{"risk":"medium","decision":"deny","reason":"deletes a folder that existed before"}'), say('Did not delete.')], 'tidy up');
+  check('medium: the user is asked, with the reviewer’s reason; declined → nothing deleted', approvals === a1 + 1 && /auto-review by local .*medium risk — deletes a folder that existed before/.test(promptsSeen.at(-1) ?? '') && fs.existsSync(path.join(DEMO, 'keep')), promptsSeen.at(-1));
+  const a2 = approvals;
+  r = await runWith([textCalls({ name: 'shell_run', arguments: { command: 'rm -rf ./keep' } }), say('looks fine to me!'), say('ok')], 'tidy up again');
+  check('unreadable verdict: asks the user (fail closed)', approvals === a2 + 1 && /no verdict/.test(promptsSeen.at(-1) ?? ''), promptsSeen.at(-1));
+  const a3 = approvals;
+  r = await runWith([textCalls({ name: 'shell_run', arguments: { command: 'echo safe' } }), say('done')], 'say safe');
+  check('commands that never needed approval are not reviewed', approvals === a3 && requests.at(-1).messages[0].content !== ar.REVIEW_SYSTEM);
+  updateSettings({ autoReview: 'off' });
+  unsub();
+}
+
 server.close();
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

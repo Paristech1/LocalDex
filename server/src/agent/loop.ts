@@ -4,6 +4,7 @@ import { executeTool } from '../tools/index.js';
 import type { CouncilRequest, GoalControl, ToolContext } from '../tools/types.js';
 import { inlineBudgetChars, spill } from '../spill.js';
 import { PLAN_MISSING_NUDGE } from './planMode.js';
+import { reviewCommand } from '../autoReview.js';
 import { bus } from './bus.js';
 import { getSettings } from '../config.js';
 import { ConsultNudger, consultEnabled } from './consultNudge.js';
@@ -281,13 +282,26 @@ export async function runLoop(p: LoopParams): Promise<LoopResult> {
       signal: p.signal,
       model: p.model,
       ...(p.planMode ? { planMode: true } : {}),
-      requestApproval: async (cmd, cwd) => {
+      requestApproval: async (cmd, cwd, kind) => {
         const key = `${cwd}\u0000${cmd.trim().replace(/\s+/g, ' ')}`;
         if (denied.has(key)) {
           bus.log('info', `[${agent}] refused a command the user already denied: ${cmd.slice(0, 120)}`);
           return false;
         }
-        const yes = await bus.requestApproval(sessionId, agent, cmd, cwd, p.signal);
+        // S4: auto-review (opt-in). Only a low-risk "allow" skips the prompt; otherwise the reason goes on the prompt.
+        let shown = cmd;
+        if (kind === 'shell') {
+          const v = await reviewCommand({ command: cmd, cwd, messages: p.messages, model: p.model, council: p.council, signal: p.signal });
+          if (v?.decision === 'allow') {
+            bus.log('info', `[auto-review] ${v.reviewer}: low risk, ran without asking: ${cmd.slice(0, 160)}`);
+            return true;
+          }
+          if (v) {
+            bus.log('info', `[auto-review] ${v.reviewer}: ${v.risk ?? 'no verdict'}${v.reason ? ` (${v.reason})` : ''}; asking the user`);
+            shown = `${cmd}\n\n[auto-review by ${v.reviewer}: ${v.risk ? `${v.risk} risk — ` : ''}${v.reason ?? 'needs your decision'}]`;
+          }
+        }
+        const yes = await bus.requestApproval(sessionId, agent, shown, cwd, p.signal);
         if (!yes) denied.add(key);
         return yes;
       },

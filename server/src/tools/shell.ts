@@ -34,7 +34,7 @@ export const shell_run: ToolDef = {
 
     if (ctx.planMode && !isReadOnlyCommand(command)) return fail(PLAN_SHELL_REFUSAL);
     if (shellNeedsApproval(command)) {
-      const approved = await ctx.requestApproval(command, cwd);
+      const approved = await ctx.requestApproval(command, cwd, 'shell');
       if (!approved) return fail(DECLINED_COMMAND);
     }
     if (args.background === true || args.background === 'true') {

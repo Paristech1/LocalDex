@@ -186,6 +186,10 @@ LocalDex can read your files and run commands, so it only accepts your own brows
 
 The sandbox is macOS Seatbelt (`sandbox-exec`) or Linux bubblewrap (`sudo apt install bubblewrap`). It covers `shell_run`, background jobs and `terminal_*`. With no sandbox on the machine, the sandboxed presets are unavailable, and a preset that needs one **fails closed** (nothing runs) rather than running unconfined. Extra writable folders for the Workspace preset go in `~/.localdex/config.json` as `"sandboxExtraWritable": ["~/somewhere"]` (not editable from the UI). `LOCALDEX_SANDBOX=none` forces "no sandbox" for debugging. Council members are separate: they use their vendor's own sandbox and the per-message access switch.
 
+### Auto-review (experimental)
+
+**Settings → Workspace → Auto-review risky commands** (off by default). Before LocalDex asks you about a risky shell command (`rm -rf`, force-push, `sudo`…), a reviewer rates it against a fixed rubric and answers in strict JSON. Only **low risk** (normal project work, or deleting exact files the agent generated) runs without asking. Medium or high risk, an unreadable answer, or a reviewer error shows the normal prompt with the reviewer's reason added. It never auto-approves medium or high risk, sandbox escalations, or MCP calls. The reviewer is the council's quick member (read-only, on your subscription) or, if you choose, the local model. A small local model is not a safe judge, so prefer the council. Every decision goes to the Log panel.
+
 ## Project instructions
 
 LocalDex loads instruction files into the system prompt, each under its own byte budget so one never crowds out the other:

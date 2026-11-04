@@ -156,6 +156,13 @@ function WorkspaceTab({ settings, patch }: TabProps) {
             <option value="never">Never ask</option>
           </select>
         </Field>
+        <Field label="Auto-review risky commands (experimental)" hint="Before you're asked about a risky shell command, a reviewer rates it. Only a 'low risk' verdict runs it without asking; anything else, or a reviewer error, shows the normal prompt with the reviewer's reason. Never auto-approves medium or high risk. A small local model is not a safe judge: prefer the council.">
+          <select className={inputCls} value={settings.autoReview ?? 'off'} onChange={(e) => patch({ autoReview: e.target.value as 'off' | 'council' | 'local' })}>
+            <option value="off">Off (always ask me)</option>
+            <option value="council" disabled={!settings.council.enabled}>Council quick member (read-only, your subscription){settings.council.enabled ? '' : ' — council is off'}</option>
+            <option value="local">Local model (not recommended)</option>
+          </select>
+        </Field>
         <div className="mt-3">
           <Toggle label="Files must be read before they are edited (and re-read if they changed meanwhile)" checked={settings.requireReadBeforeEdit !== false} onChange={(v) => patch({ requireReadBeforeEdit: v })} />
         </div>

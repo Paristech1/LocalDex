@@ -832,6 +832,11 @@ export interface Settings {
   approvedFolders: string[];
   capabilities: Record<ToolName, boolean>;
   shellApproval: ShellApprovalMode;
+  /**
+   * S4 (experimental): before a risky shell command's approval prompt, a reviewer rates it; only "low risk" runs
+   * without asking. 'council' = the council's quick member (read-only, your subscription); 'local' = the local model.
+   */
+  autoReview?: 'off' | 'council' | 'local';
   /** Sandbox + write-tool preset for the local agent's shell and file tools (S3). Default 'full'. */
   permissionPreset: PermissionPreset;
   /** Extra folders sandboxed shells may write (Workspace preset). Edit in ~/.localdex/config.json. */

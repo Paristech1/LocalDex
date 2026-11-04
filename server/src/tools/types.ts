@@ -18,8 +18,11 @@ export interface ToolContext {
   callId?: string;
   /** Plan mode: shell_run refuses anything that is not a read-only command. */
   planMode?: boolean;
-  /** Ask the user to approve a shell command. Resolves true/false. */
-  requestApproval(command: string, cwd: string): Promise<boolean>;
+  /**
+   * Ask the user to approve something. Resolves true/false. kind 'shell' = a risky shell command the agent wants to
+   * run (the only kind auto-review may approve); anything else always goes to the user.
+   */
+  requestApproval(command: string, cwd: string, kind?: 'shell' | 'other'): Promise<boolean>;
   /** Ask the user a free-form question. */
   askUser(question: string): Promise<string>;
   /** Delegate work to a named worker. Only available to the main agent. */
