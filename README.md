@@ -133,7 +133,7 @@ npm start            # http://localhost:7331
 
 Keyboard: `Enter` send, `Shift+Enter` newline, `Cmd/Ctrl+,` settings, `Esc` close.
 
-Slash commands in Solo: `/plan <task>` (plan first, read-only until approved). The council
+Slash commands in Solo: `/plan <task>` (plan first, read-only until approved; **not** the same as Council mode’s `/plan …`, which asks the cloud planner). The council
 commands (`/ask`, `/build`, `/review`, `/vote`, `/arena` …) are listed under
 [Model council](#model-council-cloud-models-on-your-subscriptions).
 

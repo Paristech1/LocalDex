@@ -90,8 +90,9 @@ export class SessionRunner {
     if (this.session.messages.length === 0 || this.session.title === 'New session') {
       this.session.title = content.trim().split('\n')[0].slice(0, 60) || 'New session';
     }
-    // /plan <task>: plan mode until the user approves. A plain message while a plan awaits approval is feedback on it.
-    const planTask = parsePlanCommand(content);
+    // Solo-only `/plan <task>`: read-only plan mode until the user approves. In Council mode `/plan …` is a council
+    // slash command (planner role, member session continue) — do not intercept it here.
+    const planTask = !this.councilMode ? parsePlanCommand(content) : null;
     if (planTask !== null) {
       if (!planTask) {
         bus.emit({ type: 'error', sessionId: this.session.id, message: 'Usage: /plan <what to plan>' });
@@ -106,7 +107,7 @@ export class SessionRunner {
       await this.run();
       return;
     }
-    if (this.session.planMode?.status === 'review') {
+    if (!this.councilMode && this.session.planMode?.status === 'review') {
       await this.revisePlan(content);
       return;
     }

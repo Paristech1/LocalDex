@@ -2,7 +2,7 @@
 
 > **Who this is for:** a coding agent working through this plan for Paris.
 > **What it covers:** fixes and features for LocalDex. Some come from an audit of the LocalDex code. Others come from a review of DeepSeek Harness (`deepseek-ai/deepseek-harness`, MIT).
-> **Update:** H1 (branch merge) and F5 (Playwright hardening) are already on `main`. Skip H1 and branch from `main`; the rest of the plan stands. Pushing to `main` was a one-off for the merge, so keep using branches and PRs from here.
+> **Update:** H1 (branch merge) and F5 (Playwright hardening) are already on `main`. **2026-11-04 (cloud agent):** tasks through **U6, C1–C4, S1–S2, F1–F4, A1–A2, A4–A5, U2** landed on integration branch `cursor/dev-roadmap-5d28` and were merged to `main` at Paris's request. **Next agent:** start from `main`; pick up at **S3** (or **U1 / E1 / E4** by priority). Branch naming on that run used `cursor/<slug>-5d28` instead of `feat/<id>-slug` off `dev/roadmap` — either convention is fine if PRs stay off `main` until review.
 > **Written:** 2026-11-04. Audited branch: `fix/local-model-tool-calls` @ `b0feac1`. DeepSeek Harness reviewed @ `fcc0ad46` (v0.2.2-rc.1).
 
 ---
@@ -35,7 +35,7 @@ localdex/
 │   ├── council/                 # router.ts, orchestrator.ts, worktrees.ts, members/*
 │   ├── mcp/client.ts            # stdio MCP client
 │   └── skills/                  # skill store + import
-├── server/test/{council,local}/ # integration suites (290 + 56 tests, all passing at audit time)
+├── server/test/{council,local}/ # integration suites (~322 + ~196 checks at last gate run)
 └── web/src/components/          # Chat, Council, Settings, RightPanel, Sidebar, TopBar, …
 ```
 
@@ -91,7 +91,9 @@ Each task lists **Why** (the evidence), **Where** (files), **Borrow** (the DeepS
 | 6 | E5 | Scheduled goal runs | P3 | M |
 | 6 | E6 | Voice input (local speech-to-text) | P3 | M |
 
-Suggested order: **H1 → H2 → F1–F5 → C1 → S1 → S2 → C2–C4 → U6 → A4 → A5 → the rest by priority.**
+Suggested order (remaining): **S3 → U1 → E1 → E4 → S4 → A6 → U4 → U5 → …** by priority column. Completed on `main`: H2–H3, F1–F4, C1–C4, S1–S2, U6, A1–A2, A4–A5, U2.
+
+**Solo `/plan` vs Council `/plan`:** In **Solo** mode, `/plan <task>` starts enforced read-only **plan mode** (A4) until Approve & run. In **Council** mode, `/plan …` is unchanged: a single-member **planner** turn with session continue — do not route Council `/plan` through `session.planMode`.
 
 ---
 
@@ -360,6 +362,58 @@ When a sandboxed command fails with a write denial, show "Command was blocked by
 ---
 
 ## 10. When you finish a task
+
+1. The gates pass, new tests are added, and the README is updated (with a Model experience note for new tools).
+2. Open a PR into `main` (or `dev/roadmap` if Paris revives it) that has: a summary, evidence (test output, screenshots for UI work), any security impact, and **"Borrowed from: packages/<path>"** if a DeepSeek Harness pattern was used.
+3. Tick the task off in the section 1 table in this file, in the same PR.
+4. Stop and ask Paris before anything irreversible or anything that changes a security default.
+
+---
+
+## 11. Handoff for the next agent (2026-11-04)
+
+### Done on `main` (this integration)
+
+| Area | IDs | Notes |
+|---|---|---|
+| Fixes | F1–F4 | Risk classifier + Not risky; council-led goals; reviewer grounding; diff budget |
+| Context | C1–C4, U6 | Spill, prune-before-summarize, stable system prefix + clock line, project instructions, LM Studio retry |
+| Safety / undo | S1–S2 | Read-before-edit; turn checkpoints + Undo |
+| Agent | A1–A2, A4–A5 | `web_fetch` / `web_search` (off by default); background jobs; solo plan mode; goal tools + fresh-context rounds |
+| UX | U2 | Stats tab (TTFT, tok/s, model vs tool time) |
+
+**Gates (last run):** `npm run typecheck` · `npm run test:local -w server` → **196 passed** · `npm run test:council -w server` → **322 passed**.
+
+**DeepSeek Harness patterns reimplemented (add to PR notes if you touch them):** spill-policy, fs-observation-policy, workspace-changes, compaction-tool-result-pruner, time-context, agent-instructions, llm-retry, plan/plan-mode, goal/tool-goal, experimental/tool-ralph (fresh rounds), jobs/*, web/tool-web + web-fetch-http.
+
+**Security called out in code/docs:** C1 read-only spill path for `read_file` / `grep` under `~/.localdex/spill/`; `web_fetch` untrusted `<web_result>` wrapper; plan mode read-only shell classifier.
+
+**Not measured in CI:** C3 TTFT / KV-cache effect (no LM Studio in the VM).
+
+### Still open (section 1 table)
+
+Priority **P1** next: **S3** (shell sandbox + presets), **U1** (session search/rename/export), **E1** (MCP gallery UI), **E4** (model doctor).
+
+Then P2: S4, A3, A6, A7, U3–U5, E2–E3. P3: S5, A8, E5–E6.
+
+### Pitfalls from this integration
+
+1. **`/plan`:** Solo → A4 plan mode; Council → `parseCommand` planner route. Regression test: council suite section 25 (member session continue).
+2. **Council suite ~4 min** — run in tmux or with patience; local suite ~6 s.
+3. **`enabledTools` filters:** `planMode`, `goal`, `jobs`, `web_search` (needs `webSearchUrl`).
+4. **Commits:** one commit per task on `cursor/dev-roadmap-5d28`; future work can use `feat/<id>-<slug>` off `main`.
+
+### Start here
+
+```bash
+git checkout main && git pull
+npm ci   # or npm ci --ignore-scripts on Linux without build tools
+npm run typecheck && npm run test:local -w server && npm run test:council -w server
+```
+
+Read `README.md` for user-visible behavior added in this batch. Tick section 1 and update README when you finish the next task.
+
+---
 
 1. The gates pass, new tests are added, and the README is updated (with a Model experience note for new tools).
 2. Open a PR into `dev/roadmap` that has: a summary, evidence (test output, screenshots for UI work), any security impact, and **"Borrowed from: packages/<path>"** if a DeepSeek Harness pattern was used.
