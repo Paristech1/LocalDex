@@ -7,6 +7,7 @@ import { TERMINAL_TOOLS, ptyAvailable, terminal_close, terminal_open, terminal_r
 import { ask_user, delegate_to_worker, update_plan } from './agentTools.js';
 import { load_skill } from './skillTool.js';
 import { ask_member, council } from './councilTools.js';
+import { block_goal, complete_goal, get_goal, update_goal } from './goalTools.js';
 import { enabledSkills } from '../skills/store.js';
 import { PermissionError } from './permissions.js';
 import { isMcpTool, mcpToolSchemas, runMcpTool } from '../mcp/client.js';
@@ -32,15 +33,27 @@ export const registry: ToolRegistry = {
   load_skill,
   ask_member,
   council,
+  get_goal,
+  update_goal,
+  complete_goal,
+  block_goal,
 };
 
 const COUNCIL_TOOLS = new Set<ToolName>(['ask_member', 'council']);
+/** Only offered while a local-led goal runs (ToolContext.goal is set), so idle sessions pay nothing for them. */
+export const GOAL_TOOLS = new Set<ToolName>(['get_goal', 'update_goal', 'complete_goal', 'block_goal']);
+
+export interface ToolSetOptions {
+  planMode?: boolean;
+  /** A local-led goal is active: the goal tools are shown. */
+  goal?: boolean;
+}
 
 /**
  * Tool schemas enabled for a given agent kind, honouring the user's capability toggles.
  * In plan mode only the read-only tools (and update_plan / ask_user / load_skill) are offered; MCP tools are hidden too.
  */
-export function enabledTools(kind: 'main' | 'worker', opts: { planMode?: boolean } = {}): ToolSchema[] {
+export function enabledTools(kind: 'main' | 'worker', opts: ToolSetOptions = {}): ToolSchema[] {
   const caps = getSettings().capabilities;
   const councilOn = getSettings().council.enabled;
   const builtin = (Object.keys(registry) as ToolName[])
@@ -49,6 +62,7 @@ export function enabledTools(kind: 'main' | 'worker', opts: { planMode?: boolean
     // No point showing a small model a tool it can't use.
     .filter((name) => name !== 'load_skill' || enabledSkills().length > 0)
     .filter((name) => councilOn || !COUNCIL_TOOLS.has(name))
+    .filter((name) => (opts.goal && kind === 'main') || !GOAL_TOOLS.has(name))
     // Without node-pty (optional on Linux) the terminal tools can't work, so the model isn't shown them.
     .filter((name) => !TERMINAL_TOOLS.has(name) || ptyAvailable().ok)
     .filter((name) => !opts.planMode || isPlanTool(name))

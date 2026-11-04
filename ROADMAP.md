@@ -74,7 +74,7 @@ Each task lists **Why** (the evidence), **Where** (files), **Borrow** (the DeepS
 | 4 | A2 | Background jobs with completion notices | P1 | M |
 | 4 | A3 | Read-only `lsp` tool | P2 | M |
 | 4 | A4 | Plan mode with a reviewed exit | P1 | M | ✅ done |
-| 4 | A5 | Goal upgrades: goal tools, auto-block, fresh-context rounds | P1 | M |
+| 4 | A5 | Goal upgrades: goal tools, auto-block, fresh-context rounds | P1 | M | ✅ done |
 | 4 | A6 | `@file` mentions in the composer | P2 | S |
 | 4 | A7 | Image attachments + `read_image` | P2 | M |
 | 4 | A8 | Selectable edit format (`apply_patch` / `str_replace_editor`) | P3 | M |

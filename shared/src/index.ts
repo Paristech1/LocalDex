@@ -77,7 +77,11 @@ export type ToolName =
   | 'update_plan'
   | 'load_skill'
   | 'ask_member'
-  | 'council';
+  | 'council'
+  | 'get_goal'
+  | 'update_goal'
+  | 'complete_goal'
+  | 'block_goal';
 
 export const ALL_TOOL_NAMES: ToolName[] = [
   'read_file',
@@ -97,6 +101,10 @@ export const ALL_TOOL_NAMES: ToolName[] = [
   'load_skill',
   'ask_member',
   'council',
+  'get_goal',
+  'update_goal',
+  'complete_goal',
+  'block_goal',
 ];
 
 export interface ToolSchema {
@@ -132,6 +140,18 @@ export interface GoalState {
   active: boolean;
   remaining: string[];
   lastAssessment?: string;
+  /** Bumped by every update_goal / complete_goal / block_goal; a call with an older revision is refused as stale. */
+  revision?: number;
+  /** Consecutive rounds the model ended with block_goal; the goal stops at 3. */
+  blockedRounds?: number;
+  /** The latest block_goal reason (also kept when the goal stopped because of it). */
+  blocker?: string;
+  /** Each round starts a new context: brief + last report + files on disk + plan, instead of the growing transcript. */
+  freshContext?: boolean;
+  /** The last round's closing report (capped), seeded into the next fresh round. */
+  lastReport?: string;
+  /** How the goal ended: the model's complete_goal, the finish checkpoint, 3 blocked rounds, the cap, or the user. */
+  endedBy?: 'model' | 'checkpoint' | 'blocked' | 'cap' | 'user';
 }
 
 export type AgentStatus = 'idle' | 'thinking' | 'tool' | 'waiting' | 'error' | 'queued' | 'running';
@@ -765,6 +785,10 @@ export const DEFAULT_CAPABILITIES: Record<ToolName, boolean> = {
   load_skill: true,
   ask_member: true,
   council: true,
+  get_goal: true,
+  update_goal: true,
+  complete_goal: true,
+  block_goal: true,
 };
 
 /**
@@ -893,7 +917,7 @@ export type ClientEvent =
   | { type: 'set_model'; sessionId: string; model: string }
   | { type: 'approval_response'; id: string; approved: boolean }
   | { type: 'ask_user_response'; id: string; answer: string }
-  | { type: 'set_goal'; sessionId: string; goal: { mode: GoalMode; brief: string; doneCriteria: string; maxIterations: number; lead?: GoalLead } }
+  | { type: 'set_goal'; sessionId: string; goal: { mode: GoalMode; brief: string; doneCriteria: string; maxIterations: number; lead?: GoalLead; freshContext?: boolean } }
   | { type: 'clear_goal'; sessionId: string }
   | { type: 'undo_turn'; sessionId: string; turnId: string }
   | { type: 'get_turn_diff'; sessionId: string; turnId: string }

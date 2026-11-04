@@ -28,6 +28,10 @@ const ICONS: Record<string, string> = {
   load_skill: '📚',
   ask_member: '☁',
   council: '⚖',
+  get_goal: '🎯',
+  update_goal: '🎯',
+  complete_goal: '🏁',
+  block_goal: '⛔',
 };
 
 function summarizeArgs(name: string, args: unknown): string {

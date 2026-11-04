@@ -3,7 +3,7 @@ import type { GoalLead, GoalMode, PlanStep, WorkerState } from '@localdex/shared
 import { send, useStore } from '../store';
 import { AssistantBubble, MessageList } from './Message';
 import { ToolCard } from './ToolCard';
-import { Button, Field, StatusDot, cx, fmtTokens, inputCls, statusLabel, timeAgo } from './ui';
+import { Button, Field, StatusDot, Toggle, cx, fmtTokens, inputCls, statusLabel, timeAgo } from './ui';
 import { CouncilPanel } from './Council';
 import type { SettingsTab } from './Settings';
 
@@ -186,6 +186,8 @@ function GoalPanel() {
   const [brief, setBrief] = useState('');
   const [criteria, setCriteria] = useState('');
   const [maxIter, setMaxIter] = useState(10);
+  // Fresh context each round: recommended for 32k-context models, so each round starts from the brief and the files, not a long transcript.
+  const [fresh, setFresh] = useState(true);
   // Who runs the iterations: follows the session mode until the user picks; the council needs to be on.
   const sessionLead: GoalLead = session?.mode === 'council' && councilOn ? 'council' : 'local';
   const [leadPick, setLeadPick] = useState<GoalLead | null>(null);
@@ -208,8 +210,16 @@ function GoalPanel() {
           )}
           <div className="text-xs text-ink-400 mt-2">
             Iteration {goal.iteration}/{goal.maxIterations}
+            {goal.freshContext && <span> · fresh context each round</span>}
+            {(goal.blockedRounds ?? 0) > 0 && <span className="text-warn"> · blocked {goal.blockedRounds}/3 rounds</span>}
           </div>
         </div>
+        {goal.blocker && (
+          <div className="text-xs rounded-md border border-warn/40 bg-warn/5 px-3 py-2 text-warn">
+            <div className="mb-0.5">Blocker reported by the model</div>
+            <div className="text-ink-200">{goal.blocker}</div>
+          </div>
+        )}
         {goal.lastAssessment && (
           <div className="text-xs text-ink-300">
             <div className="text-ink-400 mb-0.5">Last checkpoint</div>
@@ -250,13 +260,14 @@ function GoalPanel() {
       onSubmit={(e) => {
         e.preventDefault();
         if (!brief.trim()) return;
-        send({ type: 'set_goal', sessionId: session.id, goal: { mode, brief: brief.trim(), doneCriteria: criteria.trim(), maxIterations: maxIter, lead } });
+        send({ type: 'set_goal', sessionId: session.id, goal: { mode, brief: brief.trim(), doneCriteria: criteria.trim(), maxIterations: maxIter, lead, freshContext: lead === 'local' && fresh } });
       }}
     >
       {goal && !goal.active && (
-        <div className="text-xs text-ink-400 rounded-md border border-ink-700 px-3 py-2">
-          Previous {goal.mode}: <span className="text-ink-200">{goal.brief}</span> — finished after {goal.iteration} iteration(s).
-          {goal.lastAssessment ? ` ${goal.lastAssessment}` : ''}
+        <div className={cx('text-xs rounded-md border px-3 py-2', goal.endedBy === 'blocked' ? 'border-warn/40 bg-warn/5 text-warn' : 'border-ink-700 text-ink-400')}>
+          Previous {goal.mode}: <span className="text-ink-200">{goal.brief}</span> —{' '}
+          {goal.endedBy === 'blocked' ? `stopped: blocked 3 rounds in a row after ${goal.iteration} iteration(s).` : goal.endedBy === 'model' ? `marked complete by the model after ${goal.iteration} iteration(s).` : `finished after ${goal.iteration} iteration(s).`}
+          {goal.blocker && goal.endedBy === 'blocked' ? <div className="text-ink-200 mt-1">{goal.blocker}</div> : goal.lastAssessment ? ` ${goal.lastAssessment}` : ''}
         </div>
       )}
       <div className="flex rounded-md border border-ink-600 overflow-hidden text-xs">
@@ -297,6 +308,9 @@ function GoalPanel() {
           ))}
         </div>
       </Field>
+      {lead === 'local' && (
+        <Toggle checked={fresh} onChange={setFresh} label="Fresh context each round (recommended for 32k models): every round starts from the brief, the last report (≤ 2k tokens), the files on disk and the plan, not the growing transcript" />
+      )}
       <Button type="submit" variant="primary" disabled={!brief.trim()}>
         {mode === 'goal' ? 'Start goal' : 'Start loop'}
       </Button>

@@ -31,6 +31,16 @@ Browser (React UI)  <-- WebSocket -->  LocalDex server (Node)  -->  LM Studio :1
   Loop mode keeps working within a brief indefinitely. In Council mode the goal is **led by the
   council** by default: each iteration is a council turn and the checkpoint is a read-only council
   reviewer; the Goal panel's **Led by** picker switches between the local model and the council.
+  While a local-led goal runs the model also gets four small goal tools: `get_goal` (brief, remaining
+  items, a revision id), `update_goal` (trim the remaining list), `complete_goal` (close the goal once
+  the done criteria are verified; no checkpoint call needed) and `block_goal` (say what stops it).
+  Updates with a stale revision id are refused. Three `block_goal` rounds in a row stop the goal
+  with the blocker shown in the chat and the Goal panel. **Fresh context each round** (on by
+  default for local-led goals, recommended for 32k models) starts every round from a new context:
+  the brief, the previous round's report (2k tokens at most), the *Files on disk right now* block
+  LocalDex checks itself, and the plan. The old transcript is archived, so quality does not slide as
+  the context fills up. *Model experience:* the goal tools are only in the tool list while a goal
+  runs (about 250 tokens); a fresh round's seed is typically well under 4k tokens.
 - **Plan mode** – `/plan <task>` makes the agent explore and design first. It is enforced, not just
   suggested: the write, terminal, worker and council tools are not offered (and refused if the
   model calls them anyway), `shell_run` only runs read-only commands (`ls`, `cat`, `rg`, `git
@@ -100,7 +110,7 @@ npm start            # http://localhost:7331
 | **Chat** | Streaming replies, reasoning (collapsible), tool cards, approval and question prompts. Send while running = correction. |
 | **Plan** | Checklist maintained by the model with `update_plan`. |
 | **Workers** | Status, last task, live stream and full transcript per worker. Reset or delete a worker's memory. |
-| **Goal** | Start a Goal (until done) or a Loop (keep working), led by the local model or the council. Shows iteration, last checkpoint, remaining items. |
+| **Goal** | Start a Goal (until done) or a Loop (keep working), led by the local model or the council, with or without a fresh context each round. Shows iteration, last checkpoint, remaining items and any blocker the model reported. |
 | **Context** | Token usage vs. context window, compactions, "Compact & Resume now", latest summary. |
 | **Log** | Server events: tool-mode detection, recovered tool calls, goal checkpoints, errors. |
 

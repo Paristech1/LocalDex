@@ -6,14 +6,19 @@ import { bus } from './bus.js';
 import { compactMain, maybeCompactMain, verifiedFileFacts } from './compact.js';
 import { assessGoal, goalCouncilAssessTask, parseAssessment } from './goal.js';
 import { beginTurn, endTurn } from '../checkpoints.js';
-import { pullInstructions } from './instructions.js';
+import { forgetInstructions, pullInstructions } from './instructions.js';
 import { parsePlanCommand, planApprovedPrompt, planModePrompt, planRevisePrompt } from './planMode.js';
 import { runLoop } from './loop.js';
-import { CLOCK_EVERY_MS, CLOCK_PREFIX, clockLine, goalContinuePrompt, mainSystemPrompt } from './prompts.js';
+import { CLOCK_EVERY_MS, CLOCK_PREFIX, FRESH_REPORT_CHARS, GOAL_TOOLS_HINT, clockLine, goalContinuePrompt, goalFreshRoundPrompt, mainSystemPrompt } from './prompts.js';
+import { resetReads } from '../tools/readTracker.js';
 import { WorkerManager } from './workers.js';
 import { redactIfEnabled, runCouncil, runSummary, runVia, type CouncilContext } from '../council/orchestrator.js';
 import { classify, classifyWithLocal, domainBuilder, markNotRisky, parseCommand, settingsForAccess, withRisk, type Route } from '../council/router.js';
-import type { CouncilRequest } from '../tools/types.js';
+import type { CouncilRequest, GoalControl } from '../tools/types.js';
+import { fail, ok } from '../tools/types.js';
+
+/** block_goal this many rounds in a row stops the goal (DeepSeek Harness `goal/tool-goal`). */
+export const MAX_BLOCKED_ROUNDS = 3;
 
 /** Orchestrates one session: main loop, corrections, workers, goal/loop autonomy, compaction. */
 export class SessionRunner {
@@ -79,6 +84,78 @@ export class SessionRunner {
 
   get planning(): boolean {
     return this.session.planMode?.status === 'planning';
+  }
+
+  /** The goal tools are offered while a local-led goal runs (never in plan mode). */
+  private get goalToolsOn(): boolean {
+    const g = this.session.goal;
+    return !!g?.active && (g.lead ?? 'local') === 'local' && !this.planning;
+  }
+
+  /** The current round's outcome as reported by the goal tools; reset at every round start. */
+  private round: { completed: string | null; blocked: string | null } = { completed: null, blocked: null };
+
+  private goalControl(): GoalControl {
+    const s = this.session;
+    const stale = (rev: number) => fail(`Stale revision ${rev}: the goal is at revision ${s.goal?.revision ?? 1}. Call get_goal and retry with the current id.`);
+    const live = () => (s.goal?.active ? s.goal : null);
+    return {
+      view: () => {
+        const g = live();
+        if (!g) return 'There is no active goal.';
+        const lines = [
+          `Revision: ${g.revision ?? 1}`,
+          g.mode === 'goal' ? `Goal: ${g.brief}` : `Brief (loop): ${g.brief}`,
+          g.doneCriteria ? `Done when: ${g.doneCriteria}` : '',
+          `Iteration: ${g.iteration + 1}/${g.maxIterations}`,
+          g.remaining.length ? `Remaining:\n${g.remaining.map((r) => `- ${r}`).join('\n')}` : 'Remaining: (none recorded)',
+          g.blocker ? `Last blocker (${g.blockedRounds ?? 0}/${MAX_BLOCKED_ROUNDS} rounds): ${g.blocker}` : '',
+        ];
+        return lines.filter(Boolean).join('\n');
+      },
+      update: (rev, patch) => {
+        const g = live();
+        if (!g) return fail('There is no active goal.');
+        if (rev !== (g.revision ?? 1)) return stale(rev);
+        if (patch.remaining) g.remaining = patch.remaining;
+        if (patch.note) g.lastAssessment = patch.note.slice(0, 500);
+        g.revision = (g.revision ?? 1) + 1;
+        this.persist();
+        this.sync();
+        return ok(`Goal updated (revision ${g.revision}). Remaining: ${g.remaining.length ? g.remaining.join('; ') : 'nothing listed'}.`);
+      },
+      complete: (rev, summary) => {
+        const g = live();
+        if (!g) return fail('There is no active goal.');
+        if (rev !== (g.revision ?? 1)) return stale(rev);
+        if (g.mode === 'loop') return fail('A loop has no finish: it keeps going until the user clears it. Call block_goal if you cannot continue, otherwise pick the next valuable thing.');
+        g.revision = (g.revision ?? 1) + 1;
+        this.round.completed = summary.slice(0, 2000);
+        return ok('Noted: the goal will be closed when this turn ends. Finish with a short summary for the user.');
+      },
+      block: (rev, reason) => {
+        const g = live();
+        if (!g) return fail('There is no active goal.');
+        if (rev !== (g.revision ?? 1)) return stale(rev);
+        g.revision = (g.revision ?? 1) + 1;
+        this.round.blocked = reason.slice(0, 2000);
+        const n = (g.blockedRounds ?? 0) + 1;
+        return ok(n >= MAX_BLOCKED_ROUNDS
+          ? 'Noted: that is the third blocked round in a row, so the goal stops when this turn ends. Tell the user plainly what you need.'
+          : `Noted (blocked round ${n}/${MAX_BLOCKED_ROUNDS}). End this turn with what you need from the user; the next round can try another approach.`);
+      },
+    };
+  }
+
+  /** Fresh-context round: archive the transcript and start over from the brief, the last report and the files on disk. */
+  private async startFreshRound(prompt: string): Promise<void> {
+    const s = this.session;
+    s.archive.push(s.messages.slice());
+    resetReads(s.id, 'main');
+    forgetInstructions(s.id);
+    s.usage.lastPromptTokens = 0;
+    s.messages.splice(0, s.messages.length, { role: 'system', content: mainSystemPrompt({ goal: this.goalToolsOn }) }, { role: 'user', content: prompt, ts: Date.now() });
+    bus.log('info', `[goal] fresh context for round ${(s.goal?.iteration ?? 0) + 1}: ${Math.ceil(prompt.length / 4)} tokens seeded (brief, last report, files on disk, plan)`);
   }
 
   /** Approve & run: plan mode ends, all tools come back, the plan becomes the brief. */
@@ -353,7 +430,7 @@ export class SessionRunner {
     this.abort.abort();
   }
 
-  setGoal(goal: { mode: GoalMode; brief: string; doneCriteria: string; maxIterations: number; lead?: GoalLead }): void {
+  setGoal(goal: { mode: GoalMode; brief: string; doneCriteria: string; maxIterations: number; lead?: GoalLead; freshContext?: boolean }): void {
     // A council-led goal needs the council on; otherwise the local loop leads, whatever the session mode says.
     const wanted: GoalLead = goal.lead === 'council' || goal.lead === 'local' ? goal.lead : this.session.mode === 'council' ? 'council' : 'local';
     const lead: GoalLead = wanted === 'council' && getSettings().council.enabled ? 'council' : 'local';
@@ -367,13 +444,19 @@ export class SessionRunner {
       iteration: 0,
       active: true,
       remaining: [],
+      revision: 1,
+      blockedRounds: 0,
+      freshContext: goal.freshContext === true,
     };
     this.persist();
     this.sync();
   }
 
   clearGoal(): void {
-    if (this.session.goal) this.session.goal.active = false;
+    if (this.session.goal) {
+      this.session.goal.active = false;
+      this.session.goal.endedBy = 'user';
+    }
     this.persist();
     this.sync();
   }
@@ -393,7 +476,7 @@ export class SessionRunner {
     const g = this.session.goal;
     this.session.messages.push({
       role: 'user',
-      content: g.mode === 'goal' ? `[Goal set] ${g.brief}${g.doneCriteria ? `\nDone when: ${g.doneCriteria}` : ''}` : `[Loop started] ${g.brief}`,
+      content: `${g.mode === 'goal' ? `[Goal set] ${g.brief}${g.doneCriteria ? `\nDone when: ${g.doneCriteria}` : ''}` : `[Loop started] ${g.brief}`}${(g.lead ?? 'local') === 'local' ? `\n${GOAL_TOOLS_HINT}` : ''}`,
       ts: Date.now(),
     });
     if (this.session.title === 'New session') this.session.title = g.brief.slice(0, 60);
@@ -461,15 +544,17 @@ export class SessionRunner {
       // Main loop, possibly repeated by the goal controller.
       // eslint-disable-next-line no-constant-condition
       while (true) {
+        this.round = { completed: null, blocked: null };
         const result = await runLoop({
           sessionId: sid,
           agent: 'main',
           model,
           messages: s.messages,
-          tools: enabledTools('main', { planMode: this.planning }),
+          tools: enabledTools('main', { planMode: this.planning, goal: this.goalToolsOn }),
           signal: ac.signal,
           maxSteps: getSettings().maxSteps,
           planMode: this.planning,
+          goal: this.goalToolsOn ? this.goalControl() : undefined,
           delegate: (name, task) => this.workers.delegate(name, task, ac.signal),
           council: getSettings().council.enabled ? this.councilFor(ac.signal) : undefined,
           updatePlan: (steps) => {
@@ -526,8 +611,38 @@ export class SessionRunner {
           break;
         }
         goal.iteration += 1;
+        goal.lastReport = result.text.trim().slice(0, FRESH_REPORT_CHARS) || undefined;
+        // The model closed the goal itself (complete_goal): no checkpoint call needed.
+        if (this.round.completed) {
+          goal.active = false;
+          goal.endedBy = 'model';
+          goal.remaining = [];
+          goal.lastAssessment = `Marked complete by the model: ${this.round.completed}`.slice(0, 500);
+          bus.log('info', `Goal complete (complete_goal): ${this.round.completed.slice(0, 200)}`);
+          break;
+        }
+        // The model reported a blocker (block_goal): no checkpoint call; three in a row stop the goal visibly.
+        if (this.round.blocked) {
+          goal.blockedRounds = (goal.blockedRounds ?? 0) + 1;
+          goal.blocker = this.round.blocked;
+          goal.lastAssessment = `Blocked (${goal.blockedRounds}/${MAX_BLOCKED_ROUNDS}): ${goal.blocker}`.slice(0, 500);
+          if (goal.blockedRounds >= MAX_BLOCKED_ROUNDS) {
+            goal.active = false;
+            goal.endedBy = 'blocked';
+            bus.log('warn', `Goal blocked after ${MAX_BLOCKED_ROUNDS} rounds in a row: ${goal.blocker.slice(0, 200)}`);
+            s.messages.push({
+              role: 'user',
+              content: `[Goal blocked] The model reported a blocker ${MAX_BLOCKED_ROUNDS} rounds in a row, so the goal stopped.\nBlocker: ${goal.blocker}\nResolve it and start the goal again, or send a message with how to get past it.${this.councilHint()}`,
+              ts: Date.now(),
+            });
+            break;
+          }
+        } else {
+          goal.blockedRounds = 0;
+        }
         if (goal.iteration >= goal.maxIterations) {
           goal.active = false;
+          goal.endedBy = 'cap';
           bus.log('info', `Goal stopped: reached ${goal.maxIterations} iterations.`);
           s.messages.push({
             role: 'user',
@@ -536,19 +651,30 @@ export class SessionRunner {
           });
           break;
         }
-        const a = await assessGoal(s, ac.signal);
-        if (ac.signal.aborted) break;
-        goal.remaining = a.remaining;
-        goal.lastAssessment = a.note;
-        this.persist();
-        this.sync();
-        if (a.done) {
-          goal.active = false;
-          bus.log('info', `Goal complete: ${a.note}`);
-          break;
+        const blocker = this.round.blocked ? { reason: this.round.blocked, round: goal.blockedRounds ?? 0, max: MAX_BLOCKED_ROUNDS } : undefined;
+        if (!blocker) {
+          const a = await assessGoal(s, ac.signal);
+          if (ac.signal.aborted) break;
+          goal.remaining = a.remaining;
+          goal.lastAssessment = a.note;
+          this.persist();
+          this.sync();
+          if (a.done) {
+            goal.active = false;
+            goal.endedBy = 'checkpoint';
+            bus.log('info', `Goal complete: ${a.note}`);
+            break;
+          }
+          bus.log('info', `Goal iteration ${goal.iteration}: ${a.note || 'continuing'}`);
+        } else {
+          bus.log('info', `Goal iteration ${goal.iteration}: blocked (${goal.blockedRounds}/${MAX_BLOCKED_ROUNDS}), trying another round`);
         }
-        bus.log('info', `Goal iteration ${goal.iteration}: ${a.note || 'continuing'}`);
-        s.messages.push({ role: 'user', content: goalContinuePrompt(goal.brief, a.remaining, goal.mode), ts: Date.now() });
+        if (goal.freshContext) {
+          const facts = await verifiedFileFacts(s.messages).catch(() => '');
+          await this.startFreshRound(goalFreshRoundPrompt({ brief: goal.brief, doneCriteria: goal.doneCriteria, mode: goal.mode, iteration: goal.iteration, maxIterations: goal.maxIterations, remaining: goal.remaining, lastReport: result.text, fileFacts: facts, plan: s.plan, blocker }));
+        } else {
+          s.messages.push({ role: 'user', content: goalContinuePrompt(goal.brief, goal.remaining, goal.mode, blocker), ts: Date.now() });
+        }
         this.persist();
         this.sync();
       }
@@ -610,7 +736,7 @@ export class SessionRunner {
    * installed, MCP servers switched), because any byte change at the top of the prompt resets LM Studio's KV cache.
    */
   private ensureSystemPrompt(): void {
-    const prompt = mainSystemPrompt({ planMode: this.planning });
+    const prompt = mainSystemPrompt({ planMode: this.planning, goal: this.goalToolsOn });
     const first = this.session.messages[0];
     if (first?.role === 'system') {
       if (first.content !== prompt) {

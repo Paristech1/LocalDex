@@ -1,7 +1,7 @@
 import type { AgentId, ChatMessage, PlanStep, ToolCall, ToolSchema } from '@localdex/shared';
 import { isCorruptCall, streamChat } from '../lmstudio.js';
 import { executeTool } from '../tools/index.js';
-import type { CouncilRequest, ToolContext } from '../tools/types.js';
+import type { CouncilRequest, GoalControl, ToolContext } from '../tools/types.js';
 import { inlineBudgetChars, spill } from '../spill.js';
 import { PLAN_MISSING_NUDGE } from './planMode.js';
 import { bus } from './bus.js';
@@ -24,6 +24,8 @@ export interface LoopParams {
   delegate?: (name: string, task: string) => Promise<string>;
   updatePlan?: (steps: PlanStep[]) => void;
   council?: (req: CouncilRequest) => Promise<string>;
+  /** The active goal's controls for get_goal / update_goal / complete_goal / block_goal. */
+  goal?: GoalControl;
   /** Called before each model call; returns user messages to inject (mid-run corrections). */
   pullCorrections?: () => string[];
   /** Plan mode: read-only shell, no "plan steps still open" gate, one nudge if the run ends without update_plan. */
@@ -281,6 +283,7 @@ export async function runLoop(p: LoopParams): Promise<LoopResult> {
           }
         : undefined,
       council: p.council,
+      goal: p.goal,
     };
 
     const outcomes = await executeCalls(result.toolCalls, ctx);

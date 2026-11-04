@@ -1,7 +1,7 @@
 import os from 'node:os';
 import { projectInstructions } from './instructions.js';
 import { getSettings } from '../config.js';
-import { enabledTools } from '../tools/index.js';
+import { enabledTools, type ToolSetOptions } from '../tools/index.js';
 import { approvedFolders } from '../tools/permissions.js';
 import { mcpPromptNotes } from '../mcp/client.js';
 import { skillsPromptNotes } from '../skills/store.js';
@@ -27,8 +27,8 @@ export function clockLine(now = new Date()): string {
 }
 export const CLOCK_PREFIX = '[context] Date and time: ';
 
-function toolList(kind: 'main' | 'worker', planMode = false): string {
-  const names = enabledTools(kind, { planMode }).map((t) => t.function.name);
+function toolList(kind: 'main' | 'worker', opts: ToolSetOptions = {}): string {
+  const names = enabledTools(kind, opts).map((t) => t.function.name);
   return `Tools available to you (use exactly these names, no others): ${names.join(', ')}.`;
 }
 
@@ -42,12 +42,12 @@ const SHARED_RULES = `Working rules:
 - When done, reply with a concise summary of what changed and anything the user must do next.
 - Paths outside the approved folders are blocked; do not try to work around that.`;
 
-export function mainSystemPrompt(opts: { planMode?: boolean } = {}): string {
+export function mainSystemPrompt(opts: ToolSetOptions = {}): string {
   const custom = getSettings().systemPrompt.trim();
   return [
     `You are LocalDex, a local coding agent running on the user's machine with access to their files and terminal through tools.`,
     environment(),
-    toolList('main', opts.planMode === true),
+    toolList('main', opts),
     SHARED_RULES,
     mcpPromptNotes('main'),
     skillsPromptNotes(),
@@ -94,11 +94,52 @@ export function workerSystemPrompt(name: string): string {
     .join('\n\n');
 }
 
-export function goalContinuePrompt(brief: string, remaining: string[], mode: 'goal' | 'loop'): string {
+/** One line on the goal tools, appended to the goal messages (the tools are only offered while a goal runs). */
+export const GOAL_TOOLS_HINT =
+  'Goal tools: get_goal shows the goal and its revision id; update_goal trims the remaining items; complete_goal ends the goal once the done criteria are verified by tool results; block_goal reports what stops you (3 blocked rounds in a row stop the goal).';
+
+export function goalContinuePrompt(brief: string, remaining: string[], mode: 'goal' | 'loop', blocker?: { reason: string; round: number; max: number }): string {
   const rem = remaining.length ? `\nRemaining items:\n${remaining.map((r) => `- ${r}`).join('\n')}` : '';
+  const blocked = blocker
+    ? `\nLast round you reported a blocker (${blocker.round}/${blocker.max}): ${blocker.reason}\nTry a different approach or work around it; if it is truly impossible without the user, call block_goal again with what you need.`
+    : '';
   return mode === 'goal'
-    ? `[Goal checkpoint] The goal is not finished yet. Continue working toward it without waiting for confirmation.\nGoal: ${brief}${rem}`
-    : `[Loop] Continue the ongoing work described in the brief. Pick the next most valuable thing and do it.\nBrief: ${brief}${rem}`;
+    ? `[Goal checkpoint] The goal is not finished yet. Continue working toward it without waiting for confirmation.\nGoal: ${brief}${rem}${blocked}`
+    : `[Loop] Continue the ongoing work described in the brief. Pick the next most valuable thing and do it.\nBrief: ${brief}${rem}${blocked}`;
+}
+
+/** Cap on the previous round's report carried into a fresh round (about 2k tokens). */
+export const FRESH_REPORT_CHARS = 8_000;
+
+/**
+ * Fresh-context goal round (DeepSeek Harness `experimental/tool-ralph`, reimplemented): the new context gets only the
+ * fixed objective, the previous round's report, the workspace state LocalDex checked itself, and the plan.
+ */
+export function goalFreshRoundPrompt(input: {
+  brief: string;
+  doneCriteria: string;
+  mode: 'goal' | 'loop';
+  iteration: number;
+  maxIterations: number;
+  remaining: string[];
+  lastReport: string | null;
+  fileFacts: string;
+  plan: Array<{ title: string; status: string }>;
+  blocker?: { reason: string; round: number; max: number };
+}): string {
+  const report = (input.lastReport ?? '').trim();
+  const cut = report.length > FRESH_REPORT_CHARS ? `${report.slice(0, FRESH_REPORT_CHARS)}\n[… report cut at ${FRESH_REPORT_CHARS} characters]` : report;
+  const parts = [
+    `[Goal round ${input.iteration + 1}/${input.maxIterations}, fresh context] Earlier rounds worked on this goal; their conversation is not in your context. Everything you need is below and on disk. Read files before editing them.`,
+    input.mode === 'goal' ? `Goal: ${input.brief}${input.doneCriteria ? `\nDone when: ${input.doneCriteria}` : ''}` : `Brief: ${input.brief}`,
+  ];
+  if (input.remaining.length) parts.push(`Remaining items:\n${input.remaining.map((r) => `- ${r}`).join('\n')}`);
+  if (input.blocker) parts.push(`Last round reported a blocker (${input.blocker.round}/${input.blocker.max}): ${input.blocker.reason}\nTry a different approach; if it is truly impossible without the user, call block_goal again.`);
+  if (cut) parts.push(`Previous round's report:\n${cut}`);
+  if (input.fileFacts) parts.push(input.fileFacts);
+  if (input.plan.length) parts.push(`Plan:\n${input.plan.map((s) => `- [${s.status === 'done' ? 'x' : s.status === 'in_progress' ? '>' : s.status === 'skipped' ? '-' : ' '}] ${s.title}`).join('\n')}`);
+  parts.push(`Continue the work now without waiting for confirmation. ${GOAL_TOOLS_HINT}`);
+  return parts.join('\n\n');
 }
 
 export function goalAssessPrompt(brief: string, criteria: string, mode: 'goal' | 'loop'): string {

@@ -732,6 +732,80 @@ console.log('\n# T. Plan mode: /plan is read-only until approved, survives a rel
   fs.rmSync(path.join(DEMO, 'greet.ts'));
 }
 
+// ---------- U: Goal upgrades (A5) ----------
+console.log('\n# U. Goal tools: block_goal ×3 stops the goal; fresh-context rounds stay small');
+{
+  const { MAX_BLOCKED_ROUNDS } = await import(`${SRC}/agent/runner.ts`);
+  const idleNames = enabledTools('main').map((t) => t.function.name);
+  check('goal tools are hidden while no goal runs', !idleNames.some((n) => /_goal$/.test(n)), idleNames.join(','));
+  const goalNames = enabledTools('main', { goal: true }).map((t) => t.function.name);
+  check('goal tools appear for a running goal', ['get_goal', 'update_goal', 'complete_goal', 'block_goal'].every((n) => goalNames.includes(n)));
+
+  // Three blocked rounds in a row: the goal stops with the blocker visible, no checkpoint call is made.
+  const sess = createSession('gemma-mock');
+  const rn = runnerFor(sess);
+  rn.setGoal({ mode: 'goal', brief: 'Deploy the service to production', doneCriteria: 'deployed', maxIterations: 10, lead: 'local' });
+  logs.length = 0;
+  script = [
+    textCalls({ name: 'get_goal', arguments: {} }),
+    textCalls({ name: 'block_goal', arguments: { revision: 0, reason: 'stale attempt' } }),
+    textCalls({ name: 'block_goal', arguments: { revision: 1, reason: 'No production credentials are available on this machine.' } }),
+    say('Blocked: I need production credentials.'),
+    textCalls({ name: 'block_goal', arguments: { revision: 2, reason: 'Still no credentials; tried env and keychain.' } }),
+    say('Still blocked.'),
+    textCalls({ name: 'block_goal', arguments: { revision: 3, reason: 'Cannot deploy without credentials.' } }),
+    say('Blocked for the third time.'),
+  ];
+  await rn.startGoalRun();
+  const toolOut = sess.messages.filter((m: any) => m.role === 'tool').map((m: any) => m.content as string);
+  check('get_goal shows the brief and revision id', toolOut.some((t) => /^Revision: 1\n(Goal|Brief)/.test(t) && /Deploy the service/.test(t)), toolOut[0]);
+  check('a stale revision is refused', toolOut.some((t) => /^Stale revision 0: the goal is at revision 1/.test(t)));
+  check('block_goal counts the round', toolOut.some((t) => /blocked round 1\/3/.test(t)) && toolOut.some((t) => /blocked round 2\/3/.test(t)) && toolOut.some((t) => /third blocked round/.test(t)));
+  check(`goal stopped after ${MAX_BLOCKED_ROUNDS} blocked rounds, blocker kept`, sess.goal?.active === false && sess.goal?.endedBy === 'blocked' && sess.goal?.blockedRounds === 3 && /without credentials/.test(sess.goal?.blocker ?? ''), JSON.stringify(sess.goal));
+  check('the stop is visible in the chat', sess.messages.some((m: any) => m.role === 'user' && /^\[Goal blocked\][\s\S]*Cannot deploy without credentials/.test(m.content)));
+  check('blocked rounds skip the finish checkpoint and carry the blocker forward', script.length === 0 && sess.messages.some((m: any) => m.role === 'user' && /^\[Goal checkpoint\][\s\S]*reported a blocker \(1\/3\): No production credentials/.test(m.content)));
+  check('system prompt offered the goal tools during the goal', /block_goal/.test((sess.messages[0] as any).content));
+
+  // Fresh context each round: round 2 starts from brief + last report (capped) + files on disk + plan, not the transcript.
+  const s3 = createSession('gemma-mock');
+  const r3 = runnerFor(s3);
+  r3.setGoal({ mode: 'goal', brief: 'Create a.txt and b.txt', doneCriteria: 'both files exist', maxIterations: 5, lead: 'local', freshContext: true });
+  const longReport = `Report: wrote a.txt. ${'Lots of detail about the work that was done. '.repeat(600)}`;
+  script = [
+    textCalls({ name: 'write_file', arguments: { path: 'a.txt', content: 'A\n' } }, { name: 'update_plan', arguments: { steps: [{ title: 'Write a.txt', status: 'done' }, { title: 'Write b.txt', status: 'pending' }] } }),
+    say(longReport),
+    say(longReport), // the open-plan-step gate asks once; the model repeats its report
+    say('{"done": false, "remaining": ["write b.txt"], "note": "a.txt exists, b.txt missing"}'),
+    textCalls({ name: 'write_file', arguments: { path: 'b.txt', content: 'B\n' } }),
+    textCalls({ name: 'get_goal', arguments: {} }),
+    (b: any) => {
+      const rev = Number((b.messages.at(-1).content as string).match(/Revision: (\d+)/)?.[1]);
+      return textCalls({ name: 'complete_goal', arguments: { revision: rev, summary: 'a.txt and b.txt exist' } })(b);
+    },
+    say('Both files exist. Done.'),
+  ];
+  await r3.startGoalRun();
+  const round2 = s3.archive.length ? s3.messages : [];
+  const seed = round2.find((m: any) => m.role === 'user' && /^\[Goal round 2\/5, fresh context\]/.test(m.content)) as any;
+  check('round 1 transcript archived; round 2 began with a fresh context', s3.archive.length === 1 && !!seed && round2.indexOf(seed) === 1, `archive=${s3.archive.length} idx=${seed ? round2.indexOf(seed) : -1}`);
+  const seedTokens = seed ? Math.ceil((s3.messages[0].content.length + seed.content.length) / 4) : Infinity;
+  check('round 2 prompt (system + seed) is under 4k tokens', seedTokens < 4000, `${seedTokens} tokens`);
+  check('seed carries the brief, remaining items, the capped report, files on disk and the plan', !!seed && /Create a\.txt and b\.txt/.test(seed.content) && /- write b\.txt/.test(seed.content) && /report cut at 8000 characters/.test(seed.content) && /Files on disk right now[\s\S]*a\.txt: 1 line, 2 bytes/.test(seed.content) && /\[x\] Write a\.txt[\s\S]*\[ \] Write b\.txt/.test(seed.content), seed?.content.slice(-700));
+  check('complete_goal ended the goal without a checkpoint call', s3.goal?.active === false && s3.goal?.endedBy === 'model' && script.length === 0 && /Marked complete by the model/.test(s3.goal?.lastAssessment ?? ''), JSON.stringify(s3.goal));
+  check('files from both rounds exist', read('a.txt') === 'A\n' && read('b.txt') === 'B\n');
+  fs.rmSync(path.join(DEMO, 'a.txt')); fs.rmSync(path.join(DEMO, 'b.txt'));
+
+  // Loops have no finish: complete_goal is refused, update_goal trims the remaining list.
+  const s4 = createSession('gemma-mock');
+  const r4 = runnerFor(s4);
+  r4.setGoal({ mode: 'loop', brief: 'Keep tidying', doneCriteria: '', maxIterations: 1, lead: 'local' });
+  script = [textCalls({ name: 'complete_goal', arguments: { revision: 1, summary: 'all tidy' } }), textCalls({ name: 'update_goal', arguments: { revision: 1, remaining: ['tidy src/', 'tidy test/'], note: 'started' } }), say('ok')];
+  await r4.startGoalRun();
+  const t4 = s4.messages.filter((m: any) => m.role === 'tool').map((m: any) => m.content as string);
+  check('complete_goal is refused in loop mode', t4.some((t) => /^A loop has no finish/.test(t)));
+  check('update_goal replaces the remaining list and bumps the revision', t4.some((t) => /^Goal updated \(revision 2\)\. Remaining: tidy src\/; tidy test\//.test(t)) && s4.goal?.remaining.length === 2, t4.join(' | '));
+}
+
 server.close();
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

@@ -28,6 +28,16 @@ export interface ToolContext {
   updatePlan?(steps: PlanStep[]): void;
   /** Run a model-council request. Only available to the main agent when the council is on. Resolves to a report. */
   council?(req: CouncilRequest): Promise<string>;
+  /** The active goal, for get_goal / update_goal / complete_goal / block_goal. Only the main agent, only while a goal runs. */
+  goal?: GoalControl;
+}
+
+/** What the goal tools can see and do; the runner owns the state and the revision counter. */
+export interface GoalControl {
+  view(): string;
+  update(revision: number, patch: { remaining?: string[]; note?: string }): ToolResult;
+  complete(revision: number, summary: string): ToolResult;
+  block(revision: number, reason: string): ToolResult;
 }
 
 export interface ToolResult {
