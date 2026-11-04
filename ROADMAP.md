@@ -71,7 +71,7 @@ Each task lists **Why** (the evidence), **Where** (files), **Borrow** (the DeepS
 | 3 | S4 | Auto-review for approval prompts (experimental) | P2 | M |
 | 3 | S5 | Run existing Claude Code / Codex hooks (experimental) | P3 | M |
 | 4 | A1 | Built-in `web_fetch` (+ optional `web_search`) | P1 | M |
-| 4 | A2 | Background jobs with completion notices | P1 | M |
+| 4 | A2 | Background jobs with completion notices | P1 | M | ✅ done |
 | 4 | A3 | Read-only `lsp` tool | P2 | M |
 | 4 | A4 | Plan mode with a reviewed exit | P1 | M | ✅ done |
 | 4 | A5 | Goal upgrades: goal tools, auto-block, fresh-context rounds | P1 | M | ✅ done |

@@ -8,6 +8,7 @@ import { ask_user, delegate_to_worker, update_plan } from './agentTools.js';
 import { load_skill } from './skillTool.js';
 import { ask_member, council } from './councilTools.js';
 import { block_goal, complete_goal, get_goal, update_goal } from './goalTools.js';
+import { job_kill, job_list, job_output } from './jobTools.js';
 import { enabledSkills } from '../skills/store.js';
 import { PermissionError } from './permissions.js';
 import { isMcpTool, mcpToolSchemas, runMcpTool } from '../mcp/client.js';
@@ -37,7 +38,12 @@ export const registry: ToolRegistry = {
   update_goal,
   complete_goal,
   block_goal,
+  job_output,
+  job_list,
+  job_kill,
 };
+/** Offered once the session has started a background job (shell_run with background: true). */
+export const JOB_TOOLS = new Set<ToolName>(['job_output', 'job_list', 'job_kill']);
 
 const COUNCIL_TOOLS = new Set<ToolName>(['ask_member', 'council']);
 /** Only offered while a local-led goal runs (ToolContext.goal is set), so idle sessions pay nothing for them. */
@@ -47,6 +53,8 @@ export interface ToolSetOptions {
   planMode?: boolean;
   /** A local-led goal is active: the goal tools are shown. */
   goal?: boolean;
+  /** The session has background jobs: the job tools are shown. */
+  jobs?: boolean;
 }
 
 /**
@@ -63,6 +71,7 @@ export function enabledTools(kind: 'main' | 'worker', opts: ToolSetOptions = {})
     .filter((name) => name !== 'load_skill' || enabledSkills().length > 0)
     .filter((name) => councilOn || !COUNCIL_TOOLS.has(name))
     .filter((name) => (opts.goal && kind === 'main') || !GOAL_TOOLS.has(name))
+    .filter((name) => opts.jobs || !JOB_TOOLS.has(name))
     // Without node-pty (optional on Linux) the terminal tools can't work, so the model isn't shown them.
     .filter((name) => !TERMINAL_TOOLS.has(name) || ptyAvailable().ok)
     .filter((name) => !opts.planMode || isPlanTool(name))

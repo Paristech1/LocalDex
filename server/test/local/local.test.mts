@@ -806,6 +806,61 @@ console.log('\n# U. Goal tools: block_goal ×3 stops the goal; fresh-context rou
   check('update_goal replaces the remaining list and bumps the revision', t4.some((t) => /^Goal updated \(revision 2\)\. Remaining: tidy src\/; tidy test\//.test(t)) && s4.goal?.remaining.length === 2, t4.join(' | '));
 }
 
+// ---------- V: Background jobs (A2) ----------
+console.log('\n# V. Background jobs: notice on finish, job_output, job_kill');
+{
+  const { listJobs } = await import(`${SRC}/jobs.ts`);
+  const idle = enabledTools('main').map((t) => t.function.name);
+  check('job tools hidden until the session has a job', !idle.some((n) => /^job_/.test(n)));
+  check('job tools offered once a job exists', ['job_output', 'job_list', 'job_kill'].every((n) => enabledTools('main', { jobs: true }).some((t) => t.function.name === n)));
+
+  const sess = createSession('gemma-mock');
+  const rn = runnerFor(sess);
+  logs.length = 0;
+  script = [
+    textCalls({ name: 'shell_run', arguments: { command: 'sleep 1; echo done', background: true } }),
+    say('Started the job; carrying on.'),
+    say('Saw that the job finished.'), // the wake-up turn
+  ];
+  await rn.handleUserMessage('run the slow thing in the background');
+  const started = sess.messages.find((m: any) => m.role === 'tool' && /^Started background job job\d+/.test(m.content)) as any;
+  check('shell_run background returns a job id at once', !!started, sess.messages.filter((m: any) => m.role === 'tool').map((m: any) => m.content.slice(0, 60)).join(' | '));
+  const jobId = started?.content.match(/job(\d+)/)?.[0];
+  check('the job is listed as running', listJobs(sess.id).some((j) => j.id === jobId && j.status === 'running'));
+  check('the run ended while the job kept going', !rn.running && script.length === 1);
+  for (let i = 0; i < 60 && script.length > 0; i++) await new Promise((r) => setTimeout(r, 100));
+  for (let i = 0; i < 60 && rn.running; i++) await new Promise((r) => setTimeout(r, 50));
+  const notice = sess.messages.find((m: any) => m.role === 'user' && /^\[job job\d+ done \(exit 0\) after \ds\] sleep 1; echo done/.test(m.content)) as any;
+  check('the idle agent was woken with a finish notice carrying the output', !!notice && /Last output:\n[\s\S]*done$/.test(notice.content), notice?.content);
+  check('the wake-up turn ran', script.length === 0 && /Saw that the job finished/.test((sess.messages.at(-1) as any).content));
+  check('wake-up is logged with its cap', logs.some((l) => /waking the agent \(1\/3\)/.test(l)));
+  check('job tools entered the tool list after the first job', /job_output/.test((sess.messages[0] as any).content.split('\n').find((l: string) => l.startsWith('Tools available')) ?? ''));
+
+  // A long job: job_output with a bounded wait, then job_kill.
+  script = [
+    textCalls({ name: 'shell_run', arguments: { command: 'echo starting; sleep 30; echo never', background: true } }),
+    textCalls({ name: 'job_output', arguments: { id: 'WILL_BE_REPLACED', wait_seconds: 1 } }),
+    textCalls({ name: 'job_list', arguments: {} }),
+    textCalls({ name: 'job_kill', arguments: { id: 'WILL_BE_REPLACED' } }),
+    say('Killed it.'),
+  ];
+  // The id is only known after the first step: patch the later steps when they run.
+  const patch = (b: any) => listJobs(sess.id).find((j) => j.status === 'running')?.id ?? 'job?';
+  script[1] = (b: any) => textCalls({ name: 'job_output', arguments: { id: patch(b), wait_seconds: 1 } })(b);
+  script[3] = (b: any) => textCalls({ name: 'job_kill', arguments: { id: patch(b) } })(b);
+  const t0 = Date.now();
+  await rn.handleUserMessage('start the server, check it, then stop it');
+  const outs = sess.messages.filter((m: any) => m.role === 'tool').map((m: any) => m.content as string);
+  check('job_output returned the output so far after a bounded wait', outs.some((o) => /^job\d+: running, \ds, \d+ bytes of output[\s\S]*\nstarting/.test(o)), outs.filter((o) => /^job\d+:/.test(o)).join(' | '));
+  check('job_list shows both jobs', outs.some((o) => /job1: done \(exit 0\)[\s\S]*job\d+: running/.test(o)));
+  check('job_kill stopped it', outs.some((o) => /^Job job\d+ killed\.$/.test(o)));
+  for (let i = 0; i < 40 && listJobs(sess.id).some((j) => j.status === 'running'); i++) await new Promise((r) => setTimeout(r, 50));
+  const killed = listJobs(sess.id).find((j) => /sleep 30/.test(j.command));
+  check('the killed job is gone well before its 30 s', killed?.status === 'killed' && Date.now() - t0 < 10_000, JSON.stringify(killed));
+  await new Promise((r) => setTimeout(r, 300));
+  check('a killed job does not wake the agent', !sess.messages.some((m: any) => m.role === 'user' && /^\[job job\d+ killed/.test(m.content)) && !rn.running);
+}
+
 server.close();
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

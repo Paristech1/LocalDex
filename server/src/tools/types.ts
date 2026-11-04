@@ -30,6 +30,8 @@ export interface ToolContext {
   council?(req: CouncilRequest): Promise<string>;
   /** The active goal, for get_goal / update_goal / complete_goal / block_goal. Only the main agent, only while a goal runs. */
   goal?: GoalControl;
+  /** True when the user sent a message during this run: long waits (job_output) end early so the model sees it. */
+  hasCorrections?: () => boolean;
 }
 
 /** What the goal tools can see and do; the runner owns the state and the revision counter. */

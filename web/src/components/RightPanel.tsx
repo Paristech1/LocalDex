@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import type { GoalLead, GoalMode, PlanStep, WorkerState } from '@localdex/shared';
+import type { GoalLead, GoalMode, JobInfo, PlanStep, WorkerState } from '@localdex/shared';
 import { send, useStore } from '../store';
 import { AssistantBubble, MessageList } from './Message';
 import { ToolCard } from './ToolCard';
@@ -21,13 +21,14 @@ export function RightPanel({ onOpenSettings }: { onOpenSettings?: (tab?: Setting
     wasRunning.current = councilRunning;
   }, [councilRunning]);
   const workerCount = Object.keys(session?.workers ?? {}).length;
+  const runningJobs = useStore((s) => s.jobs.filter((j) => j.status === 'running').length);
   const planCount = session?.plan.length ?? 0;
   const goalActive = session?.goal?.active;
   const errorCount = useStore((s) => s.logs.filter((l) => l.level === 'error').length);
 
   const tabs: Array<{ id: Tab; label: string; badge?: string | number; hot?: boolean }> = [
     { id: 'plan', label: 'Plan', badge: planCount || undefined },
-    { id: 'workers', label: 'Workers', badge: workerCount || undefined },
+    { id: 'workers', label: 'Workers', badge: runningJobs ? `${workerCount ? `${workerCount}+` : ''}${runningJobs}●` : workerCount || undefined, hot: runningJobs > 0 },
     { id: 'council', label: 'Council', badge: councilRunning ? '●' : councilCount || undefined, hot: councilRunning },
     { id: 'goal', label: 'Goal', badge: goalActive ? '●' : undefined, hot: !!goalActive },
     { id: 'context', label: 'Context' },
@@ -107,20 +108,54 @@ function PlanPanel({ steps }: { steps: PlanStep[] }) {
 
 function WorkersPanel() {
   const session = useStore((s) => s.session);
+  const jobs = useStore((s) => s.jobs);
   const workers = Object.values(session?.workers ?? {}).sort((a, b) => b.updatedAt - a.updatedAt);
-  if (!workers.length) {
+  if (!workers.length && !jobs.length) {
     return (
       <Empty>
         No workers yet. The agent spawns workers with <code className="font-mono">delegate_to_worker</code> for independent sub-tasks; several run in parallel
-        (concurrency is set in Settings).
+        (concurrency is set in Settings). Background jobs (<code className="font-mono">shell_run</code> with <code className="font-mono">background: true</code>) are listed here too.
       </Empty>
     );
   }
   return (
     <div className="space-y-2">
+      {jobs.length > 0 && session && <JobsList jobs={jobs} sessionId={session.id} />}
       {workers.map((w) => (
         <WorkerCard key={w.name} worker={w} sessionId={session!.id} />
       ))}
+    </div>
+  );
+}
+
+/** Background jobs of this session, newest first, with Kill. */
+function JobsList({ jobs, sessionId }: { jobs: JobInfo[]; sessionId: string }) {
+  const sorted = [...jobs].sort((a, b) => b.startedAt - a.startedAt);
+  return (
+    <div className="rounded-lg border border-ink-600 bg-ink-900/60 px-3 py-2">
+      <div className="text-xs text-ink-400 mb-1">Background jobs</div>
+      <div className="space-y-1">
+        {sorted.map((j) => {
+          const secs = Math.round(((j.endedAt ?? Date.now()) - j.startedAt) / 1000);
+          return (
+            <div key={j.id} className="flex items-center gap-2 text-xs">
+              <span className={cx('w-1.5 h-1.5 rounded-full shrink-0', j.status === 'running' ? 'bg-accent animate-pulse' : j.status === 'done' ? 'bg-ink-400' : 'bg-danger')} />
+              <span className="font-mono text-ink-400 shrink-0">{j.id}</span>
+              <span className="font-mono text-ink-200 truncate flex-1" title={`${j.command}\n(cwd: ${j.cwd})`}>
+                {j.command}
+              </span>
+              <span className="text-ink-400 shrink-0">
+                {j.status === 'running' ? `${secs}s` : `${j.status}${j.exitCode !== undefined ? ` · exit ${j.exitCode}` : ''}`}
+              </span>
+              {j.status === 'running' && (
+                <Button variant="danger" size="sm" onClick={() => send({ type: 'job_kill', sessionId, jobId: j.id })} title="Stop this job and the processes it started">
+                  Kill
+                </Button>
+              )}
+            </div>
+          );
+        })}
+      </div>
     </div>
   );
 }

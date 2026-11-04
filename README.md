@@ -41,6 +41,15 @@ Browser (React UI)  <-- WebSocket -->  LocalDex server (Node)  -->  LM Studio :1
   LocalDex checks itself, and the plan. The old transcript is archived, so quality does not slide as
   the context fills up. *Model experience:* the goal tools are only in the tool list while a goal
   runs (about 250 tokens); a fresh round's seed is typically well under 4k tokens.
+- **Background jobs** – `shell_run` with `background: true` returns a job id at once and keeps the
+  command running (dev servers, watchers, long test runs). `job_output` reads what it printed so far
+  (with a bounded wait of up to 60 s that ends early when you send a message), `job_list` lists the
+  session's jobs and `job_kill` stops one with its whole process group. When a job finishes, a busy
+  agent sees a short notice on its next step; an idle agent is woken by a follow-up turn, at most 3
+  times between your messages. Jobs appear in the Workers tab with a **Kill** button and die with
+  the server. *Model experience:* the three job tools (about 180 tokens) only enter the tool list
+  after the session's first background job; the only always-present cost is one `background` flag
+  on `shell_run`. Output is kept in a 64 KB ring per job; the model is told when older output fell off.
 - **Plan mode** – `/plan <task>` makes the agent explore and design first. It is enforced, not just
   suggested: the write, terminal, worker and council tools are not offered (and refused if the
   model calls them anyway), `shell_run` only runs read-only commands (`ls`, `cat`, `rg`, `git
@@ -109,7 +118,7 @@ npm start            # http://localhost:7331
 | --- | --- |
 | **Chat** | Streaming replies, reasoning (collapsible), tool cards, approval and question prompts. Send while running = correction. |
 | **Plan** | Checklist maintained by the model with `update_plan`. |
-| **Workers** | Status, last task, live stream and full transcript per worker. Reset or delete a worker's memory. |
+| **Workers** | Status, last task, live stream and full transcript per worker. Reset or delete a worker's memory. Background jobs with Kill. |
 | **Goal** | Start a Goal (until done) or a Loop (keep working), led by the local model or the council, with or without a fresh context each round. Shows iteration, last checkpoint, remaining items and any blocker the model reported. |
 | **Context** | Token usage vs. context window, compactions, "Compact & Resume now", latest summary. |
 | **Log** | Server events: tool-mode detection, recovered tool calls, goal checkpoints, errors. |

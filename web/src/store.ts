@@ -4,6 +4,7 @@ import type {
   AgentStatus,
   ClientEvent,
   CouncilStats,
+  JobInfo,
   McpServerStatus,
   MemberId,
   MemberStatus,
@@ -67,6 +68,8 @@ export interface State {
   composerDraft: { text: string; notRisky?: boolean; nonce: number } | null;
   /** Diffs of Solo turns fetched on demand, by turn id. */
   turnDiffs: Record<string, string>;
+  /** Background jobs of the open session (shell_run with background: true). */
+  jobs: JobInfo[];
 }
 
 let state: State = {
@@ -84,6 +87,7 @@ let state: State = {
   skills: [],
   unavailableTools: {},
   turnDiffs: {},
+  jobs: [],
   council: [],
   councilStats: null,
   councilLogin: null,
@@ -308,6 +312,9 @@ function handle(ev: ServerEvent): void {
       return;
     case 'turn_diff':
       set((s) => ({ turnDiffs: { ...s.turnDiffs, [ev.turnId]: ev.diff } }));
+      return;
+    case 'jobs':
+      set((s) => (s.session?.id === ev.sessionId ? { jobs: ev.jobs } : {}));
       return;
   }
 }

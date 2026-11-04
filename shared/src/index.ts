@@ -81,7 +81,10 @@ export type ToolName =
   | 'get_goal'
   | 'update_goal'
   | 'complete_goal'
-  | 'block_goal';
+  | 'block_goal'
+  | 'job_output'
+  | 'job_list'
+  | 'job_kill';
 
 export const ALL_TOOL_NAMES: ToolName[] = [
   'read_file',
@@ -105,6 +108,9 @@ export const ALL_TOOL_NAMES: ToolName[] = [
   'update_goal',
   'complete_goal',
   'block_goal',
+  'job_output',
+  'job_list',
+  'job_kill',
 ];
 
 export interface ToolSchema {
@@ -198,6 +204,20 @@ export interface Session {
   turns?: TurnCheckpoint[];
   /** `/plan` in progress: read-only tools until the user approves the plan (persisted, so it survives a reload). */
   planMode?: PlanModeState;
+}
+
+/** A background shell job (shell_run with background: true). Lives in memory; gone when the server stops. */
+export interface JobInfo {
+  id: string;
+  command: string;
+  cwd: string;
+  status: 'running' | 'done' | 'failed' | 'killed';
+  startedAt: number;
+  endedAt?: number;
+  exitCode?: number;
+  /** Total output bytes produced so far. */
+  bytes: number;
+  pid?: number;
 }
 
 /** Plan mode (A4): the agent explores and designs with read-only tools; the user approves, revises or cancels. */
@@ -789,6 +809,9 @@ export const DEFAULT_CAPABILITIES: Record<ToolName, boolean> = {
   update_goal: true,
   complete_goal: true,
   block_goal: true,
+  job_output: true,
+  job_list: true,
+  job_kill: true,
 };
 
 /**
@@ -895,6 +918,7 @@ export type ServerEvent =
   | { type: 'prompt_resolved'; id: string }
   | { type: 'error'; sessionId?: string; message: string }
   | { type: 'turn_diff'; sessionId: string; turnId: string; diff: string }
+  | { type: 'jobs'; sessionId: string; jobs: JobInfo[] }
   | { type: 'log'; level: 'info' | 'warn' | 'error'; message: string };
 
 export type ClientEvent =
@@ -924,6 +948,7 @@ export type ClientEvent =
   | { type: 'plan_approve'; sessionId: string }
   | { type: 'plan_revise'; sessionId: string; feedback: string }
   | { type: 'plan_cancel'; sessionId: string }
+  | { type: 'job_kill'; sessionId: string; jobId: string }
   | { type: 'compact'; sessionId: string }
   | { type: 'set_mode'; sessionId: string; mode: SessionMode }
   /** deep: also list each member's models (the health check). */

@@ -11,6 +11,7 @@ import { parsePlanCommand, planApprovedPrompt, planModePrompt, planRevisePrompt 
 import { runLoop } from './loop.js';
 import { CLOCK_EVERY_MS, CLOCK_PREFIX, FRESH_REPORT_CHARS, GOAL_TOOLS_HINT, clockLine, goalContinuePrompt, goalFreshRoundPrompt, mainSystemPrompt } from './prompts.js';
 import { resetReads } from '../tools/readTracker.js';
+import { hasJobs, onJobFinished } from '../jobs.js';
 import { WorkerManager } from './workers.js';
 import { redactIfEnabled, runCouncil, runSummary, runVia, type CouncilContext } from '../council/orchestrator.js';
 import { classify, classifyWithLocal, domainBuilder, markNotRisky, parseCommand, settingsForAccess, withRisk, type Route } from '../council/router.js';
@@ -19,6 +20,8 @@ import { fail, ok } from '../tools/types.js';
 
 /** block_goal this many rounds in a row stops the goal (DeepSeek Harness `goal/tool-goal`). */
 export const MAX_BLOCKED_ROUNDS = 3;
+/** Finished background jobs wake an idle agent at most this many times between user messages. */
+export const MAX_JOB_WAKEUPS = 3;
 
 /** Orchestrates one session: main loop, corrections, workers, goal/loop autonomy, compaction. */
 export class SessionRunner {
@@ -29,8 +32,38 @@ export class SessionRunner {
   private pendingEscalation: string | null = null;
   readonly workers: WorkerManager;
 
+  /** Automatic wake-ups by finished jobs since the user's last message (capped; the cap resets on a user message). */
+  private jobWakeups = 0;
+
   constructor(readonly session: Session) {
     this.workers = new WorkerManager(session, () => this.persist());
+    onJobFinished(session.id, (job) => this.jobNotice(job));
+  }
+
+  /** A background job finished: a busy agent sees it on its next step; an idle one is woken by a follow-up turn. */
+  private jobNotice(job: { id: string; command: string; status: string; exitCode?: number; startedAt: number; endedAt?: number; tail: string }): void {
+    const secs = Math.round(((job.endedAt ?? Date.now()) - job.startedAt) / 1000);
+    const tail = job.tail.trim() ? `\nLast output:\n${job.tail.trim().split('\n').slice(-15).join('\n')}` : '';
+    const notice = `[job ${job.id} ${job.status}${job.exitCode !== undefined ? ` (exit ${job.exitCode})` : ''} after ${secs}s] ${job.command.slice(0, 120)}${tail}`;
+    if (job.status === 'killed') return; // the user or the model stopped it on purpose; nothing to react to
+    if (this.running) {
+      this.corrections.push({ content: notice });
+      return;
+    }
+    if (this.jobWakeups >= MAX_JOB_WAKEUPS) {
+      bus.log('warn', `[jobs] ${job.id} finished but the agent is not woken again (${MAX_JOB_WAKEUPS} automatic wake-ups since your last message); send a message to continue`);
+      return;
+    }
+    this.jobWakeups += 1;
+    bus.log('info', `[jobs] ${job.id} finished; waking the agent (${this.jobWakeups}/${MAX_JOB_WAKEUPS})`);
+    this.session.messages.push({ role: 'user', content: notice, ts: Date.now() });
+    this.persist();
+    this.sync();
+    void this.run();
+  }
+
+  private toolSet() {
+    return { planMode: this.planning, goal: this.goalToolsOn, jobs: hasJobs(this.session.id) };
   }
 
   get running(): boolean {
@@ -47,6 +80,7 @@ export class SessionRunner {
 
   /** User sent a message. Starts a run, or queues a correction if one is already in flight. */
   async handleUserMessage(content: string, access?: CouncilRunAccess, notRisky = false): Promise<void> {
+    this.jobWakeups = 0;
     if (this.running) {
       this.corrections.push({ content, ...(access ? { access } : {}), ...(notRisky ? { notRisky } : {}) });
       bus.log('info', 'Correction queued; it will be delivered before the next model call.');
@@ -154,7 +188,7 @@ export class SessionRunner {
     resetReads(s.id, 'main');
     forgetInstructions(s.id);
     s.usage.lastPromptTokens = 0;
-    s.messages.splice(0, s.messages.length, { role: 'system', content: mainSystemPrompt({ goal: this.goalToolsOn }) }, { role: 'user', content: prompt, ts: Date.now() });
+    s.messages.splice(0, s.messages.length, { role: 'system', content: mainSystemPrompt(this.toolSet()) }, { role: 'user', content: prompt, ts: Date.now() });
     bus.log('info', `[goal] fresh context for round ${(s.goal?.iteration ?? 0) + 1}: ${Math.ceil(prompt.length / 4)} tokens seeded (brief, last report, files on disk, plan)`);
   }
 
@@ -550,7 +584,9 @@ export class SessionRunner {
           agent: 'main',
           model,
           messages: s.messages,
-          tools: enabledTools('main', { planMode: this.planning, goal: this.goalToolsOn }),
+          tools: enabledTools('main', this.toolSet()),
+          refreshTools: () => enabledTools('main', this.toolSet()),
+          hasCorrections: () => this.corrections.length > 0,
           signal: ac.signal,
           maxSteps: getSettings().maxSteps,
           planMode: this.planning,
@@ -736,7 +772,7 @@ export class SessionRunner {
    * installed, MCP servers switched), because any byte change at the top of the prompt resets LM Studio's KV cache.
    */
   private ensureSystemPrompt(): void {
-    const prompt = mainSystemPrompt({ planMode: this.planning, goal: this.goalToolsOn });
+    const prompt = mainSystemPrompt(this.toolSet());
     const first = this.session.messages[0];
     if (first?.role === 'system') {
       if (first.content !== prompt) {

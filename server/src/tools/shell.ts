@@ -3,6 +3,7 @@ import { defaultCwd, resolvePath, shellNeedsApproval } from './permissions.js';
 import { fail, ok, optNum, optStr, str, truncate, type ToolDef } from './types.js';
 import { DECLINED_COMMAND } from './types.js';
 import { PLAN_SHELL_REFUSAL, isReadOnlyCommand } from '../agent/planMode.js';
+import { startJob } from '../jobs.js';
 
 const SHELL = process.env.SHELL || (process.platform === 'win32' ? 'powershell.exe' : '/bin/zsh');
 
@@ -12,13 +13,14 @@ export const shell_run: ToolDef = {
     function: {
       name: 'shell_run',
       description:
-        'Run a one-shot shell command and return its output (stdout+stderr) and exit code. Use for builds, tests, git, etc. For long-lived processes (dev servers, REPLs) use terminal_open instead.',
+        'Run a one-shot shell command and return its output (stdout+stderr) and exit code. Use for builds, tests, git, etc. For dev servers, watchers or anything long, pass background: true to get a job id back at once; then job_output / job_kill manage it.',
       parameters: {
         type: 'object',
         properties: {
           command: { type: 'string' },
           cwd: { type: 'string', description: 'Working directory (default: approved folder).' },
           timeout_seconds: { type: 'integer', description: 'Kill after this many seconds (default 120).' },
+          background: { type: 'boolean', description: 'Start as a background job and return its id immediately.' },
         },
         required: ['command'],
       },
@@ -33,6 +35,11 @@ export const shell_run: ToolDef = {
     if (shellNeedsApproval(command)) {
       const approved = await ctx.requestApproval(command, cwd);
       if (!approved) return fail(DECLINED_COMMAND);
+    }
+    if (args.background === true || args.background === 'true') {
+      if (ctx.planMode) return fail(PLAN_SHELL_REFUSAL);
+      const job = startJob(ctx.sessionId, ctx.agent, command, cwd);
+      return ok(`Started background job ${job.id} (pid ${job.pid ?? '?'}): ${command}\nIt keeps running while you continue. You will get a notice when it finishes; job_output reads what it printed (wait_seconds waits), job_kill stops it.`);
     }
 
     return new Promise((resolve) => {

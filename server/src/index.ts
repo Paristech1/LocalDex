@@ -20,6 +20,7 @@ import { bus } from './agent/bus.js';
 import { dropRunner, runnerFor } from './agent/runner.js';
 import { PTY_UNAVAILABLE_NOTE, closeAllTerminals, ptyAvailable } from './tools/terminal.js';
 import { deleteSpill } from './spill.js';
+import { killAllJobs, killJob, listJobs } from './jobs.js';
 import { deleteCheckpoints, turnDiff, undoTurn } from './checkpoints.js';
 import { resetReads } from './tools/readTracker.js';
 import { forgetInstructions } from './agent/instructions.js';
@@ -253,7 +254,8 @@ async function handle(ws: WebSocket, ev: ClientEvent): Promise<void> {
       const s = getSession(ev.id);
       if (!s) return send(ws, { type: 'error', message: 'Session not found' });
       runnerFor(s);
-      return send(ws, { type: 'session', session: s });
+      send(ws, { type: 'session', session: s });
+      return send(ws, { type: 'jobs', sessionId: s.id, jobs: listJobs(s.id) });
     }
     case 'delete_session': {
       const gone = getSession(ev.id);
@@ -453,6 +455,13 @@ async function handle(ws: WebSocket, ev: ClientEvent): Promise<void> {
       if (s) runnerFor(s).cancelPlan();
       return;
     }
+    case 'job_kill': {
+      const s = getSession(ev.sessionId);
+      if (!s) return;
+      const r = killJob(s.id, String(ev.jobId));
+      if (!r.ok) send(ws, { type: 'error', sessionId: s.id, message: r.message });
+      return;
+    }
     case 'compact': {
       const s = getSession(ev.sessionId);
       if (!s) return;
@@ -491,6 +500,7 @@ function shutdown(): void {
   console.log('\nShutting down…');
   closeAllTerminals();
   flushAll();
+  killAllJobs();
   // Stop MCP server processes (e.g. the browser) before exiting, but never hang on them.
   void Promise.race([closeAllMcp(), new Promise((r) => setTimeout(r, 3000))]).finally(() => process.exit(0));
 }

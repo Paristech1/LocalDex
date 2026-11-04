@@ -32,6 +32,9 @@ const ICONS: Record<string, string> = {
   update_goal: '🎯',
   complete_goal: '🏁',
   block_goal: '⛔',
+  job_output: '📜',
+  job_list: '📜',
+  job_kill: '⏹',
 };
 
 function summarizeArgs(name: string, args: unknown): string {

@@ -32,6 +32,10 @@ export interface LoopParams {
   planMode?: boolean;
   /** Called before each model call; may compact `messages` in place. */
   beforeStep?: () => Promise<void>;
+  /** Called before each model call; when it returns a list, it replaces `tools` (e.g. job tools appear after the first background job). */
+  refreshTools?: () => ToolSchema[] | undefined;
+  /** True when user messages are queued for this run (long tool waits end early). */
+  hasCorrections?: () => boolean;
   onUsage?: (usage: { promptTokens: number; completionTokens: number }) => void;
   onPersist?: () => void;
 }
@@ -144,6 +148,8 @@ export async function runLoop(p: LoopParams): Promise<LoopResult> {
       bus.log('info', `[${agent}] correction injected: ${c.slice(0, 80)}`);
     }
     await p.beforeStep?.();
+    const fresh = p.refreshTools?.();
+    if (fresh) p.tools = fresh;
     p.onPersist?.();
 
     bus.emit({ type: 'turn_start', sessionId, agent });
@@ -284,6 +290,7 @@ export async function runLoop(p: LoopParams): Promise<LoopResult> {
         : undefined,
       council: p.council,
       goal: p.goal,
+      hasCorrections: p.hasCorrections,
     };
 
     const outcomes = await executeCalls(result.toolCalls, ctx);
