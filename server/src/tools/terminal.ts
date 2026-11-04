@@ -1,12 +1,24 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { createRequire } from 'node:module';
-import type { IPty } from 'node-pty';
 import { defaultCwd, resolvePath, shellNeedsApproval } from './permissions.js';
 import { fail, ok, optNum, optStr, str, truncate, type ToolDef } from './types.js';
 import { DECLINED_COMMAND } from './types.js';
 
 const require = createRequire(import.meta.url);
+
+/** The slice of node-pty we use. Declared here so the server typechecks when the optional package is absent (H3). */
+interface IPty {
+  onData(cb: (data: string) => void): void;
+  onExit(cb: (e: { exitCode: number; signal?: number }) => void): void;
+  write(data: string): void;
+  resize(cols: number, rows: number): void;
+  kill(signal?: string): void;
+  pid: number;
+}
+interface PtyModule {
+  spawn(file: string, args: string[], opts: { name?: string; cols?: number; rows?: number; cwd?: string; env?: Record<string, string> }): IPty;
+}
 const SHELL = process.env.SHELL || (process.platform === 'win32' ? 'powershell.exe' : '/bin/zsh');
 const MAX_BUFFER = 200_000;
 
@@ -24,7 +36,7 @@ interface Terminal {
 const terminals = new Map<string, Terminal>();
 let counter = 0;
 
-function loadPty(): typeof import('node-pty') {
+function loadPty(): PtyModule {
   // node-pty's prebuilt spawn-helper sometimes ships without the executable bit.
   try {
     const pkg = require.resolve('node-pty/package.json');
@@ -33,7 +45,7 @@ function loadPty(): typeof import('node-pty') {
   } catch {
     /* ignore */
   }
-  return require('node-pty') as typeof import('node-pty');
+  return require('node-pty') as PtyModule;
 }
 
 /** What the user should do when the terminal tools are unavailable (shown in Settings → Capabilities). */
@@ -86,7 +98,7 @@ export const terminal_open: ToolDef = {
       const approved = await ctx.requestApproval(command, cwd);
       if (!approved) return fail(DECLINED_COMMAND);
     }
-    let pty: typeof import('node-pty');
+    let pty: PtyModule;
     try {
       pty = loadPty();
     } catch (e) {
