@@ -20,6 +20,7 @@ import { bus } from './agent/bus.js';
 import { dropRunner, runnerFor } from './agent/runner.js';
 import { PTY_UNAVAILABLE_NOTE, closeAllTerminals, ptyAvailable } from './tools/terminal.js';
 import { deleteSpill } from './spill.js';
+import { deleteCheckpoints, turnDiff, undoTurn } from './checkpoints.js';
 import { resetReads } from './tools/readTracker.js';
 import { unavailableTools } from './tools/index.js';
 import { closeAllMcp, mcpStatuses, reloadMcp } from './mcp/client.js';
@@ -259,6 +260,7 @@ async function handle(ws: WebSocket, ev: ClientEvent): Promise<void> {
       // Its waiting copies could never be applied any more.
       if (gone) discardSessionCopies(gone);
       deleteSpill(ev.id);
+      deleteCheckpoints(ev.id);
       deleteSession(ev.id);
       bus.emit({ type: 'sessions', sessions: listSessions() });
       return;
@@ -415,6 +417,21 @@ async function handle(ws: WebSocket, ev: ClientEvent): Promise<void> {
       const s = getSession(ev.sessionId);
       if (s) runnerFor(s).clearGoal();
       return;
+    }
+    case 'undo_turn': {
+      const s = getSession(ev.sessionId);
+      if (!s) return;
+      if (runnerFor(s).running) return send(ws, { type: 'error', sessionId: s.id, message: 'Wait for the current run to finish before undoing a turn.' });
+      const r = undoTurn(s, ev.turnId);
+      if (!r.ok) return send(ws, { type: 'error', sessionId: s.id, message: `Undo refused: ${r.error}` });
+      saveSession(s);
+      bus.emit({ type: 'session', session: s });
+      return;
+    }
+    case 'get_turn_diff': {
+      const s = getSession(ev.sessionId);
+      if (!s) return;
+      return send(ws, { type: 'turn_diff', sessionId: s.id, turnId: ev.turnId, diff: turnDiff(s.id, ev.turnId) });
     }
     case 'compact': {
       const s = getSession(ev.sessionId);

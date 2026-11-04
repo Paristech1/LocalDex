@@ -1,9 +1,10 @@
 import { memo, useState } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
-import type { ChatMessage } from '@localdex/shared';
+import type { ChatMessage, TurnCheckpoint } from '@localdex/shared';
 import { ToolCard } from './ToolCard';
 import { ViaBadge, WorktreeChip } from './Council';
+import { TurnCard } from './TurnCard';
 import { cx } from './ui';
 
 export const Markdown = memo(function Markdown({ text }: { text: string }) {
@@ -101,18 +102,35 @@ export interface PendingTool {
  * `pending`: live state of calls that have no result in `messages` yet; `running`: a run is in flight, so a call
  * without a result is still executing (not "failed").
  */
-export function MessageList({ messages, label, pending, running }: { messages: ChatMessage[]; label?: string; pending?: PendingTool[]; running?: boolean }) {
+export function MessageList({ messages, label, pending, running, turns }: { messages: ChatMessage[]; label?: string; pending?: PendingTool[]; running?: boolean; turns?: TurnCheckpoint[] }) {
   const live = new Map((pending ?? []).map((t) => [t.callId, t]));
   const toolResults = new Map<string, Extract<ChatMessage, { role: 'tool' }>>();
   for (const m of messages) if (m.role === 'tool') toolResults.set(m.tool_call_id, m);
+  // Each turn's "Changed files" card goes under the last assistant message written before the turn ended.
+  const cards = new Map<number, TurnCheckpoint[]>();
+  for (const t of turns ?? []) {
+    let at = -1;
+    for (let i = 0; i < messages.length; i++) {
+      const m = messages[i];
+      if (m.role === 'assistant' && (m.ts ?? 0) <= (t.endedAt ?? Infinity)) at = i;
+    }
+    if (at < 0) at = messages.length - 1;
+    cards.set(at, [...(cards.get(at) ?? []), t]);
+  }
 
   return (
     <>
       {messages.map((m, i) => {
-        if (m.role === 'system' || m.role === 'tool') return null;
-        if (m.role === 'user') return <UserBubble key={i} text={m.content} />;
+        if (m.role === 'system' || m.role === 'tool') return cards.get(i)?.map((t) => <TurnCard key={t.id} turn={t} />) ?? null;
+        if (m.role === 'user') return (
+          <div key={i}>
+            <UserBubble text={m.content} />
+            {cards.get(i)?.map((t) => <TurnCard key={t.id} turn={t} />)}
+          </div>
+        );
         return (
-          <AssistantBubble key={i} content={m.content} reasoning={m.reasoning} label={label} via={m.via} councilRunId={m.councilRunId}>
+          <div key={i}>
+          <AssistantBubble content={m.content} reasoning={m.reasoning} label={label} via={m.via} councilRunId={m.councilRunId}>
             {m.tool_calls?.map((tc) => {
               const r = toolResults.get(tc.id);
               const p = r ? undefined : live.get(tc.id);
@@ -134,6 +152,8 @@ export function MessageList({ messages, label, pending, running }: { messages: C
               );
             })}
           </AssistantBubble>
+          {cards.get(i)?.map((t) => <TurnCard key={t.id} turn={t} />)}
+          </div>
         );
       })}
     </>

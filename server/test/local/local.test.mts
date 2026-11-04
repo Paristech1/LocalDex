@@ -454,6 +454,81 @@ console.log('\n# N. Read before edit');
   updateSettings({ requireReadBeforeEdit: true });
 }
 
+// ---------- O: per-turn checkpoints + Undo this turn (S2) ----------
+console.log('\n# O. Checkpoints and undo');
+{
+  const { execSync } = await import('node:child_process');
+  const { beginTurn, endTurn, undoTurn, turnDiff, deleteCheckpoints, CHECKPOINT_DIR } = await import(`${SRC}/checkpoints.ts`);
+  const { resetReads } = await import(`${SRC}/tools/readTracker.ts`);
+  const sh = (cmd: string, cwd = DEMO) => execSync(cmd, { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+  const sess = (id: string): any => ({ id, turns: [] });
+  approve = true;
+  updateSettings({ requireReadBeforeEdit: false });
+
+  // --- git folder: a file-tool edit, a file-tool create and a shell edit, with the user's own staged change left alone.
+  sh('git init -q && git -c user.name=t -c user.email=t@t add -A && git -c user.name=t -c user.email=t@t commit -qm init');
+  fs.writeFileSync(path.join(DEMO, 'staged.txt'), 'mine\n');
+  sh('git add staged.txt');
+  const stagedBefore = sh('git diff --cached --name-only');
+  fs.writeFileSync(path.join(DEMO, 'keep.txt'), 'line1\nline2\nline3\n');
+  fs.writeFileSync(path.join(DEMO, 'shelled.txt'), 'a\n');
+  let s = sess('t');
+  let cp = beginTurn('t');
+  check('git: turn opened', !!cp && cp.folder === fs.realpathSync(DEMO), cp?.folder);
+  r = await runWith([
+    textCalls({ name: 'edit_file', arguments: { path: 'keep.txt', old_string: 'line2', new_string: 'LINE TWO\nline2b' } }),
+    textCalls({ name: 'write_file', arguments: { path: 'made.txt', content: 'brand new\n' } }),
+    textCalls({ name: 'shell_run', arguments: { command: "printf 'b\\n' >> shelled.txt" } }),
+    say('done'),
+  ], 'change things');
+  let done = endTurn(s);
+  const rels = (x: any) => x.files.map((f: any) => `${f.rel}:${f.kind}:+${f.added}-${f.removed}`).sort().join(' ');
+  check('git: changed files listed with +/- (tool edits and the shell edit)', !!done && rels(done) === 'keep.txt:modified:+2-1 made.txt:added:+1-0 shelled.txt:modified:+1-0', done ? rels(done) : 'null');
+  check('git: staged.txt (untouched) is not listed; user index untouched', !done!.files.some((f: any) => f.rel === 'staged.txt') && sh('git diff --cached --name-only') === stagedBefore && sh('git status --porcelain staged.txt').startsWith('A '));
+  check('git: checkpoint stored on disk and on the session', s.turns.length === 1 && fs.existsSync(path.join(CHECKPOINT_DIR, 't', done!.id, 'meta.json')));
+  const d = turnDiff('t', done!.id);
+  check('git: diff viewer shows project-relative headers and the change', /^diff --git a\/keep\.txt b\/keep\.txt$/m.test(d) && /^\+LINE TWO$/m.test(d) && /^-line2$/m.test(d) && /^\+\+\+ b\/made\.txt$/m.test(d) && !/\/tmp\//.test(d.split('\n').filter((l) => l.startsWith('diff') || l.startsWith('---') || l.startsWith('+++')).join('\n')), d.slice(0, 300));
+  let u = undoTurn(s, done!.id);
+  check('git: undo restores the edit, removes the created file, reverts the shell edit', u.ok && read('keep.txt') === 'line1\nline2\nline3\n' && !fs.existsSync(path.join(DEMO, 'made.txt')) && read('shelled.txt') === 'a\n' && s.turns[0].undone === true, u.error);
+  check('git: undo twice is refused', !undoTurn(s, done!.id).ok);
+
+  // --- undo refused when a file changed after the turn (nothing restored).
+  s = sess('t'); beginTurn('t');
+  r = await runWith([textCalls({ name: 'write_file', arguments: { path: 'keep.txt', content: 'turn wrote this\n' } }), textCalls({ name: 'write_file', arguments: { path: 'other.txt', content: 'also\n' } }), say('ok')], 'w');
+  done = endTurn(s);
+  fs.writeFileSync(path.join(DEMO, 'keep.txt'), 'turn wrote this\nand the user added a line\n');
+  u = undoTurn(s, done!.id);
+  check('refused: a file changed after the turn → refused with the file named, nothing touched', !u.ok && /keep\.txt changed after this turn ended/.test(u.error ?? '') && read('other.txt') === 'also\n' && !s.turns[0].undone, u.error);
+  fs.writeFileSync(path.join(DEMO, 'keep.txt'), 'turn wrote this\n');
+  check('refused: once the file is back as the turn left it, undo works', undoTurn(s, done!.id).ok && read('keep.txt') === 'line1\nline2\nline3\n' && !fs.existsSync(path.join(DEMO, 'other.txt')));
+
+  // --- a turn that changes nothing leaves no checkpoint.
+  s = sess('t'); beginTurn('t');
+  r = await runWith([textCalls({ name: 'read_file', arguments: { path: 'keep.txt' } }), say('ok')], 'read');
+  check('no changes → no checkpoint', endTurn(s) === null && s.turns.length === 0);
+
+  // --- non-git folder: file-tool edits are tracked through the before-copies.
+  const plain = fs.mkdtempSync(path.join(path.dirname(DEMO), 'plain-'));
+  fs.writeFileSync(path.join(plain, 'notes.md'), '# notes\n');
+  const prevFolders = (await import(`${SRC}/config.ts`)).getSettings().approvedFolders;
+  updateSettings({ approvedFolders: [plain] });
+  s = sess('t'); cp = beginTurn('t');
+  r = await runWith([
+    textCalls({ name: 'edit_file', arguments: { path: 'notes.md', old_string: '# notes', new_string: '# Notes\n\nmore' } }),
+    textCalls({ name: 'write_file', arguments: { path: 'sub/new.txt', content: 'x\ny\n' } }),
+    say('ok'),
+  ], 'edit in a plain folder');
+  done = endTurn(s);
+  check('non-git: changed files listed', !!done && rels(done) === 'notes.md:modified:+3-1 sub/new.txt:added:+2-0', done ? rels(done) : 'null');
+  u = undoTurn(s, done!.id);
+  check('non-git: undo after an edit and after a write', u.ok && fs.readFileSync(path.join(plain, 'notes.md'), 'utf8') === '# notes\n' && !fs.existsSync(path.join(plain, 'sub/new.txt')), u.error);
+  deleteCheckpoints('t');
+  check('deleted with the session', !fs.existsSync(path.join(CHECKPOINT_DIR, 't')));
+  updateSettings({ approvedFolders: prevFolders, requireReadBeforeEdit: true });
+  resetReads('t');
+  approve = false;
+}
+
 server.close();
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

@@ -5,6 +5,7 @@ import { saveSession } from '../store.js';
 import { bus } from './bus.js';
 import { compactMain, maybeCompactMain, verifiedFileFacts } from './compact.js';
 import { assessGoal, goalCouncilAssessTask, parseAssessment } from './goal.js';
+import { beginTurn, endTurn } from '../checkpoints.js';
 import { runLoop } from './loop.js';
 import { goalContinuePrompt, mainSystemPrompt } from './prompts.js';
 import { WorkerManager } from './workers.js';
@@ -383,6 +384,8 @@ export class SessionRunner {
       }
       s.model = model;
       this.ensureSystemPrompt();
+      // Solo edits land on disk directly; the turn's checkpoint makes them visible and undoable.
+      beginTurn(sid);
 
       // Main loop, possibly repeated by the goal controller.
       // eslint-disable-next-line no-constant-condition
@@ -477,6 +480,8 @@ export class SessionRunner {
       }
     } finally {
       this.abort = null;
+      const cp = endTurn(s);
+      if (cp) bus.log('info', `[checkpoint] turn changed ${cp.files.length} file${cp.files.length === 1 ? '' : 's'} (+${cp.files.reduce((n, f) => n + f.added, 0)} −${cp.files.reduce((n, f) => n + f.removed, 0)}); Undo this turn is available under the answer`);
       bus.emit({ type: 'agent_status', sessionId: sid, agent: 'main', status: 'idle' });
       this.persist();
       this.sync();

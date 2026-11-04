@@ -7,6 +7,7 @@ import { fail, ok, optNum, optStr, str, truncate, type ToolDef } from './types.j
 import { describeText, describeTextLine, fixDoubleEscapedText } from '../jsonRepair.js';
 import { inlineBudgetChars } from '../spill.js';
 import { editRefusal, fingerprint, recordRead } from './readTracker.js';
+import { beforeEdit } from '../checkpoints.js';
 
 export const read_file: ToolDef = {
   schema: {
@@ -92,6 +93,7 @@ export const write_file: ToolDef = {
     const content = repaired.text;
     const refused = await editRefusal(ctx.sessionId, ctx.agent, p);
     if (refused) return fail(refused);
+    beforeEdit(ctx.sessionId, p);
     await fs.mkdir(path.dirname(p), { recursive: true });
     const existed = await fs
       .access(p)
@@ -133,6 +135,7 @@ export const edit_file: ToolDef = {
     if (oldStr === '') return fail('old_string must not be empty.');
     const refused = await editRefusal(ctx.sessionId, ctx.agent, p);
     if (refused) return fail(refused);
+    beforeEdit(ctx.sessionId, p);
     const content = await fs.readFile(p, 'utf8');
     const count = content.split(oldStr).length - 1;
     if (count === 0) return fail(`old_string not found in ${p}. Read the file and copy the text exactly.`);

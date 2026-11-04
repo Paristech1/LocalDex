@@ -165,6 +165,30 @@ export interface Session {
   councilRuns?: CouncilRun[];
   /** Each member's own vendor session from Council-mode chat turns, so a follow-up can continue it instead of resending history. */
   memberSessions?: Partial<Record<MemberId, MemberSessionRef>>;
+  /** Solo turns that changed files, oldest first (capped), with Undo. */
+  turns?: TurnCheckpoint[];
+}
+
+/** One Solo turn's file changes, kept so the user can see the diff and undo it (last 20 turns). */
+export interface TurnCheckpoint {
+  id: string;
+  startedAt: number;
+  endedAt?: number;
+  /** The folder that was snapshotted (repo root, or the first approved folder). */
+  folder: string;
+  files: TurnFile[];
+  undone?: boolean;
+  undoneAt?: number;
+}
+
+export interface TurnFile {
+  /** Absolute path. */
+  path: string;
+  /** Relative to the checkpoint folder (absolute when outside it). */
+  rel: string;
+  kind: 'added' | 'modified' | 'deleted';
+  added: number;
+  removed: number;
 }
 
 export interface MemberSessionRef {
@@ -820,6 +844,7 @@ export type ServerEvent =
   | { type: 'ask_user'; sessionId: string; agent: AgentId; id: string; question: string }
   | { type: 'prompt_resolved'; id: string }
   | { type: 'error'; sessionId?: string; message: string }
+  | { type: 'turn_diff'; sessionId: string; turnId: string; diff: string }
   | { type: 'log'; level: 'info' | 'warn' | 'error'; message: string };
 
 export type ClientEvent =
@@ -844,6 +869,8 @@ export type ClientEvent =
   | { type: 'ask_user_response'; id: string; answer: string }
   | { type: 'set_goal'; sessionId: string; goal: { mode: GoalMode; brief: string; doneCriteria: string; maxIterations: number; lead?: GoalLead } }
   | { type: 'clear_goal'; sessionId: string }
+  | { type: 'undo_turn'; sessionId: string; turnId: string }
+  | { type: 'get_turn_diff'; sessionId: string; turnId: string }
   | { type: 'compact'; sessionId: string }
   | { type: 'set_mode'; sessionId: string; mode: SessionMode }
   /** deep: also list each member's models (the health check). */

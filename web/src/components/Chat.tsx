@@ -53,7 +53,7 @@ export function Chat() {
       >
         <div className="max-w-3xl mx-auto">
           {session.messages.length <= 1 && !showLive && !liveRun && <Welcome noFolders={!!noFolders} council={councilMode} />}
-          <MessageList messages={session.messages} pending={pendingTools} running={running} />
+          <MessageList messages={session.messages} pending={pendingTools} running={running} turns={session.turns} />
           {afterAnswer && !picker && (
             <div className="-mt-1 mb-2">
               <button type="button" onClick={() => setPicker(true)} className="text-[11px] text-ink-400 hover:text-[#7cc0f2]" title="Send your latest request, with a summary of what the local agent did, to the cloud council. The chat stays in Solo.">

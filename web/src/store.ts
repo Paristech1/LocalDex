@@ -65,6 +65,8 @@ export interface State {
   error: string | null;
   /** Text (and flags) another component asked the composer to load, e.g. "Wrong? Mark not risky" on a run card. */
   composerDraft: { text: string; notRisky?: boolean; nonce: number } | null;
+  /** Diffs of Solo turns fetched on demand, by turn id. */
+  turnDiffs: Record<string, string>;
 }
 
 let state: State = {
@@ -81,6 +83,7 @@ let state: State = {
   mcp: [],
   skills: [],
   unavailableTools: {},
+  turnDiffs: {},
   council: [],
   councilStats: null,
   councilLogin: null,
@@ -302,6 +305,9 @@ function handle(ev: ServerEvent): void {
       return;
     case 'log':
       set((s) => ({ logs: [...s.logs.slice(-199), { id: ++logId, level: ev.level, message: ev.message, ts: Date.now() }] }));
+      return;
+    case 'turn_diff':
+      set((s) => ({ turnDiffs: { ...s.turnDiffs, [ev.turnId]: ev.diff } }));
       return;
   }
 }

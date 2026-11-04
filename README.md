@@ -31,6 +31,14 @@ Browser (React UI)  <-- WebSocket -->  LocalDex server (Node)  -->  LM Studio :1
   Loop mode keeps working within a brief indefinitely. In Council mode the goal is **led by the
   council** by default: each iteration is a council turn and the checkpoint is a read-only council
   reviewer; the Goal panel's **Led by** picker switches between the local model and the council.
+- **Changed files + Undo this turn** – every Solo turn that touches files gets a card under the
+  answer: the files with +/− counts, the diff on demand, and **Undo this turn**, which puts every
+  listed file back to how it was when the turn started. Git folders are snapshotted at turn start
+  and end through a temporary index (your own index and staged changes are never touched), so
+  shell edits count too; outside git, edits made by the file tools are tracked. Undo is
+  all-or-nothing and refuses, changing nothing, if a file changed after the turn ended (undo the
+  later turns first). The last 20 turns per session are kept under `~/.localdex/checkpoints/` and
+  survive restarts. Pattern borrowed from DeepSeek Harness `workspace-changes` (reimplemented).
 - **Compact & Resume** – manual or automatic (at a configurable fraction of the context window):
   the model summarizes decisions, files changed, open items and worker state, and a fresh context
   is seeded with the summary. The full transcript is archived in the session file.

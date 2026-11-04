@@ -66,7 +66,7 @@ Each task lists **Why** (the evidence), **Where** (files), **Borrow** (the DeepS
 | 2 | C3 | Keep the prompt prefix stable for prompt caching | P1 | S |
 | 2 | C4 | Load project instructions (`AGENTS.md` / `CLAUDE.md` / `LOCALDEX.md`) | P1 | S |
 | 3 | S1 | Read-before-edit + stale-file check | P0 | S | ✅ done |
-| 3 | S2 | Per-turn checkpoints: changed-files card, diffs, **Undo this turn** | P0 | L |
+| 3 | S2 | Per-turn checkpoints: changed-files card, diffs, **Undo this turn** | P0 | L | ✅ done |
 | 3 | S3 | Shell sandbox (macOS Seatbelt / Linux bwrap) + permission presets | P1 | M |
 | 3 | S4 | Auto-review for approval prompts (experimental) | P2 | M |
 | 3 | S5 | Run existing Claude Code / Codex hooks (experimental) | P3 | M |
