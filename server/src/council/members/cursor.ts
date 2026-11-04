@@ -132,14 +132,14 @@ export const cursorMember: MemberAdapter = {
     return { models: list.map((m) => m.id).filter(Boolean), source: 'account' };
   },
 
-  async login(onUrl, signal) {
+  async login(hooks, signal) {
     const sdk = await loadSdk();
     if (!sdk) return { ok: false, error: `@cursor/sdk could not be loaded${sdkLoadError ? `: ${sdkLoadError}` : ' (run npm install in the LocalDex folder)'}` };
     try {
       const app = getSettings().council.loginBrowser?.trim();
       // With a chosen browser we open the page ourselves; otherwise the SDK uses the system default.
       const openBrowser = app ? (url: string) => openInApp(app, url) : true;
-      const r = await sdk.Cursor.auth.login({ openBrowser, onLoginUrl: onUrl, signal, apiKeyName: 'LocalDex council' });
+      const r = await sdk.Cursor.auth.login({ openBrowser, onLoginUrl: (url) => hooks.onUrl(url), signal, apiKeyName: 'LocalDex council' });
       return { ok: true, account: r.email };
     } catch (e) {
       return { ok: false, error: (e as Error).message };

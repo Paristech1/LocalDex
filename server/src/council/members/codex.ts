@@ -1,5 +1,5 @@
 import { getSettings } from '../../config.js';
-import { memberEnv, resolveBinary, runCapture, runJsonl, runQuick } from '../proc.js';
+import { lastLines, loginEnv, memberEnv, resolveBinary, runCapture, runJsonl, runLogin, runQuick } from '../proc.js';
 import { RESUME_FAILED_RE, detectLimit, parseResetAt, promptWithInstructions, stringify, type MemberAdapter, type MemberResult, type MemberRunOptions } from '../types.js';
 import type { MemberBilling } from '@localdex/shared';
 
@@ -35,7 +35,7 @@ export const codexMember: MemberAdapter = {
 
   async status() {
     const b = bin();
-    const base = { id: 'codex' as const, label: 'Codex', loginCommand: 'codex login', canLoginInApp: false };
+    const base = { id: 'codex' as const, label: 'Codex', loginCommand: 'codex login', canLoginInApp: true };
     if (!b) return { ...base, installed: false, signedIn: false, billing: 'unknown' as MemberBilling };
     const v = runQuick(b, ['--version']);
     const version = (v.stdout || v.stderr).trim().split('\n').find((l) => /codex/i.test(l))?.slice(0, 60);
@@ -44,6 +44,15 @@ export const codexMember: MemberAdapter = {
     const signedIn = /logged in/i.test(out) && !/not logged in/i.test(out);
     const billing: MemberBilling = !signedIn ? 'unknown' : /api key/i.test(out) ? 'api' : /chatgpt/i.test(out) ? 'plan' : 'unknown';
     return { ...base, installed: true, version, path: b, signedIn, billing };
+  },
+
+  /** `codex login`: "Sign in with ChatGPT" in the browser, finished through a local callback (no code to paste). */
+  async login(hooks, signal) {
+    const b = bin();
+    if (!b) return { ok: false, error: 'Install the Codex CLI first.' };
+    const r = await runLogin(b, ['login'], { env: loginEnv(), signal, hooks, urlFilter: /openai\.com/ });
+    if (r.code === 0) return { ok: true };
+    return { ok: false, error: signal.aborted ? 'Sign-in cancelled.' : lastLines(r.output) || `codex login exited with ${r.code}` };
   },
 
   /**
