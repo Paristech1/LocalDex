@@ -13,7 +13,16 @@ function environment(): string {
     folders.length
       ? `Approved folders (you may only read/write inside these): ${folders.join(', ')}\nDefault working directory: ${folders[0]}`
       : 'No folders are approved yet. Ask the user to add one in Settings → Workspace before using file or shell tools.',
+    ...presetNote(),
   ].join('\n');
+}
+
+/** Permission preset (S3). Changes the prompt only when the user switches presets. */
+function presetNote(): string[] {
+  const preset = getSettings().permissionPreset ?? 'full';
+  if (preset === 'workspace') return ['Shell commands run in a sandbox: they may only write inside the approved folders, temp and tool caches. If a command is blocked, the user is asked once whether to allow it.'];
+  if (preset === 'read-only') return ['Read only mode: you cannot change files. Shell commands run in a sandbox that blocks writes, and write_file/edit_file are off. Inspect, then tell the user what you would change.'];
+  return [];
 }
 
 /**

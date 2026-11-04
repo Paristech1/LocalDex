@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { ALL_TOOL_NAMES, type ReasoningMode, type Settings, type ShellApprovalMode, type ToolMode } from '@localdex/shared';
+import { ALL_TOOL_NAMES, type PermissionPreset, type ReasoningMode, type Settings, type ShellApprovalMode, type ToolMode } from '@localdex/shared';
 import { send, useStore } from '../store';
 import { collectDropped, fromInput, importGithub, removeSkill, setSkillEnabled, summarize, uploadSkills, type UploadEntry } from '../skills';
 import { Button, Field, Toggle, cx, inputCls } from './ui';
@@ -148,6 +148,7 @@ function WorkspaceTab({ settings, patch }: TabProps) {
         </div>
       )}
       <div className="pt-2">
+        <PermissionsPicker settings={settings} patch={patch} />
         <Field label="Shell command approval" hint="'Dangerous only' prompts for rm -rf, sudo, force-push, curl|sh and similar. 'Always' prompts for every command.">
           <select className={inputCls} value={settings.shellApproval} onChange={(e) => patch({ shellApproval: e.target.value as ShellApprovalMode })}>
             <option value="dangerous">Dangerous only (recommended)</option>
@@ -160,6 +161,37 @@ function WorkspaceTab({ settings, patch }: TabProps) {
         </div>
       </div>
     </>
+  );
+}
+
+const PRESETS: { id: PermissionPreset; label: string; hint: string; needsSandbox: boolean }[] = [
+  { id: 'full', label: 'Full access', hint: 'Today\'s behaviour: shell commands run with your user\'s rights. File tools stay inside the approved folders.', needsSandbox: false },
+  { id: 'workspace', label: 'Workspace (sandboxed)', hint: 'Shell commands may only write inside the approved folders, temp and tool caches (npm, pip…). A blocked command asks you once whether to allow it. Recommended.', needsSandbox: true },
+  { id: 'read-only', label: 'Read only', hint: 'Nothing can change your files: shell writes are blocked and write_file / edit_file are off. Good for reviews and questions.', needsSandbox: true },
+];
+
+/** S3: sandbox + write tools as one choice. Presets that need a sandbox are disabled when this machine has none. */
+function PermissionsPicker({ settings, patch }: TabProps) {
+  const sandbox = useStore((s) => s.sandbox);
+  const current = settings.permissionPreset ?? 'full';
+  const backend = sandbox?.kind === 'seatbelt' ? 'macOS Seatbelt' : sandbox?.kind === 'bwrap' ? 'bubblewrap' : null;
+  return (
+    <Field label="Permissions" hint={sandbox?.available ? `Sandbox: ${backend}.` : `No sandbox on this machine${sandbox?.reason ? ` (${sandbox.reason})` : ''}, so only Full access is available.`}>
+      <div role="radiogroup" aria-label="Permissions" className="space-y-1.5">
+        {PRESETS.map((p) => {
+          const disabled = p.needsSandbox && !sandbox?.available;
+          return (
+            <label key={p.id} className={cx('flex items-start gap-2 rounded-md border px-3 py-2 cursor-pointer', current === p.id ? 'border-accent/50 bg-accent/5' : 'border-ink-700', disabled && 'opacity-50 cursor-not-allowed')}>
+              <input type="radio" name="permissionPreset" className="mt-1" checked={current === p.id} disabled={disabled} onChange={() => patch({ permissionPreset: p.id })} />
+              <span>
+                <span className="text-sm text-ink-100">{p.label}</span>
+                <span className="block text-[11px] text-ink-400">{p.hint}</span>
+              </span>
+            </label>
+          );
+        })}
+      </div>
+    </Field>
   );
 }
 

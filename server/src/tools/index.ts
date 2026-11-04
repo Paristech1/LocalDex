@@ -1,4 +1,5 @@
 import type { ToolCall, ToolName, ToolSchema } from '@localdex/shared';
+import { readOnlyPreset } from './fs.js';
 import { getSettings } from '../config.js';
 import { edit_file, glob, list_dir, read_file, write_file } from './fs.js';
 import { grep } from './search.js';
@@ -80,6 +81,8 @@ export function enabledTools(kind: 'main' | 'worker', opts: ToolSetOptions = {})
     // Without node-pty (optional on Linux) the terminal tools can't work, so the model isn't shown them.
     .filter((name) => !TERMINAL_TOOLS.has(name) || ptyAvailable().ok)
     .filter((name) => !opts.planMode || isPlanTool(name))
+    // Read only preset (S3): the write tools are off.
+    .filter((name) => !(readOnlyPreset() && (name === 'write_file' || name === 'edit_file')))
     .map((name) => registry[name].schema);
   return opts.planMode ? builtin : [...builtin, ...mcpToolSchemas(kind)];
 }

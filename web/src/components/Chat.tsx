@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { MEMBER_IDS, RUN_ACCESS_LABELS, defaultRunAccess, type ChatMessage, type CouncilRunAccess, type EscalatePattern, type MemberId } from '@localdex/shared';
+import { MEMBER_IDS, RUN_ACCESS_LABELS, defaultRunAccess, type ChatMessage, type CouncilRunAccess, type EscalatePattern, type MemberId, type PermissionPreset } from '@localdex/shared';
 import { send, useStore, type Prompt } from '../store';
 import { AssistantBubble, MessageList } from './Message';
 import { ToolCard } from './ToolCard';
@@ -236,6 +236,7 @@ function Composer({
           <span className="truncate">{statusLabel(status as never, detail)}</span>
         </div>
         <div className="flex items-center gap-2">
+          {!council && <PresetPicker />}
           {council && <AccessPicker value={access} onChange={setAccess} />}
           {council && <NotRiskyChip value={notRisky} onChange={setNotRisky} />}
           {onEscalate && (
@@ -254,6 +255,37 @@ function Composer({
         </div>
       </div>
     </div>
+  );
+}
+
+const PRESET_SHORT: Record<PermissionPreset, string> = { full: 'Full access', workspace: 'Sandboxed', 'read-only': 'Read only' };
+const PRESET_TITLE: Record<PermissionPreset, string> = {
+  full: 'Shell commands run with your user\'s rights (file tools stay in the approved folders)',
+  workspace: 'Shell commands may only write inside the approved folders, temp and tool caches',
+  'read-only': 'Nothing can change your files: shell writes blocked, write_file / edit_file off',
+};
+
+/** Solo mode: the Permissions preset (Settings → Workspace), switchable from the composer. It is a setting, not per message. */
+function PresetPicker() {
+  const settings = useStore((s) => s.settings);
+  const sandbox = useStore((s) => s.sandbox);
+  if (!settings) return null;
+  const value = settings.permissionPreset ?? 'full';
+  return (
+    <select
+      aria-label="Permissions"
+      title={`${PRESET_TITLE[value]}. Applies from the next step; also in Settings → Workspace.`}
+      value={value}
+      onChange={(e) => send({ type: 'set_settings', patch: { permissionPreset: e.target.value as PermissionPreset } })}
+      className={cx('rounded-md border bg-transparent px-1.5 py-1 text-[11px]', value === 'full' ? 'border-ink-600 text-ink-400' : 'border-accent/50 text-accent')}
+    >
+      {(Object.keys(PRESET_SHORT) as PermissionPreset[]).map((p) => (
+        <option key={p} value={p} disabled={p !== 'full' && !sandbox?.available}>
+          {PRESET_SHORT[p]}
+          {p !== 'full' && !sandbox?.available ? ' (no sandbox)' : ''}
+        </option>
+      ))}
+    </select>
   );
 }
 

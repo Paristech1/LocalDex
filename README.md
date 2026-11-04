@@ -139,7 +139,7 @@ commands (`/ask`, `/build`, `/review`, `/vote`, `/arena` …) are listed under
 
 ## Settings
 
-- **Workspace** – approved folders (first one is the default cwd), shell approval mode.
+- **Workspace** – approved folders (first one is the default cwd), **Permissions** preset, shell approval mode.
 - **Model & Agent** – LM Studio base URL, default and worker model, tool call mode (auto/native/text),
   temperature, max steps per run, context length override, auto-compact threshold, worker concurrency.
 - **Capabilities** – toggle individual tools. Fewer tools make small models more reliable.
@@ -154,6 +154,18 @@ LocalDex can read your files and run commands, so it only accepts your own brows
 - The server listens on `127.0.0.1` only, so other machines on your network cannot reach it. (`LOCALDEX_HOST=0.0.0.0` overrides this; don't, unless you know why.)
 - The WebSocket and every `/api` route reject requests from other websites (foreign `Origin`) and from rebinding tricks (foreign `Host`). Other websites you visit can no longer drive the agent through your localhost.
 - If you serve the UI from another local hostname, add it with `LOCALDEX_ALLOWED_HOSTS=name1,name2`.
+
+### Permissions (shell sandbox)
+
+**Settings → Workspace → Permissions** (also a picker in the Solo composer) sets how much the local agent's shell can change:
+
+| Preset | Shell commands | File tools |
+|---|---|---|
+| **Full access** (default) | Run with your user's rights | `write_file` / `edit_file` inside the approved folders |
+| **Workspace (sandboxed)** | May only write inside the approved folders, temp and tool caches (`~/.npm`, `~/.cache`, …). A blocked command asks you once whether to run it with full access | Same as above |
+| **Read only** | Writes are blocked everywhere, including the approved folders. No escalation | `write_file` / `edit_file` are off |
+
+The sandbox is macOS Seatbelt (`sandbox-exec`) or Linux bubblewrap (`sudo apt install bubblewrap`). It covers `shell_run`, background jobs and `terminal_*`. With no sandbox on the machine, the sandboxed presets are unavailable, and a preset that needs one **fails closed** (nothing runs) rather than running unconfined. Extra writable folders for the Workspace preset go in `~/.localdex/config.json` as `"sandboxExtraWritable": ["~/somewhere"]` (not editable from the UI). `LOCALDEX_SANDBOX=none` forces "no sandbox" for debugging. Council members are separate: they use their vendor's own sandbox and the per-message access switch.
 
 ## Project instructions
 

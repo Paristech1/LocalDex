@@ -25,6 +25,7 @@ import { deleteCheckpoints, turnDiff, undoTurn } from './checkpoints.js';
 import { resetReads } from './tools/readTracker.js';
 import { forgetInstructions } from './agent/instructions.js';
 import { unavailableTools } from './tools/index.js';
+import { sandboxStatus } from './sandbox.js';
 import { closeAllMcp, mcpStatuses, reloadMcp } from './mcp/client.js';
 import { LIMITS, listSkills, removeSkill, setSkillEnabled } from './skills/store.js';
 import { BIND_HOST, checkRequest, checkUpgrade } from './security.js';
@@ -204,7 +205,7 @@ async function refreshModels(): Promise<void> {
 wss.on('connection', (ws) => {
   const sessions = listSessions();
   const current = sessions[0] ? getSession(sessions[0].id) : null;
-  send(ws, { type: 'hello', settings: getSettings(), sessions, session: current, models: modelsCache, unavailableTools: unavailableTools() });
+  send(ws, { type: 'hello', settings: getSettings(), sessions, session: current, models: modelsCache, unavailableTools: unavailableTools(), sandbox: sandboxStatus() });
   send(ws, { type: 'mcp_status', servers: mcpStatuses() });
   send(ws, { type: 'skills', skills: listSkills() });
   const cached = cachedStatuses();
@@ -284,7 +285,10 @@ async function handle(ws: WebSocket, ev: ClientEvent): Promise<void> {
     }
     case 'set_settings': {
       // MCP server definitions run local programs, so only enable/disable toggles are accepted over the socket.
-      const { mcpServers, council, ...rest } = ev.patch;
+      // sandboxExtraWritable widens what a sandboxed shell may write: config file only, like MCP commands.
+      const { mcpServers, council, sandboxExtraWritable: _extra, ...rest } = ev.patch;
+      void _extra;
+      if (rest.permissionPreset !== undefined && !['full', 'workspace', 'read-only'].includes(rest.permissionPreset)) delete rest.permissionPreset;
       let settings = updateSettings(council ? { ...rest, council: stripCouncilCommands(council) as typeof council } : rest);
       if (mcpServers) {
         settings = applyMcpToggles(mcpServers);

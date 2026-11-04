@@ -683,6 +683,23 @@ export interface McpServerStatus {
 export type ShellApprovalMode = 'always' | 'dangerous' | 'never';
 
 /**
+ * Permission preset (S3): sandbox mode and file-write tools together.
+ * full = today's behaviour; workspace = shell writes only inside approved folders, temp and tool caches;
+ * read-only = shell can't write user files and write_file/edit_file are off.
+ */
+export type PermissionPreset = 'full' | 'workspace' | 'read-only';
+
+/** Which OS sandbox this machine can run (macOS Seatbelt, Linux bubblewrap). */
+export interface SandboxStatus {
+  available: boolean;
+  kind: 'seatbelt' | 'bwrap' | null;
+  /** bwrap binary path. */
+  path?: string;
+  /** Why it is unavailable. */
+  reason?: string;
+}
+
+/**
  * How tool calls are exchanged with the model.
  * native: OpenAI `tools` / `tool_calls` (needs a chat template with tool support)
  * text:   tools are described in the system prompt and the model writes <tool_call>JSON</tool_call>
@@ -716,6 +733,10 @@ export interface Settings {
   approvedFolders: string[];
   capabilities: Record<ToolName, boolean>;
   shellApproval: ShellApprovalMode;
+  /** Sandbox + write-tool preset for the local agent's shell and file tools (S3). Default 'full'. */
+  permissionPreset: PermissionPreset;
+  /** Extra folders sandboxed shells may write (Workspace preset). Edit in ~/.localdex/config.json. */
+  sandboxExtraWritable?: string[];
   /**
    * edit_file, and write_file on an existing file, need a read_file of that file first in the same context, and the
    * file must not have changed since (so the model never edits blind or overwrites outside changes). Default on.
@@ -868,6 +889,7 @@ export const DEFAULT_SETTINGS: Settings = {
   approvedFolders: [],
   capabilities: DEFAULT_CAPABILITIES,
   shellApproval: 'dangerous',
+  permissionPreset: 'full',
   requireReadBeforeEdit: true,
   projectInstructions: true,
   webSearchUrl: '',
@@ -923,6 +945,7 @@ export type ServerEvent =
       models: ModelInfo[];
       /** Built-in tools this install can't run (e.g. terminal_* without node-pty) and why. */
       unavailableTools?: Partial<Record<ToolName, string>>;
+      sandbox?: SandboxStatus;
     }
   | { type: 'session'; session: Session }
   | { type: 'sessions'; sessions: SessionSummary[] }

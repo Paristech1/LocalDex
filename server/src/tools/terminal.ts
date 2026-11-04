@@ -4,6 +4,7 @@ import { createRequire } from 'node:module';
 import { defaultCwd, resolvePath, shellNeedsApproval } from './permissions.js';
 import { fail, ok, optNum, optStr, str, truncate, type ToolDef } from './types.js';
 import { DECLINED_COMMAND } from './types.js';
+import { SandboxUnavailableError, wrapCommand } from '../sandbox.js';
 
 const require = createRequire(import.meta.url);
 
@@ -105,7 +106,14 @@ export const terminal_open: ToolDef = {
       return fail(`node-pty unavailable: ${(e as Error).message}. ${PTY_UNAVAILABLE_NOTE}`);
     }
     const id = `term${++counter}`;
-    const proc = pty.spawn(SHELL, ['-l'], {
+    let w: { file: string; args: string[] };
+    try {
+      w = wrapCommand(SHELL, ['-l']);
+    } catch (e) {
+      if (e instanceof SandboxUnavailableError) return fail(e.message);
+      throw e;
+    }
+    const proc = pty.spawn(w.file, w.args, {
       name: 'xterm-256color',
       cols: 120,
       rows: 40,

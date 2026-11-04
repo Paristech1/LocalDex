@@ -980,6 +980,91 @@ console.log('\n# X. Stats: per-step time to first token, model vs tool time, tok
   check('a step that streamed nothing has no TTFT', summarizeStats([{ ts: 0, agent: 'main', promptTokens: 1, completionTokens: 0, ttftMs: null, modelMs: 5, toolMs: 0, tools: 0 }]).ttftMedianMs === null);
 }
 
+// ---------- Y: Shell sandbox + permission presets (S3) ----------
+console.log('\n# Y. Shell sandbox + permission presets');
+{
+  const os = await import('node:os');
+  const sbx = await import(`${SRC}/sandbox.ts`);
+  const { shell_run } = await import(`${SRC}/tools/shell.ts`);
+  const { write_file } = await import(`${SRC}/tools/fs.ts`);
+  const asked: string[] = [];
+  let allow = false;
+  const ctxFor = () => ({ sessionId: 'sbx', agent: 'main', signal: new AbortController().signal, requestApproval: async (c: string) => (asked.push(c), allow), askUser: async () => '' });
+
+  // Pure profile builders.
+  const sb = sbx.seatbeltProfileArgs(['/Users/p/proj', '/private/tmp']);
+  check('seatbelt: allow-default, deny writes, allow-list of roots', sb[0] === '-p' && /\(allow default\)/.test(sb[1]) && /\(deny file-write\*\)/.test(sb[1]) && /\(subpath "\/Users\/p\/proj"\)/.test(sb[1]) && /\(literal "\/dev\/null"\)/.test(sb[1]), sb[1]);
+  check('seatbelt: quotes in paths are escaped', /\\"/.test(sbx.seatbeltProfileArgs(['/a"b'])[1]));
+  const bw = sbx.bwrapProfileArgs('workspace-write', ['/w']).join(' ');
+  check('bwrap: read-only root, private /tmp and PID namespace, writable bind', /--ro-bind \/ \//.test(bw) && /--tmpfs \/tmp/.test(bw) && /--unshare-pid/.test(bw) && /--bind \/w \/w/.test(bw), bw);
+  const bwro = sbx.bwrapProfileArgs('read-only', [], ['/proj']).join(' ');
+  check('bwrap read-only: approved folder mounted read-only, not writable', /--ro-bind \/proj \/proj/.test(bwro) && !/--bind \/proj/.test(bwro), bwro);
+  updateSettings({ permissionPreset: 'read-only' });
+  const roRoots = sbx.writableRoots('read-only');
+  check('read-only roots never include the approved folder', !roRoots.some((r: string) => r === fs.realpathSync(DEMO)), JSON.stringify(roRoots));
+  updateSettings({ permissionPreset: 'full' });
+  check('full access: command passes through unwrapped', sbx.wrapCommand('/bin/sh', ['-c', 'true']).sandboxed === false);
+
+  // Read only preset hides and refuses the write tools.
+  updateSettings({ permissionPreset: 'read-only' });
+  const names = enabledTools('main').map((t: any) => t.function.name);
+  check('read-only: write_file and edit_file hidden from the model', !names.includes('write_file') && !names.includes('edit_file') && names.includes('read_file'), names.join(','));
+  const wr = await write_file.run({ path: 'ro.txt', content: 'x' }, ctxFor() as any);
+  check('read-only: write_file refused if called anyway', !wr.ok && /Read only/.test(wr.content) && !fs.existsSync(path.join(DEMO, 'ro.txt')), wr.content);
+  updateSettings({ permissionPreset: 'full' });
+
+  // Fail closed when the preset needs a sandbox the machine doesn't have.
+  process.env.LOCALDEX_SANDBOX = 'none';
+  sbx.resetSandboxCache();
+  updateSettings({ permissionPreset: 'workspace' });
+  const closed = await shell_run.run({ command: `touch ${path.join(DEMO, 'should-not-exist.txt')}` }, ctxFor() as any);
+  check('no sandbox: fails closed, nothing runs', !closed.ok && /needs a sandbox/.test(closed.content) && !fs.existsSync(path.join(DEMO, 'should-not-exist.txt')), closed.content);
+  const closedJob = await shell_run.run({ command: 'true', background: true }, { ...ctxFor(), jobs: true } as any);
+  check('no sandbox: background job fails closed too', !closedJob.ok && /needs a sandbox/.test(closedJob.content), closedJob.content);
+  delete process.env.LOCALDEX_SANDBOX;
+  sbx.resetSandboxCache();
+
+  const st = sbx.sandboxStatus();
+  console.log(`  (sandbox on this machine: ${st.available ? st.kind : `none — ${st.reason}`})`);
+  if (st.available) {
+    const outsideDir = fs.mkdtempSync(path.join(os.homedir(), '.localdex-sbx-test-'));
+    const outside = path.join(outsideDir, 'outside.txt');
+    try {
+      updateSettings({ permissionPreset: 'workspace' });
+      const inside = await shell_run.run({ command: `echo ok > ${path.join(DEMO, 'sbx-inside.txt')} && cat ${path.join(DEMO, 'sbx-inside.txt')}` }, ctxFor() as any);
+      check('workspace: writing inside the approved folder works', inside.ok && /sandboxed/.test(inside.content) && read('sbx-inside.txt').trim() === 'ok', inside.content);
+      asked.length = 0;
+      allow = false;
+      const blocked = await shell_run.run({ command: `touch ${outside}` }, ctxFor() as any);
+      check('workspace: write outside is blocked, user asked once, declined', !blocked.ok && asked.length === 1 && /sandbox blocked/.test(asked[0]) && /declined full access/.test(blocked.content) && !fs.existsSync(outside), `${asked.length} ${blocked.content.slice(0, 300)}`);
+      asked.length = 0;
+      allow = true;
+      const escalated = await shell_run.run({ command: `touch ${outside}` }, ctxFor() as any);
+      check('workspace: approved escalation re-runs once with full access', escalated.ok && asked.length === 1 && fs.existsSync(outside) && /re-run once with full access/.test(escalated.content), escalated.content);
+      fs.rmSync(outside, { force: true });
+      allow = false;
+      const reading = await shell_run.run({ command: `cat ${path.join(DEMO, 'sbx-inside.txt')}` }, ctxFor() as any);
+      check('workspace: reads are unaffected', reading.ok && /ok/.test(reading.content));
+
+      updateSettings({ permissionPreset: 'read-only' });
+      asked.length = 0;
+      const roWrite = await shell_run.run({ command: `touch ${path.join(DEMO, 'sbx-ro.txt')}` }, ctxFor() as any);
+      check('read-only: shell cannot write even inside the approved folder, and no escalation is offered', !roWrite.ok && asked.length === 0 && /Read only/.test(roWrite.content) && !fs.existsSync(path.join(DEMO, 'sbx-ro.txt')), roWrite.content.slice(0, 300));
+      const roRead = await shell_run.run({ command: `cat ${path.join(DEMO, 'sbx-inside.txt')}` }, ctxFor() as any);
+      check('read-only: shell can still read the approved folder', roRead.ok && /ok/.test(roRead.content), roRead.content.slice(0, 300));
+
+      updateSettings({ permissionPreset: 'workspace' });
+      const { startJob, getJob } = await import(`${SRC}/jobs.ts`);
+      const job = startJob('sbx', 'main', `touch ${outside}; echo done`, DEMO);
+      for (let i = 0; i < 50 && getJob('sbx', job.id)?.status === 'running'; i++) await new Promise((r) => setTimeout(r, 100));
+      check('workspace: background jobs are sandboxed too', !fs.existsSync(outside), getJob('sbx', job.id)?.status);
+    } finally {
+      updateSettings({ permissionPreset: 'full' });
+      fs.rmSync(outsideDir, { recursive: true, force: true });
+    }
+  }
+}
+
 server.close();
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

@@ -9,6 +9,11 @@ import { inlineBudgetChars } from '../spill.js';
 import { editRefusal, fingerprint, recordRead } from './readTracker.js';
 import { beforeEdit } from '../checkpoints.js';
 import { noteTouched } from '../agent/instructions.js';
+import { getSettings } from '../config.js';
+
+/** Permissions preset "Read only" (S3): the write tools are hidden and refused. */
+export const readOnlyPreset = (): boolean => getSettings().permissionPreset === 'read-only';
+export const READ_ONLY_REFUSAL = 'File writes are off: the user picked the "Read only" permission preset (Settings → Workspace → Permissions). Do not try to write files another way; tell the user what you would change instead.';
 
 export const read_file: ToolDef = {
   schema: {
@@ -90,6 +95,7 @@ export const write_file: ToolDef = {
     },
   },
   async run(args, ctx) {
+    if (readOnlyPreset()) return fail(READ_ONLY_REFUSAL);
     const p = resolvePath(str(args.path, 'path'));
     const repaired = fixDoubleEscapedText(str(args.content, 'content'), p);
     const content = repaired.text;
@@ -131,6 +137,7 @@ export const edit_file: ToolDef = {
     },
   },
   async run(args, ctx) {
+    if (readOnlyPreset()) return fail(READ_ONLY_REFUSAL);
     const p = resolvePath(str(args.path, 'path'));
     const oldStr = str(args.old_string, 'old_string');
     const newStr = str(args.new_string, 'new_string');

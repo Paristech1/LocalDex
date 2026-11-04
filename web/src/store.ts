@@ -15,6 +15,7 @@ import type {
   ToolName,
   SessionSummary,
   Settings,
+  SandboxStatus,
 } from '@localdex/shared';
 
 export interface LiveTool {
@@ -60,6 +61,8 @@ export interface State {
   skills: SkillInfo[];
   /** Built-in tools this install can't run, with the reason (from hello). */
   unavailableTools: Partial<Record<ToolName, string>>;
+  /** Which OS sandbox the server can run (from hello), for the Permissions preset picker. */
+  sandbox: SandboxStatus | null;
   council: MemberStatus[];
   councilStats: CouncilStats | null;
   councilLogin: { member: MemberId; url?: string; done?: boolean; error?: string; needsCode?: boolean } | null;
@@ -86,6 +89,7 @@ let state: State = {
   mcp: [],
   skills: [],
   unavailableTools: {},
+  sandbox: null,
   turnDiffs: {},
   jobs: [],
   council: [],
@@ -172,7 +176,7 @@ function liveFor(live: Record<string, LiveAgent>, agent: string): LiveAgent {
 function handle(ev: ServerEvent): void {
   switch (ev.type) {
     case 'hello':
-      set({ settings: ev.settings, sessions: ev.sessions, session: ev.session, models: ev.models, unavailableTools: ev.unavailableTools ?? {}, live: {}, status: {}, prompts: [] });
+      set({ settings: ev.settings, sessions: ev.sessions, session: ev.session, models: ev.models, unavailableTools: ev.unavailableTools ?? {}, sandbox: ev.sandbox ?? null, live: {}, status: {}, prompts: [] });
       if (!ev.session) newSession();
       return;
     case 'session': {

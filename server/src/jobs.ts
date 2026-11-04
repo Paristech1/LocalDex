@@ -1,3 +1,4 @@
+import { wrapCommand } from './sandbox.js';
 import { spawn, type ChildProcess } from 'node:child_process';
 import type { AgentId, JobInfo } from '@localdex/shared';
 import { bus } from './agent/bus.js';
@@ -58,7 +59,9 @@ function total(j: Job): number {
 
 export function startJob(sessionId: string, agent: AgentId, command: string, cwd: string): JobInfo {
   const id = `job${++seq}`;
-  const child = spawn(SHELL, ['-lc', command], {
+  // Same permission preset as shell_run (throws SandboxUnavailableError when the preset needs a sandbox that isn't there).
+  const w = wrapCommand(SHELL, ['-lc', command]);
+  const child = spawn(w.file, w.args, {
     cwd,
     env: { ...process.env, TERM: 'dumb', NO_COLOR: '1', FORCE_COLOR: '0', CI: '1' },
     detached: process.platform !== 'win32',
