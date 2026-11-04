@@ -13,7 +13,7 @@
 
 | Rule | Detail |
 |---|---|
-| Branching | Phase 0 creates an integration branch, `dev/roadmap`. Each task then gets its own branch off `dev/roadmap` (`feat/<id>-<slug>`) and a PR back into `dev/roadmap`. **Never push to `main` and never merge a PR yourself.** Paris merges. |
+| Branching | H1 is already done and the merged work is on `main`. Each task gets its own branch off `main` (`feat/<id>-<slug>`) and a PR into `main`. **Never push to `main` and never merge a PR yourself.** Paris merges. |
 | Gate every commit | `npm run typecheck`, `npm run test:council -w server` and `npm run test:local -w server` must all pass. Add tests for each task to the existing suites (mock LM Studio in `server/test/local`, fake vendor CLIs in `server/test/council/fakebin`). |
 | Verify, don't trust | Check files on disk and run commands yourself. Do not accept a model's self-report, including your own subagents'. |
 | Small model first | The main target is **Gemma 4 12B on an M4 Mac mini with 16 GB RAM, at 32k context, in LM Studio**. New model-facing tools ship **off by default** or with the smallest schema that works, because every extra tool makes small models less reliable. |
@@ -90,8 +90,18 @@ Each task lists **Why** (the evidence), **Where** (files), **Borrow** (the DeepS
 | 6 | E4 | Model doctor (tool-calling probe + context-size advice) | P1 | M |
 | 6 | E5 | Scheduled goal runs | P3 | M |
 | 6 | E6 | Voice input (local speech-to-text) | P3 | M |
+| 7 | P1 | Plugin manifest, registry and read-only inventory (built-in features become toggleable plugins) | P1 | M |
+| 7 | P2 | **Plugins** tab in Settings: Installed list, enable/disable, config forms | P1 | M |
+| 7 | P3 | Install declarative plugin packs from a folder, zip or GitHub, with a consent screen and pinned version | P1 | M |
+| 7 | P4 | What a plugin can add: skills, MCP servers, instructions, slash commands, council roles, settings | P1 | M |
+| 7 | P5 | Code plugins as separate processes (MCP + hooks), with declared permissions | P2 | M |
+| 7 | P6 | Plugin index + Discover tab (static JSON, https only) | P2 | M |
+| 7 | P7 | Session presets: a named set of plugins per chat | P2 | S |
+| 7 | P8 | Plugin Creator: the agent drafts a plugin, you review and install it, Undo | P2 | M |
+| 7 | P9 | Plugin suggestion cards | P3 | S |
+| 7 | P10 | `PLUGINS.md` authoring guide + `localdex plugin validate` | P2 | S |
 
-Suggested order: **H1 → H2 → F1–F5 → C1 → S1 → S2 → C2–C4 → U6 → A4 → A5 → the rest by priority.**
+Suggested order: **H2 → F1–F4 → C1 → S1 → S2 → C2–C4 → U6 → A4 → A5 → P1–P4 → the rest by priority.** (H1 and F5 are already done.) Phase 7 comes before E1, E2 and the optional tools in Phase 4, because those can then ship as plugins.
 
 ---
 
@@ -318,6 +328,8 @@ When a sandboxed command fails with a write denial, show "Command was blocked by
 ## 8. Phase 6: Ecosystem
 
 ### E1. MCP manager UI + preset gallery · P1 · M
+> **Build this on top of P1–P4 and P6**: the gallery entries are first-party plugin packs, and the MCP tab is a filtered view of the Plugins tab. Don't build a second install flow.
+
 **Why.** Today servers can only be added by editing `config.json`. That's safe on purpose, but unfriendly.
 **Borrow.** `mcp/mcp-manager` (add, edit, probe and observe servers at runtime) and `mcp/mcp-resources`.
 **Do.** Add a gallery: **Playwright**, **Blender** (already running on Paris's Mac), Filesystem, GitHub. **Add** shows the exact command, args and env in a confirm dialog, and requires typing the server name to confirm. Then it writes `config.json` *on the server side* and runs **Test connection** (list tools). Keep the rule that the WebSocket can't set arbitrary commands: only gallery entries, or a confirm flow that is re-checked on the server, can add one. Show `allowTools` as checkboxes, with a warning above 8 tools.
@@ -345,21 +357,150 @@ When a sandboxed command fails with a write denial, show "Command was blocked by
 
 ---
 
-## 9. Reviewed and rejected (don't build)
+## 9. Phase 7: Plugin system
+
+**What DeepSeek Harness does (the experience to copy).** Everything optional is a plugin with a name, a config schema and display text. Plugins have a **Plugins page** with **Installed** and **Discover** tabs, can be turned on and off without a restart, and sit in named **profiles/bundles**. A **plugin index** is one static JSON file (`format: 1`) listing installable versions, each with a pinned source (npm package, or Git repo + **commit** + folder) and a compatibility range. Install always shows a **confirmation with the exact source**, and the UI warns that indexes are third-party content. There are per-session **presets** (different plugin sets per chat). The agent can **suggest** a plugin with a card, and a **Creator mode** lets it write one, with Undo/Restore. Plugin packages also carry "model experience" notes (what the model sees, token cost, cache effect).
+Study: `packages/boot/plugin-manager`, `plugin-market`, `config-editor`, `hmr`; `packages/host/plugin-inventory`; `packages/client/ui-plugin-manager`, `ui-plugin-market`, `ui-settings-plugins`; `packages/preset/agent-preset`, `agent-preset-registry`; `packages/experimental/plugin-recommendations`, `creation-recommendations`; `docs/cookbook/plugin-market.md`; `docs/cookbook/extension-cookbook.md`.
+
+**What LocalDex must do differently.** DeepSeek Harness runs plugin code inside its own process. LocalDex can read your files and run commands, so a plugin that is just code in the server would be a way around every protection. LocalDex plugins come in two kinds:
+
+| Kind | What it is | Risk |
+|---|---|---|
+| **Pack (declarative)** | A folder with a manifest and files only: skills, instructions, slash-command templates, council role presets, MCP server entries, settings. No code of its own runs. | Low. The one exception is an MCP entry, which starts a program, so it gets its own prominent line on the consent screen. |
+| **Code plugin** | Needs to run code. Allowed only as a **separate process**: an MCP server for tools, or a command hook that reads JSON on stdin and answers on stdout. Never `require()`d into the LocalDex server. | Real. Needs declared permissions, the sandbox from S3 where available, and a clear consent screen. |
+
+**Security rules (apply to every P-task):**
+1. Installing, updating, enabling a code plugin, or changing a plugin's permissions happens only through a **server-side confirmation** that shows exactly what will be added (commands, args, env names, folders, hooks). The WebSocket message is a *request*; the server re-checks it, as it does for MCP today. A plugin can never approve itself.
+2. A plugin can **never** change: approved folders, the 127.0.0.1 binding, Origin/Host checks, shell approval mode, subscription-only council billing, or redaction. Reject any manifest that tries.
+3. Installs are **pinned**: a Git commit hash or a version, plus a SHA-256 of the unpacked files, saved in `~/.localdex/plugins.lock.json`. **No automatic updates.** An update that adds or widens a permission asks again.
+4. Plugin MCP servers go through the same rules as hand-written ones: minimal environment, short `allowTools`, results wrapped as untrusted, approval once per server.
+5. Add `LOCALDEX_SAFE_MODE=1` (and a **Safe mode** button) that starts with all third-party plugins off, so a bad plugin can't lock you out.
+6. Every plugin action (install, enable, hook run, blocked call) is written to the Log panel.
+7. A plugin's skills and instructions count against the context budget (C4); show their token cost on the plugin's card.
+
+### P1. Manifest, registry and inventory · P1 · M
+**Where.** New `server/src/plugins/` (`manifest.ts`, `registry.ts`, `inventory.ts`), types in `shared/src/index.ts`.
+**Do.**
+1. Define `localdex-plugin.json` and validate it strictly (reject unknown top-level keys):
+   ```json
+   {
+     "format": 1,
+     "name": "blender",
+     "version": "1.0.0",
+     "title": "Blender",
+     "description": "Control Blender from the agent",
+     "author": "…",
+     "engines": { "localdex": ">=0.2.0" },
+     "permissions": { "shell": false, "network": false, "writeFolders": [], "env": [] },
+     "contributes": {
+       "skills": ["skills/*"],
+       "instructions": "INSTRUCTIONS.md",
+       "mcpServers": { "blender": { "command": "uvx", "args": ["blender-mcp"], "allowTools": ["…"] } },
+       "commands": [{ "name": "/scene", "file": "commands/scene.md" }],
+       "councilRoles": {},
+       "settings": { "type": "object", "properties": {} },
+       "hooks": []
+     }
+   }
+   ```
+2. Registry: scan `~/.localdex/plugins/<name>/`, read state from `~/.localdex/plugins.json` (`enabled`, `config`, `installedFrom`), and expose `list()`, `enable()`, `disable()`, `getConfig()`.
+3. **Built-in plugins.** Turn LocalDex's own optional features into entries in the same inventory, marked **Provided by LocalDex**: Playwright browsing, `web_fetch` (A1), background jobs (A2), `lsp` (A3), auto-review (S4), hooks (S5), voice (E6), and the council. They are off or on by default exactly as their tasks say. Start by wrapping what already exists (MCP, skills, council) without changing its behaviour.
+4. Inventory shows, per plugin: name, version, kind (built-in / pack / code), enabled, live status (`loading`, `ready`, `failed` + the error), what it contributes, and its token cost.
+**Done when.** Unit tests cover valid and invalid manifests (unknown key, bad permission, a manifest that tries to set an approved folder), enable/disable persistence, and a failing plugin showing `failed` without stopping the server.
+
+### P2. Plugins tab · P1 · M
+**Borrow.** `client/ui-settings-plugins`, `ui-plugin-manager`, `ui-plugin-market` (tab layout, cards, detail page).
+**Where.** `web/src/components/Settings.tsx` (new tab id `plugins`), a new `Plugins.tsx`.
+**Do.** Tabs **Installed** and **Discover** (Discover arrives in P6; show a "Add a source" empty state until then). Each card: icon, title, version, kind badge, an on/off switch, the token cost, and an error line when failed. The detail page lists everything the plugin contributes and its permissions, and has a config form generated from its `settings` schema. Enable/disable applies at once for packs (see P4), and with a "restart needed" note only where truly necessary. **Skills and MCP Servers tabs become filtered views of the same data** (keep their URLs working).
+**Done when.** Toggling a plugin in the UI changes the system prompt or tool list on the next step (checked in a test), and a plugin with a broken manifest shows an error card.
+
+### P3. Install packs · P1 · M
+**Borrow.** `boot/plugin-manager` (install, remove, update, approval of the exact source) and `docs/cookbook/plugin-market.md` (what the confirmation shows). **Reuse** `server/src/skills/import.ts` for folder, zip and GitHub fetching.
+**Do.**
+1. Sources: drag in a folder or `.zip`, or paste `https://github.com/owner/repo[/tree/<ref>/<dir>]`. Resolve a Git ref to a **commit hash** and store it. Public repos only, as with skills today.
+2. Consent screen (server-driven) listing: name, version, source + commit, the SHA-256, every contribution, every permission, and in red any MCP command and any hook. The confirm button needs a second click on anything red.
+3. Update flow compares the new manifest to the old one and highlights added or widened permissions. Remove deletes the folder and its state, and leaves the user's own settings alone.
+4. Refuse: a manifest above format 1, a path that escapes the plugin folder (`..`, absolute paths, symlinks out), files over a size cap, and more than N files.
+**Done when.** Tests cover a zip with a path-traversal entry (refused), a symlink out (refused), a clean install, an update that adds a permission (asks again), and remove.
+
+### P4. What a plugin can add · P1 · M
+**Do.** Wire each contribution type into the existing code, with these rules:
+
+| Contribution | Wired into | Rule |
+|---|---|---|
+| `skills` | `skills/store.ts` | Namespaced `<plugin>/<skill>`. Same progressive loading (name + description only in the prompt). |
+| `instructions` | C4 | Counted against the instructions byte budget; truncated with a notice. |
+| `mcpServers` | `mcp/client.ts` | Same defaults as hand-written entries: `approval: once`, main agent only, minimal env. Shown in the MCP tab as "from plugin X". |
+| `commands` | U5 palette | A markdown template with `$ARGS`. It sends a normal user message, so it can't do anything the user couldn't type. |
+| `councilRoles` | `council/router.ts` | May add or reorder members for a role. May **not** switch on write access or change billing mode. |
+| `settings` | P2 | JSON-schema form. Values are readable by that plugin's own contributions only. |
+| `hooks` | S5 / P5 | Command hooks only. |
+
+On conflict (two plugins add the same command or skill name), the first-enabled wins and the Log panel says so. Disabling a plugin removes all of its contributions on the next step.
+**Done when.** One test pack that contributes one of each type is installed, enabled and disabled, and the prompt, tool list, MCP list and palette change accordingly. Two packs with the same command name produce a logged conflict, not a crash.
+
+### P5. Code plugins as separate processes · P2 · M
+**Why.** Some plugins need real code (a custom tool, a hook that runs a linter). Keep that outside the server.
+**Do.**
+1. A code plugin declares `contributes.mcpServers` (tools) and/or `contributes.hooks` (events: `PreToolUse`, `PostToolUse`, `UserPromptSubmit`, `Stop`) with a command. Hooks get one JSON object on stdin and answer on stdout (`{"decision":"block","reason":"…"}` or `{"context":"…"}`), with a timeout (default 10 s). Reuse the protocol in S5.
+2. Declared `permissions` are shown on the consent screen **and enforced where possible**: run the process under the S3 sandbox with only the declared `writeFolders` writable, and start it with only the declared `env` names. On a machine without a sandbox, say so on the consent screen ("not confined").
+3. A crashing or timing-out hook is skipped and logged, never blocks the run. A **blocking** hook can only block; it can never *approve* something that would have asked.
+4. Never `import()` plugin code into the server.
+**Done when.** Tests: a hook that blocks `shell_run rm -rf` (the model sees the reason), a hook that hangs (skipped after the timeout), a code plugin started with only its declared env variables, and a plugin attempting to write outside its folder (denied where a sandbox exists).
+
+### P6. Plugin index + Discover tab · P2 · M
+**Borrow.** `util/plugin-market-index` (format and validation), `boot/plugin-market`, `client/ui-plugin-market`, `docs/cookbook/plugin-market.md`.
+**Do.**
+1. **Index format** (static JSON, `format: 1`): `plugins[]` with `name`, `title`, `description`, `icon`, `author`, `homepage`, `keywords`, and `versions[]` with `version`, `publishTimestamp`, `engines.localdex`, and `source` = `{ "type": "git", "url", "commit", "path" }` or `{ "type": "zip", "url", "sha256" }`. **Every version must be pinned** (a commit hash or a SHA-256). Reject the whole index, with the JSON path of the bad value, if any rule is broken.
+2. **No default source.** The user adds one by URL in **Discover → Add index source**. `https:` only, no credentials in the URL, no redirects, size cap, 10 s timeout. Show each source's last error.
+3. Cards show the newest version compatible with this LocalDex (non-prerelease first). Install opens the P3 consent screen with the exact commit. The Discover page says plainly: "Indexes are third-party content; check the source before you install."
+4. Publish a **starter index** in this repo, `plugins/index.json`, plus a generator script (`npm run plugin:index -- <repo-list.txt>`). The user may add it as a source; it's never added automatically. List the first-party plugin packs there (see the first-party packs list at the end of this phase).
+5. Search by name, keywords and description (typo-tolerant, as in U1).
+**Done when.** Tests with a local HTTP fixture cover a valid index, one with an unpinned version (rejected), one over the size cap, and one that redirects (rejected).
+
+### P7. Session presets · P2 · S
+**Borrow.** `preset/agent-preset`, `agent-preset-registry`.
+**Do.** A **preset** is a name plus a list of enabled plugins and a default access mode (for example "Security research", "Frontend", "Reading only"). The top bar has a preset picker per session, so the global plugin on/off state remains the default. A session saves its preset, and switching presets changes the tool list and prompt on the next step (see C3 for the cache note: log "system prompt changed").
+**Done when.** Two sessions with different presets show different tool lists in the same running server.
+
+### P8. Plugin Creator · P2 · M
+**Borrow.** `extensions/tool-cordis` (the agent inspects the runtime API before writing plugin code), `experimental/creation-recommendations` (the Create card with Undo and Restore).
+**Do.**
+1. A **Creator** slash command (`/plugin new <idea>`) gives the agent two extra tools for that run only: `plugin_schema` (returns the manifest format, the contribution types and a worked example) and `plugin_draft_write` (writes under `~/.localdex/plugins-dev/<name>/`, nowhere else).
+2. When the agent finishes, run `validate` on the draft and show a review screen: file list, the manifest, and every permission. **Install** goes through the normal P3 consent screen. **Undo** removes the plugin again, and **Restore** puts it back.
+3. The agent can never enable, install, or edit anything outside the draft folder. A draft is not loaded until installed.
+**Done when.** A test drives a fake model that writes a draft; the draft validates, nothing is loaded before Install, and Undo/Restore round-trips.
+
+### P9. Plugin suggestion cards · P3 · S
+**Borrow.** `experimental/plugin-recommendations`.
+**Do.** After a finished answer, if the request clearly matches an *installed but disabled* plugin or a first-party pack in a source the user added, show one card: **Enable** / **Not now**. Never suggest uninstalled third-party plugins by name from the model's own memory, and never more than one card per answer. Clicking starts no model turn. Off by default.
+
+### P10. Authoring guide + validator · P2 · S
+**Borrow.** `docs/cookbook/adding-a-package.md` and the "Model Experience" README contract.
+**Do.** Add `PLUGINS.md`: the manifest, every contribution type with an example, the security rules above, how to pin and publish an index entry, and a **Model experience** section every plugin README should fill in (what the model sees, token cost, and whether it changes the prompt prefix). Add `npx localdex plugin validate <folder>` (uses the E2 CLI entry point; until E2 exists, ship it as `npm run plugin:validate -w server -- <folder>`) with the same checks the installer runs.
+
+**First-party packs to publish once P1–P6 land** (each a small, declarative pack in `plugins/`): `blender` (the Blender MCP entry + a short skill), `playwright` (the hardened browser entry from F5), `github` (a safe `gh`-based skill), `security-lab` (a preset plus instructions for Paris's SOC-analyst work: ATT&CK-mapped notes, no live scanning of third-party systems), and `council-presets` (extra roles). Keep each pack under 20 KB.
+
+---
+
+## 10. Reviewed and rejected (don't build)
 
 | DeepSeek Harness idea | Why not, for LocalDex |
 |---|---|
-| "Everything is a plugin" / Cordis rewrite | LocalDex is about 16k lines and works. A framework migration costs far more than it returns. Borrow patterns, not the architecture. |
+| "Everything is a plugin" / Cordis rewrite | LocalDex is about 16k lines and works. A framework migration costs far more than it returns. Phase 7 borrows the **plugin experience** (Plugins page, install flow, index, presets) but not the architecture. |
+| Plugins that run inside the server process | DeepSeek Harness loads plugin code in-process, and its SAFETY.md says it is not security-audited. A LocalDex plugin that is not just data must run as a **separate process** (P5). |
+| The agent mounting plugins by itself at runtime | Plugin Creator (P8) only writes a draft. Install always goes through the consent screen. |
 | `run_code` tools (`tool-executor-ptc`, `agent-tool-presentation: ptc`) | A 12B model writes worse programs than it makes single tool calls. Revisit only for strong models. |
 | `workflow` scripts that fan out subagents | The council orchestrator already covers multi-agent patterns. |
 | `agent-team` shared task board | LM Studio serves one request per loaded model, so parallel local agents queue anyway. |
 | `repeat-tool-reminder` | LocalDex already has a stronger version (warn at 3, stop at 5, plus thinking cut-offs). |
 | Liveshare, OpenTelemetry, telemetry, plugin market, DeepSeek account/API, reasoning translation, webworker runtime | Out of scope for a private, local-first tool, or tied to DeepSeek's own services. |
-| `claude-code-mods` bridge | Interesting, but niche. S5 covers the useful part (hooks). |
+| `claude-code-mods` bridge | Interesting, but niche. S5 and P5 cover the useful part (hooks). |
+| Plugin market with a built-in default source | DeepSeek ships no default index, and neither should LocalDex. The user adds sources (P6). |
 
 ---
 
-## 10. When you finish a task
+## 11. When you finish a task
 
 1. The gates pass, new tests are added, and the README is updated (with a Model experience note for new tools).
 2. Open a PR into `dev/roadmap` that has: a summary, evidence (test output, screenshots for UI work), any security impact, and **"Borrowed from: packages/<path>"** if a DeepSeek Harness pattern was used.
