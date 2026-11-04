@@ -584,6 +584,23 @@ export interface CouncilWorktree {
   error?: string;
   /** Set when the user's uncommitted changes couldn't be brought into the copy (it then starts from the last commit). */
   note?: string;
+  /** E3: pull request opened from this copy (members' changes only, on a localdex/… branch). */
+  pr?: {
+    url: string;
+    number?: number;
+    branch: string;
+    state: 'OPEN' | 'MERGED' | 'CLOSED';
+    /** gh reviewDecision, e.g. APPROVED / CHANGES_REQUESTED / REVIEW_REQUIRED. */
+    review?: string;
+    checks?: 'passing' | 'failing' | 'pending';
+    checkedAt: number;
+  };
+}
+
+/** E3: can LocalDex open pull requests (GitHub CLI installed and signed in)? */
+export interface ForgeStatus {
+  gh: boolean;
+  reason?: string;
 }
 
 /** One answer's place in a blind peer review (Borda count over every adviser's ranking). */
@@ -1031,6 +1048,7 @@ export type ServerEvent =
       /** Built-in tools this install can't run (e.g. terminal_* without node-pty) and why. */
       unavailableTools?: Partial<Record<ToolName, string>>;
       sandbox?: SandboxStatus;
+      forge?: ForgeStatus;
     }
   | { type: 'session'; session: Session }
   | { type: 'sessions'; sessions: SessionSummary[] }
@@ -1118,5 +1136,8 @@ export type ClientEvent =
   | { type: 'council_apply'; sessionId: string; runId: string; member?: MemberId }
   /** Throw a run's waiting changes away (removes its separate copy and branch). Arena runs: `member` discards one entry, without it every copy goes. */
   | { type: 'council_discard'; sessionId: string; runId: string; member?: MemberId }
+  /** E3: push a run's waiting changes (members' edits only) to a new branch and open a pull request with gh. */
+  | { type: 'council_open_pr'; sessionId: string; runId: string }
+  | { type: 'council_pr_refresh'; sessionId: string; runId: string }
   | { type: 'reset_worker'; sessionId: string; name: string }
   | { type: 'delete_worker'; sessionId: string; name: string };

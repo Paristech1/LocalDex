@@ -1292,6 +1292,68 @@ console.log('\n# AE. @file mentions: completion and read hint');
   check('runner: a read hint follows the message; the file content is not inlined', !!hint && /src\/buttonUtils\.ts/.test(hint.content) && !/export \{\}/.test(hint.content), hint?.content);
 }
 
+// ---------- AF: Open PR from a council copy (E3) ----------
+console.log('\n# AF. Open PR: members-only commit on a new branch, gh pr create, status refresh');
+{
+  const { execFileSync } = await import('node:child_process');
+  const os = await import('node:os');
+  const wtm = await import(`${SRC}/council/worktrees.ts`);
+  const forge = await import(`${SRC}/council/forge.ts`);
+  const g = (cwd: string, ...a: string[]) => execFileSync('git', ['-C', cwd, ...a], { encoding: 'utf8' }).trim();
+  const base = fs.mkdtempSync(path.join(os.tmpdir(), 'ldx-pr-'));
+  const origin = path.join(base, 'origin.git');
+  const repo = path.join(base, 'repo');
+  execFileSync('git', ['init', '--quiet', '--bare', '-b', 'main', origin]);
+  execFileSync('git', ['init', '--quiet', '-b', 'main', repo]);
+  g(repo, 'config', 'user.email', 't@t'); g(repo, 'config', 'user.name', 't');
+  fs.writeFileSync(path.join(repo, 'app.txt'), 'line1\nline2\n');
+  fs.writeFileSync(path.join(repo, 'mine.txt'), 'original\n');
+  g(repo, 'add', '-A'); g(repo, 'commit', '--quiet', '-m', 'init');
+  g(repo, 'remote', 'add', 'origin', origin); g(repo, 'push', '--quiet', 'origin', 'main');
+  const userHead = g(repo, 'rev-parse', 'HEAD');
+  fs.writeFileSync(path.join(repo, 'mine.txt'), 'my uncommitted work\n'); // must never reach the PR
+
+  const ghLog = path.join(base, 'gh.log');
+  process.env.FAKE_GH_LOG = ghLog;
+  process.env.LOCALDEX_GH = '/nonexistent/gh';
+  forge.resetForgeCache();
+  check('no gh: unavailable with a reason', forge.forgeStatus(true).gh === false && /not installed/.test(forge.forgeStatus().reason));
+  process.env.LOCALDEX_GH = new URL('./fake-gh.sh', import.meta.url).pathname;
+  forge.resetForgeCache();
+  check('gh installed and signed in', forge.forgeStatus(true).gh === true);
+
+  const wt = wtm.createWorktree(repo, 'run12345', 'pr test');
+  check('copy carries the user uncommitted change (imported)', wt.imported === 1 && fs.readFileSync(path.join(wt.path, 'mine.txt'), 'utf8') === 'my uncommitted work\n');
+  fs.writeFileSync(path.join(wt.path, 'app.txt'), 'line1\nline2 improved\n');
+  fs.writeFileSync(path.join(wt.path, 'new.txt'), 'added by a member\n');
+  const run: any = { id: 'run12345abc', task: 'Improve line two\nmore detail', pattern: 'single', steps: [{ member: 'claude', status: 'done', role: 'builder' }], worktree: wt };
+  const r = forge.openPullRequest(run, wt);
+  check('open PR: succeeds and records the PR', r.ok && wt.pr?.number === 42 && wt.pr.url === 'https://github.com/p/r/pull/42' && /^localdex\/improve-line-two-run123$/.test(wt.pr.branch), `${r.message} ${JSON.stringify(wt.pr)}`);
+  const pushed = execFileSync('git', ['--git-dir', origin, 'rev-parse', `refs/heads/${wt.pr!.branch}`], { encoding: 'utf8' }).trim();
+  const parent = execFileSync('git', ['--git-dir', origin, 'rev-parse', `${pushed}^`], { encoding: 'utf8' }).trim();
+  const files = execFileSync('git', ['--git-dir', origin, 'diff', '--name-only', parent, pushed], { encoding: 'utf8' }).trim().split('\n');
+  const mineInPr = execFileSync('git', ['--git-dir', origin, 'show', `${pushed}:mine.txt`], { encoding: 'utf8' });
+  check('pushed: one commit on top of the user’s last commit', parent === userHead, `${parent} vs ${userHead}`);
+  check('pushed: only the members’ changes; the user’s uncommitted work stays out', files.sort().join(',') === 'app.txt,new.txt' && mineInPr === 'original\n', `${files} / ${JSON.stringify(mineInPr)}`);
+  const log = fs.readFileSync(ghLog, 'utf8');
+  check('gh pr create: head branch, title from the task, base = the user’s branch on the remote', /pr create --head localdex\/improve-line-two-run123 --title Improve line two/.test(log) && /--base main/.test(log), log.split('\n').find((l: string) => l.startsWith('pr create'))?.slice(0, 200));
+  check('user folder untouched', fs.readFileSync(path.join(repo, 'mine.txt'), 'utf8') === 'my uncommitted work\n' && g(repo, 'rev-parse', 'HEAD') === userHead && g(repo, 'rev-parse', '--abbrev-ref', 'HEAD') === 'main');
+  check('open PR twice: refused', !forge.openPullRequest(run, wt).ok);
+  const ref = forge.refreshPullRequest(wt);
+  check('refresh: state, review and checks from gh', ref.ok && wt.pr!.state === 'MERGED' && wt.pr!.review === 'APPROVED' && wt.pr!.checks === 'passing', JSON.stringify(wt.pr));
+
+  // Members edited the same lines as the user's uncommitted change: can't be split out → refused.
+  const wt2 = wtm.createWorktree(repo, 'run67890', 'overlap');
+  fs.writeFileSync(path.join(wt2.path, 'mine.txt'), 'member rewrote my line\n');
+  const r2 = forge.openPullRequest({ ...run, id: 'run67890xyz', worktree: wt2 }, wt2);
+  check('overlap with the user’s uncommitted lines: refused, nothing pushed', !r2.ok && /can’t be split out/.test(r2.message) && !wt2.pr, r2.message);
+  wtm.discardWorktree(repo, wt);
+  wtm.discardWorktree(repo, wt2);
+  delete process.env.LOCALDEX_GH;
+  forge.resetForgeCache();
+  fs.rmSync(base, { recursive: true, force: true });
+}
+
 server.close();
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

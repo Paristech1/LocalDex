@@ -58,6 +58,20 @@ function git(cwd: string, args: string[], input?: string): GitOut {
 
 const zList = (out: string) => out.split('\0').filter(Boolean);
 
+/** The same hardened git call, for other council modules (forge). */
+export function gitIn(cwd: string, args: string[], input?: string, env?: Record<string, string>): GitOut {
+  if (!env) return git(cwd, args, input);
+  const r = spawnSync('git', [...baseArgs(), '-C', cwd, ...args], {
+    encoding: 'utf8',
+    timeout: 120_000,
+    maxBuffer: 64 * 1024 * 1024,
+    input,
+    env: { ...process.env, GIT_TERMINAL_PROMPT: '0', GIT_OPTIONAL_LOCKS: '0', ...env },
+  });
+  return { ok: r.status === 0, out: r.stdout ?? '', err: (r.stderr ?? '').trim() || (r.error?.message ?? '') };
+}
+export const GIT_IDENTITY = IDENTITY;
+
 export interface RepoInfo {
   /** Repo root (top level of the working tree). */
   root: string;

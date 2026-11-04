@@ -5,6 +5,7 @@ import type {
   ClientEvent,
   DoctorReport,
   FeedbackStats,
+  ForgeStatus,
   CouncilStats,
   JobInfo,
   McpGalleryEntry,
@@ -72,6 +73,8 @@ export interface State {
   unavailableTools: Partial<Record<ToolName, string>>;
   /** Which OS sandbox the server can run (from hello), for the Permissions preset picker. */
   sandbox: SandboxStatus | null;
+  /** E3: GitHub CLI available for "Open PR". */
+  forge: ForgeStatus | null;
   council: MemberStatus[];
   councilStats: CouncilStats | null;
   /** U3: 👍/👎 per local model. */
@@ -105,6 +108,7 @@ let state: State = {
   skills: [],
   unavailableTools: {},
   sandbox: null,
+  forge: null,
   turnDiffs: {},
   jobs: [],
   council: [],
@@ -192,7 +196,7 @@ function liveFor(live: Record<string, LiveAgent>, agent: string): LiveAgent {
 function handle(ev: ServerEvent): void {
   switch (ev.type) {
     case 'hello':
-      set({ settings: ev.settings, sessions: ev.sessions, session: ev.session, models: ev.models, unavailableTools: ev.unavailableTools ?? {}, sandbox: ev.sandbox ?? null, live: {}, status: {}, prompts: [] });
+      set({ settings: ev.settings, sessions: ev.sessions, session: ev.session, models: ev.models, unavailableTools: ev.unavailableTools ?? {}, sandbox: ev.sandbox ?? null, forge: ev.forge ?? null, live: {}, status: {}, prompts: [] });
       if (!ev.session) newSession();
       return;
     case 'session': {

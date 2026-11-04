@@ -213,8 +213,10 @@ const WT_LABEL: Record<CouncilWorktree['status'], string> = {
 /** Builder edits that went to a separate copy (git worktree): file list, diff, Apply / Discard. */
 function WorktreeBox({ run, worktree: wt }: { run: CouncilRun; worktree: CouncilWorktree }) {
   const sessionId = useStore((s) => s.session?.id);
+  const forge = useStore((s) => s.forge);
+  const [prBusy, setPrBusy] = useState(false);
   const [busy, setBusy] = useState<'apply' | 'discard' | null>(null);
-  useEffect(() => setBusy(null), [wt.status, wt.error]);
+  useEffect(() => setBusy(null), [wt.status, wt.error, wt.pr?.url]);
   const open = wt.status === 'pending' || wt.status === 'conflict';
   const act = (kind: 'apply' | 'discard') => {
     if (!sessionId) return;
@@ -259,8 +261,39 @@ function WorktreeBox({ run, worktree: wt }: { run: CouncilRun; worktree: Council
           <Button size="sm" variant="danger" disabled={!!busy || !sessionId} onClick={() => act('discard')} title="Remove the separate copy and its branch">
             {busy === 'discard' ? 'Discarding…' : 'Discard'}
           </Button>
+          {forge?.gh && !wt.pr && wt.status === 'pending' && (
+            <Button size="sm" variant="ghost" disabled={!!busy || prBusy || !sessionId} onClick={() => {
+              if (!sessionId) return;
+              setPrBusy(true);
+              setTimeout(() => setPrBusy(false), 15_000);
+              send({ type: 'council_open_pr', sessionId, runId: run.id });
+            }} title="Push only the members' changes to a new localdex/… branch and open a pull request (gh). Your folder and branch are not touched.">
+              {prBusy ? 'Opening PR…' : 'Open PR'}
+            </Button>
+          )}
         </div>
       )}
+      {wt.pr && <PrChip pr={wt.pr} onRefresh={() => sessionId && send({ type: 'council_pr_refresh', sessionId, runId: run.id })} />}
+    </div>
+  );
+}
+
+/** E3: the pull request opened from a copy, with its state, checks and review. */
+function PrChip({ pr, onRefresh }: { pr: NonNullable<CouncilWorktree['pr']>; onRefresh: () => void }) {
+  const tone = pr.state === 'MERGED' ? 'text-[#b48cf2] border-[#b48cf2]/40' : pr.state === 'CLOSED' ? 'text-ink-400 border-ink-600' : 'text-accent border-accent/40';
+  return (
+    <div className="flex flex-wrap items-center gap-2 text-[11px]">
+      <a href={pr.url} target="_blank" rel="noreferrer" className={cx('rounded border px-1.5 py-0.5 hover:underline', tone)}>
+        PR {pr.number ? `#${pr.number}` : ''} · {pr.state.toLowerCase()}
+      </a>
+      {pr.checks && <span className={pr.checks === 'failing' ? 'text-danger' : pr.checks === 'pending' ? 'text-warn' : 'text-accent'}>checks {pr.checks}</span>}
+      {pr.review && <span className="text-ink-400">{pr.review.toLowerCase().replace(/_/g, ' ')}</span>}
+      <span className="font-mono text-ink-500 truncate max-w-[10rem]" title={pr.branch}>
+        {pr.branch}
+      </span>
+      <button type="button" className="text-ink-400 hover:text-ink-100" onClick={onRefresh} title={`Checked ${new Date(pr.checkedAt).toLocaleTimeString()}`}>
+        ↻
+      </button>
     </div>
   );
 }

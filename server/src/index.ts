@@ -26,6 +26,7 @@ import { resetReads } from './tools/readTracker.js';
 import { forgetInstructions } from './agent/instructions.js';
 import { unavailableTools } from './tools/index.js';
 import { sandboxStatus } from './sandbox.js';
+import { forgeStatus, openPullRequest, refreshPullRequest } from './council/forge.js';
 import { feedbackStats, rateMessage } from './feedback.js';
 import { searchFiles } from './fileMentions.js';
 import { forkAt, isEditableUserMessage } from './fork.js';
@@ -225,7 +226,7 @@ async function refreshModels(): Promise<void> {
 wss.on('connection', (ws) => {
   const sessions = listSessions();
   const current = sessions[0] ? getSession(sessions[0].id) : null;
-  send(ws, { type: 'hello', settings: getSettings(), sessions, session: current, models: modelsCache, unavailableTools: unavailableTools(), sandbox: sandboxStatus() });
+  send(ws, { type: 'hello', settings: getSettings(), sessions, session: current, models: modelsCache, unavailableTools: unavailableTools(), sandbox: sandboxStatus(), forge: forgeStatus() });
   send(ws, { type: 'mcp_status', servers: mcpStatuses() });
   send(ws, { type: 'mcp_gallery', entries: mcpGallery() });
   send(ws, { type: 'doctor_reports', reports: doctorReports() });
@@ -434,6 +435,19 @@ async function handle(ws: WebSocket, ev: ClientEvent): Promise<void> {
       saveSession(s);
       bus.emit({ type: 'session', session: s });
       for (const wt of wts) if (wt?.error) bus.log('warn', `[council] ${wt.error}`);
+      return;
+    }
+    case 'council_open_pr':
+    case 'council_pr_refresh': {
+      const s = getSession(ev.sessionId);
+      const run = s?.councilRuns?.find((r) => r.id === ev.runId);
+      if (!s || !run?.worktree) return send(ws, { type: 'error', message: 'No separate copy for that council run.' });
+      if (run.status === 'running') return send(ws, { type: 'error', sessionId: s.id, message: 'Wait for the council run to finish first.' });
+      const r = ev.type === 'council_open_pr' ? openPullRequest(run, run.worktree) : refreshPullRequest(run.worktree);
+      if (!r.ok) send(ws, { type: 'error', sessionId: s.id, message: r.message });
+      else bus.log('info', `[council] ${r.message}`);
+      saveSession(s);
+      bus.emit({ type: 'session', session: s });
       return;
     }
     case 'council_login': {
