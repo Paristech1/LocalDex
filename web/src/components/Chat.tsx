@@ -1,6 +1,16 @@
 import { useEffect, useRef, useState } from 'react';
 import { MEMBER_IDS, RUN_ACCESS_LABELS, defaultRunAccess, type ChatMessage, type CouncilRunAccess, type EscalatePattern, type MemberId, type PermissionPreset } from '@localdex/shared';
 import { send, useStore, type Prompt } from '../store';
+import { matchCommands, runIfDirect, type SlashCommand } from '../slash';
+
+function downloadUrl(url: string): void {
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = '';
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+}
 import { AssistantBubble, MessageList } from './Message';
 import { ToolCard } from './ToolCard';
 import { CouncilRunCard, MEMBER_META } from './Council';
@@ -189,12 +199,43 @@ function Composer({
     ref.current?.focus();
   }, [draft]);
 
+  const session = useStore((s) => s.session);
+  const [slashError, setSlashError] = useState<string | null>(null);
+  const [pick, setPick] = useState(0);
+  const matches = matchCommands(text, !!council);
+  useEffect(() => setPick(0), [text]);
+
   const submit = () => {
     const t = text.trim();
     if (!t) return;
+    // U5: direct commands (/compact, /export, /undo, /goal …) run here; nothing is sent to the model.
+    if (session && t.startsWith('/')) {
+      const r = runIfDirect(t, !!council, { session, download: (url) => downloadUrl(url) });
+      if (r.handled) {
+        setSlashError(r.error ?? null);
+        if (!r.error) setText('');
+        return;
+      }
+    }
+    setSlashError(null);
     send({ type: 'send_message', sessionId, content: t, ...(council ? { access, ...(notRisky ? { notRisky } : {}) } : {}) });
     setText('');
     setNotRisky(false);
+  };
+
+  const complete = (c: SlashCommand) => {
+    setSlashError(null);
+    if (c.run && !c.args) {
+      // No argument needed: run it right away.
+      if (session) {
+        const r = runIfDirect(`/${c.name}`, !!council, { session, download: (url) => downloadUrl(url) });
+        setSlashError(r.error ?? null);
+      }
+      setText('');
+      return;
+    }
+    setText(`/${c.name} `);
+    ref.current?.focus();
   };
 
   useEffect(() => {
@@ -205,12 +246,48 @@ function Composer({
   }, [text]);
 
   return (
-    <div className={cx('rounded-xl border bg-ink-900', council ? 'border-[#7cc0f2]/40 focus-within:border-[#7cc0f2]/70' : 'border-ink-600 focus-within:border-accent/60')}>
+    <div className={cx('relative rounded-xl border bg-ink-900', council ? 'border-[#7cc0f2]/40 focus-within:border-[#7cc0f2]/70' : 'border-ink-600 focus-within:border-accent/60')}>
+      {matches.length > 0 && (
+        <ul role="listbox" aria-label="Commands" className="absolute bottom-full left-0 right-0 mb-1 max-h-72 overflow-y-auto rounded-lg border border-ink-600 bg-ink-900 py-1 shadow-xl z-20">
+          {matches.map((c, i) => (
+            <li
+              key={`${c.mode}-${c.name}`}
+              role="option"
+              aria-selected={i === pick}
+              onMouseDown={(e) => (e.preventDefault(), complete(c))}
+              onMouseEnter={() => setPick(i)}
+              className={cx('flex items-baseline gap-2 px-3 py-1.5 cursor-pointer text-xs', i === pick ? 'bg-ink-800' : '')}
+            >
+              <span className="font-mono text-ink-100">/{c.name}</span>
+              {c.args && <span className="font-mono text-ink-500">{c.args}</span>}
+              <span className="text-ink-400 truncate">{c.description}</span>
+              {c.run && <span className="ml-auto text-[10px] text-ink-500 shrink-0">runs now</span>}
+            </li>
+          ))}
+        </ul>
+      )}
+      {slashError && <div className="px-4 pt-2 text-[11px] text-warn">{slashError}</div>}
       <textarea
         ref={ref}
         value={text}
         onChange={(e) => setText(e.target.value)}
         onKeyDown={(e) => {
+          if (matches.length) {
+            if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+              e.preventDefault();
+              setPick((p) => (p + (e.key === 'ArrowDown' ? 1 : matches.length - 1)) % matches.length);
+              return;
+            }
+            if (e.key === 'Tab' || (e.key === 'Enter' && !e.shiftKey)) {
+              e.preventDefault();
+              complete(matches[Math.min(pick, matches.length - 1)]);
+              return;
+            }
+            if (e.key === 'Escape') {
+              setText('');
+              return;
+            }
+          }
           if (e.key === 'Enter' && !e.shiftKey) {
             e.preventDefault();
             submit();
@@ -223,10 +300,10 @@ function Composer({
             : council
             ? running
               ? 'Queue a follow-up — it runs when the council finishes…'
-              : 'Ask the council… (/ask claude, /build, /second, /review, /vote; Enter to send)'
+              : 'Ask the council… (type / for commands: /ask claude, /build, /vote…; Enter to send)'
             : running
               ? 'Send a correction — it is delivered before the next model call…'
-              : 'What should LocalDex do? (Enter to send, Shift+Enter for newline; /plan <task> plans first)'
+              : 'What should LocalDex do? (Enter to send, Shift+Enter for newline; type / for commands)'
         }
         className="w-full bg-transparent resize-none px-4 pt-3 pb-1 text-sm focus:outline-none placeholder:text-ink-400"
       />

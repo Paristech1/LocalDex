@@ -133,6 +133,8 @@ npm start            # http://localhost:7331
 
 Keyboard: `Enter` send, `Shift+Enter` newline, `Cmd/Ctrl+,` settings, `Esc` close.
 
+**Slash commands**: type `/` in the composer for a palette (↑/↓, Tab or Enter to pick). Commands marked *runs now* act directly and send nothing to the model: `/goal <done-when>`, `/loop <brief>`, `/compact`, `/undo` (last Solo turn that changed files), `/export [md|json]`, `/new`, `/council` / `/solo`. `/plan <task>` and the council commands (`/ask`, `/build`, `/second`, `/review`, `/vote`, `/frontend`, `/backend`, `/vision`, `/arena`) are sent as the message.
+
 Slash commands in Solo: `/plan <task>` (plan first, read-only until approved; **not** the same as Council mode’s `/plan …`, which asks the cloud planner). The council
 commands (`/ask`, `/build`, `/review`, `/vote`, `/arena` …) are listed under
 [Model council](#model-council-cloud-models-on-your-subscriptions).
