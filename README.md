@@ -128,6 +128,7 @@ npm start            # http://localhost:7331
 | **Workers** | Status, last task, live stream and full transcript per worker. Reset or delete a worker's memory. Background jobs with Kill. |
 | **Goal** | Start a Goal (until done) or a Loop (keep working), led by the local model or the council, with or without a fresh context each round. Shows iteration, last checkpoint, remaining items and any blocker the model reported. |
 | **Context** | Token usage vs. context window, compactions, "Compact & Resume now", latest summary. |
+| **Stats** | Per step: context and output tokens, time to first token, model time vs. tool time, output speed; last 20 steps or the whole session. On a local model, speed *is* the experience: a jump in time to first token usually means the prompt prefix changed and LM Studio's cache was reset. Measured by LocalDex around each request (LM Studio's own `/api/v0` timings are not used). |
 | **Log** | Server events: tool-mode detection, recovered tool calls, goal checkpoints, errors. |
 
 Keyboard: `Enter` send, `Shift+Enter` newline, `Cmd/Ctrl+,` settings, `Esc` close.

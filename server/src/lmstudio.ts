@@ -18,6 +18,15 @@ export interface StreamResult {
   runaway?: boolean;
   /** LM Studio's native tool-call parser failed on this model, so LocalDex switched it to the text protocol and retried. */
   switchedToText?: boolean;
+  /** Wall-clock timing of the (last) attempt, for the Stats tab. */
+  timing?: StreamTiming;
+}
+
+export interface StreamTiming {
+  startedAt: number;
+  /** When the first token (content, reasoning or tool call) arrived; null when nothing streamed. */
+  firstTokenAt: number | null;
+  endedAt: number;
 }
 
 export interface StreamOptions {
@@ -525,6 +534,9 @@ async function streamAttempt(opts: StreamOptions, textMode: boolean): Promise<St
   let finishReason: string | null = null;
   let usage: StreamResult['usage'] = null;
   const toolAcc = new Map<number, { id: string; name: string; args: string }>();
+  const startedAt = Date.now();
+  let firstTokenAt: number | null = null;
+  const timing = (): StreamTiming => ({ startedAt, firstTokenAt, endedAt: Date.now() });
 
   try {
     const stream = await client().chat.completions.create(
@@ -555,6 +567,7 @@ async function streamAttempt(opts: StreamOptions, textMode: boolean): Promise<St
         reasoning?: string;
       };
       if (!delta) continue;
+      if (firstTokenAt === null && (delta.content || delta.reasoning_content || delta.reasoning || delta.tool_calls?.length)) firstTokenAt = Date.now();
 
       const r = delta.reasoning_content ?? delta.reasoning;
       if (r) {
@@ -600,7 +613,7 @@ async function streamAttempt(opts: StreamOptions, textMode: boolean): Promise<St
 
   if (runaway) {
     bus.log('warn', `${opts.model} thought for ${reasoning.length} characters without acting; cut it off.`);
-    return { content: '', reasoning, toolCalls: [], usage, finishReason: 'runaway', parsedFromText: false, runaway: true };
+    return { content: '', reasoning, toolCalls: [], usage, finishReason: 'runaway', parsedFromText: false, runaway: true, timing: timing() };
   }
 
   let toolCalls: ToolCall[] = Array.from(toolAcc.entries())
@@ -621,7 +634,7 @@ async function streamAttempt(opts: StreamOptions, textMode: boolean): Promise<St
     }
   }
 
-  return { content, reasoning, toolCalls, usage, finishReason, parsedFromText };
+  return { content, reasoning, toolCalls, usage, finishReason, parsedFromText, timing: timing() };
 }
 
 // ---------- Fallback: recover tool calls that a local model emitted as text ----------

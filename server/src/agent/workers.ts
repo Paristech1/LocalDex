@@ -3,6 +3,7 @@ import { getSettings } from '../config.js';
 import { enabledTools } from '../tools/index.js';
 import { bus } from './bus.js';
 import { runLoop } from './loop.js';
+import { recordStep } from './stats.js';
 import { workerSystemPrompt } from './prompts.js';
 import { maybeCompactWorker } from './compact.js';
 
@@ -98,6 +99,7 @@ export class WorkerManager {
           this.session.usage.promptTokens += u.promptTokens;
           this.session.usage.completionTokens += u.completionTokens;
         },
+        onStep: (st) => recordStep(this.session, { ...st, agent }),
         onPersist: () => {
           w.updatedAt = Date.now();
           this.persist();

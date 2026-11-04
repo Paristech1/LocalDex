@@ -208,6 +208,24 @@ export interface Session {
   turns?: TurnCheckpoint[];
   /** `/plan` in progress: read-only tools until the user approves the plan (persisted, so it survives a reload). */
   planMode?: PlanModeState;
+  /** Per-step timings for the Stats tab (last 300 steps, main agent and workers). */
+  stats?: StepStat[];
+}
+
+/** One model call and the tool calls it made: what the Stats tab is built from. */
+export interface StepStat {
+  ts: number;
+  agent: AgentId;
+  promptTokens: number;
+  completionTokens: number;
+  /** Time to first token, ms; null when nothing streamed (error, empty reply). */
+  ttftMs: number | null;
+  /** Request start → stream end, ms. */
+  modelMs: number;
+  /** Time spent running this step's tool calls, ms. */
+  toolMs: number;
+  /** Number of tool calls in the step. */
+  tools: number;
 }
 
 /** A background shell job (shell_run with background: true). Lives in memory; gone when the server stops. */

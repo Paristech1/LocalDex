@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import type { GoalLead, GoalMode, JobInfo, PlanStep, WorkerState } from '@localdex/shared';
+import type { GoalLead, GoalMode, JobInfo, PlanStep, StepStat, WorkerState } from '@localdex/shared';
 import { send, useStore } from '../store';
 import { AssistantBubble, MessageList } from './Message';
 import { ToolCard } from './ToolCard';
@@ -7,7 +7,7 @@ import { Button, Field, StatusDot, Toggle, cx, fmtTokens, inputCls, statusLabel,
 import { CouncilPanel } from './Council';
 import type { SettingsTab } from './Settings';
 
-type Tab = 'plan' | 'workers' | 'council' | 'goal' | 'context' | 'log';
+type Tab = 'plan' | 'workers' | 'council' | 'goal' | 'context' | 'stats' | 'log';
 
 export function RightPanel({ onOpenSettings }: { onOpenSettings?: (tab?: SettingsTab) => void }) {
   const [tab, setTab] = useState<Tab>('plan');
@@ -32,6 +32,7 @@ export function RightPanel({ onOpenSettings }: { onOpenSettings?: (tab?: Setting
     { id: 'council', label: 'Council', badge: councilRunning ? '●' : councilCount || undefined, hot: councilRunning },
     { id: 'goal', label: 'Goal', badge: goalActive ? '●' : undefined, hot: !!goalActive },
     { id: 'context', label: 'Context' },
+    { id: 'stats', label: 'Stats' },
     { id: 'log', label: 'Log', badge: errorCount || undefined, hot: errorCount > 0 },
   ];
 
@@ -61,6 +62,7 @@ export function RightPanel({ onOpenSettings }: { onOpenSettings?: (tab?: Setting
         {tab === 'council' && <CouncilPanel onOpenSettings={() => onOpenSettings?.('council')} />}
         {tab === 'goal' && <GoalPanel />}
         {tab === 'context' && <ContextPanel />}
+        {tab === 'stats' && <StatsPanel />}
         {tab === 'log' && <LogPanel />}
       </div>
     </aside>
@@ -407,6 +409,103 @@ function Stat({ label, value }: { label: string; value: string }) {
 }
 
 // ---------- Log ----------
+
+// ---------- Stats ----------
+
+const fmtMs = (ms: number | null | undefined) => (ms === null || ms === undefined ? '–' : ms < 1000 ? `${Math.round(ms)} ms` : `${(ms / 1000).toFixed(ms < 10_000 ? 1 : 0)} s`);
+
+function summarizeStats(stats: StepStat[]) {
+  const ttfts = stats.map((s) => s.ttftMs).filter((v): v is number => v !== null).sort((a, b) => a - b);
+  let tokens = 0;
+  let genMs = 0;
+  for (const s of stats) {
+    if (s.completionTokens >= 8 && s.ttftMs !== null && s.modelMs > s.ttftMs) {
+      tokens += s.completionTokens;
+      genMs += s.modelMs - s.ttftMs;
+    }
+  }
+  return {
+    ttftMedian: ttfts.length ? ttfts[Math.floor(ttfts.length / 2)] : null,
+    tps: genMs > 0 ? (tokens / genMs) * 1000 : null,
+    modelMs: stats.reduce((n, s) => n + s.modelMs, 0),
+    toolMs: stats.reduce((n, s) => n + s.toolMs, 0),
+    prompt: stats.reduce((n, s) => n + s.promptTokens, 0),
+    completion: stats.reduce((n, s) => n + s.completionTokens, 0),
+  };
+}
+
+/** Speed is the user experience on a local model: time to first token, output speed, model vs tool time, per step. */
+function StatsPanel() {
+  const session = useStore((s) => s.session);
+  const stats = session?.stats ?? [];
+  const [scope, setScope] = useState<'session' | 'recent'>('recent');
+  if (!stats.length) {
+    return <Empty>Timings appear here after the first model call: time to first token, output speed, how long the model vs. the tools took, per step.</Empty>;
+  }
+  const shown = scope === 'recent' ? stats.slice(-20) : stats;
+  const sum = summarizeStats(shown);
+  const total = sum.modelMs + sum.toolMs || 1;
+  const rows = [...shown].reverse();
+  return (
+    <div className="space-y-3 text-xs">
+      <div className="flex rounded-md border border-ink-600 overflow-hidden">
+        {(['recent', 'session'] as const).map((sc) => (
+          <button key={sc} type="button" onClick={() => setScope(sc)} className={cx('flex-1 py-1', scope === sc ? 'bg-ink-600 text-ink-100' : 'text-ink-300 hover:bg-ink-700')}>
+            {sc === 'recent' ? 'Last 20 steps' : `Whole session (${stats.length})`}
+          </button>
+        ))}
+      </div>
+      <div className="grid grid-cols-2 gap-2">
+        <StatCard label="Time to first token (median)" value={fmtMs(sum.ttftMedian)} hint="How long the model takes before the first token appears. On a cached prompt this stays low; a reset prompt prefix makes it jump." />
+        <StatCard label="Output speed" value={sum.tps ? `${sum.tps.toFixed(1)} tok/s` : '–'} hint="Completion tokens per second once the stream has started (steps with at least 8 tokens)." />
+        <StatCard label="Context sent" value={`${fmtTokens(sum.prompt)} tok`} hint="Prompt tokens across these steps (the whole context is sent on each step)." />
+        <StatCard label="Generated" value={`${fmtTokens(sum.completion)} tok`} hint="Completion tokens across these steps." />
+      </div>
+      <div>
+        <div className="flex justify-between text-ink-400 mb-1">
+          <span>Model {fmtMs(sum.modelMs)}</span>
+          <span>Tools {fmtMs(sum.toolMs)}</span>
+        </div>
+        <div className="h-2 rounded bg-ink-800 overflow-hidden flex">
+          <div className="bg-accent" style={{ width: `${(sum.modelMs / total) * 100}%` }} title="Time waiting for the model" />
+          <div className="bg-[#7cc0f2]" style={{ width: `${(sum.toolMs / total) * 100}%` }} title="Time running tools" />
+        </div>
+      </div>
+      <div className="rounded-lg border border-ink-700 overflow-hidden">
+        <div className="grid grid-cols-[1.4fr_0.8fr_0.9fr_0.9fr_0.9fr_0.9fr] gap-1 px-2 py-1 text-[10px] uppercase tracking-wide text-ink-500 bg-ink-900/60">
+          <span>Step</span>
+          <span className="text-right">Ctx</span>
+          <span className="text-right">Out</span>
+          <span className="text-right">TTFT</span>
+          <span className="text-right">Model</span>
+          <span className="text-right">Tools</span>
+        </div>
+        {rows.map((st, i) => (
+          <div key={`${st.ts}-${i}`} className="grid grid-cols-[1.4fr_0.8fr_0.9fr_0.9fr_0.9fr_0.9fr] gap-1 px-2 py-1 border-t border-ink-800 text-ink-300">
+            <span className="truncate" title={new Date(st.ts).toLocaleString()}>
+              {timeAgo(st.ts)}
+              {st.agent !== 'main' && <span className="text-ink-500"> · {st.agent.replace(/^worker:/, '')}</span>}
+            </span>
+            <span className="text-right">{fmtTokens(st.promptTokens)}</span>
+            <span className="text-right">{fmtTokens(st.completionTokens)}</span>
+            <span className="text-right">{fmtMs(st.ttftMs)}</span>
+            <span className="text-right">{fmtMs(st.modelMs)}</span>
+            <span className="text-right">{st.tools ? `${fmtMs(st.toolMs)} ·${st.tools}` : '–'}</span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function StatCard({ label, value, hint }: { label: string; value: string; hint?: string }) {
+  return (
+    <div className="rounded-lg border border-ink-700 bg-ink-900/60 px-3 py-2" title={hint}>
+      <div className="text-ink-400">{label}</div>
+      <div className="text-base text-ink-100 mt-0.5">{value}</div>
+    </div>
+  );
+}
 
 function LogPanel() {
   const logs = useStore((s) => s.logs);

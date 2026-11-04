@@ -960,6 +960,26 @@ console.log('\n# W. web_fetch: text only, same-origin redirects, size cap, untru
   web.close();
 }
 
+// ---------- X: Stats (U2) ----------
+console.log('\n# X. Stats: per-step time to first token, model vs tool time, tokens');
+{
+  const { summarize: summarizeStats } = await import(`${SRC}/agent/stats.ts`);
+  const sess = createSession('gemma-mock');
+  const rn = runnerFor(sess);
+  script = [
+    textCalls({ name: 'shell_run', arguments: { command: 'sleep 0.3; echo hi' } }),
+    say('Ran it.'),
+  ];
+  await rn.handleUserMessage('time something');
+  const st = sess.stats ?? [];
+  check('one stat per model call, main agent', st.length === 2 && st.every((x) => x.agent === 'main'), JSON.stringify(st));
+  check('tool step: tool time ≥ 300 ms, 1 tool; final step: no tools', st[0].tools === 1 && st[0].toolMs >= 280 && st[1].tools === 0 && st[1].toolMs === 0, JSON.stringify(st.map((x) => [x.tools, x.toolMs])));
+  check('tokens from usage, TTFT and model time measured', st.every((x) => x.promptTokens === 100 && x.completionTokens === 10 && x.ttftMs !== null && x.ttftMs >= 0 && x.modelMs >= x.ttftMs), JSON.stringify(st));
+  const sum = summarizeStats(st);
+  check('summary: totals, median TTFT, tool time dominated by the sleep', sum.steps === 2 && sum.promptTokens === 200 && sum.completionTokens === 20 && sum.ttftMedianMs !== null && sum.toolMs >= 280 && sum.toolMs > sum.modelMs, JSON.stringify(sum));
+  check('a step that streamed nothing has no TTFT', summarizeStats([{ ts: 0, agent: 'main', promptTokens: 1, completionTokens: 0, ttftMs: null, modelMs: 5, toolMs: 0, tools: 0 }]).ttftMedianMs === null);
+}
+
 server.close();
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

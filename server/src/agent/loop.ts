@@ -1,4 +1,4 @@
-import type { AgentId, ChatMessage, PlanStep, ToolCall, ToolSchema } from '@localdex/shared';
+import type { AgentId, ChatMessage, PlanStep, StepStat, ToolCall, ToolSchema } from '@localdex/shared';
 import { isCorruptCall, streamChat } from '../lmstudio.js';
 import { executeTool } from '../tools/index.js';
 import type { CouncilRequest, GoalControl, ToolContext } from '../tools/types.js';
@@ -37,6 +37,8 @@ export interface LoopParams {
   /** True when user messages are queued for this run (long tool waits end early). */
   hasCorrections?: () => boolean;
   onUsage?: (usage: { promptTokens: number; completionTokens: number }) => void;
+  /** One model call finished (and its tool calls ran): timings for the Stats tab. */
+  onStep?: (stat: Omit<StepStat, 'agent'>) => void;
   onPersist?: () => void;
 }
 
@@ -184,6 +186,16 @@ export async function runLoop(p: LoopParams): Promise<LoopResult> {
     }
 
     if (result.usage) p.onUsage?.(result.usage);
+    const stat: Omit<StepStat, 'agent'> = {
+      ts: result.timing?.startedAt ?? Date.now(),
+      promptTokens: result.usage?.promptTokens ?? 0,
+      completionTokens: result.usage?.completionTokens ?? 0,
+      ttftMs: result.timing?.firstTokenAt ? result.timing.firstTokenAt - result.timing.startedAt : null,
+      modelMs: result.timing ? result.timing.endedAt - result.timing.startedAt : 0,
+      toolMs: 0,
+      tools: result.toolCalls.length,
+    };
+    if (result.toolCalls.length === 0) p.onStep?.(stat);
 
     if (result.runaway) {
       bus.emit({ type: 'turn_end', sessionId, agent });
@@ -293,7 +305,10 @@ export async function runLoop(p: LoopParams): Promise<LoopResult> {
       hasCorrections: p.hasCorrections,
     };
 
+    const toolsStarted = Date.now();
     const outcomes = await executeCalls(result.toolCalls, ctx);
+    stat.toolMs = Date.now() - toolsStarted;
+    p.onStep?.(stat);
     let allFailed = true;
     for (const { call, ok, content } of outcomes) {
       if (ok) allFailed = false;

@@ -12,6 +12,7 @@ import { runLoop } from './loop.js';
 import { CLOCK_EVERY_MS, CLOCK_PREFIX, FRESH_REPORT_CHARS, GOAL_TOOLS_HINT, clockLine, goalContinuePrompt, goalFreshRoundPrompt, mainSystemPrompt } from './prompts.js';
 import { resetReads } from '../tools/readTracker.js';
 import { hasJobs, onJobFinished } from '../jobs.js';
+import { recordStep } from './stats.js';
 import { WorkerManager } from './workers.js';
 import { redactIfEnabled, runCouncil, runSummary, runVia, type CouncilContext } from '../council/orchestrator.js';
 import { classify, classifyWithLocal, domainBuilder, markNotRisky, parseCommand, settingsForAccess, withRisk, type Route } from '../council/router.js';
@@ -608,6 +609,7 @@ export class SessionRunner {
             s.usage.completionTokens += u.completionTokens;
             s.usage.lastPromptTokens = u.promptTokens;
           },
+          onStep: (st) => recordStep(s, { ...st, agent: 'main' }),
           onPersist: () => {
             this.persist();
             this.sync();
