@@ -320,6 +320,12 @@ Also useful on small machines: **Settings → Model & Agent → Context window �
 
 Run the recovery tests (a mock LM Studio replays each failure above) with `npm run test:local -w server`.
 
+### Model doctor
+
+**Settings → Model & Agent → Run model doctor** checks how well the selected model works as an agent before you rely on it. It sends six scripted checks in each tool protocol (native and text): calls a tool, picks the right tool, keeps multi-line file content intact, makes an edit that actually lands, stays honest when a tool fails (doesn't invent an answer), and stops when the task is done. Then a short speed test (first-token time, tokens/s). Every check is one request with a made-up conversation, so nothing touches your files or runs a command.
+
+The report shows a pass/fail grid, a verdict (good / usable / poor), and suggested settings with **Apply** buttons: tool call mode (native wins ties), Reasoning, and a context window that fits next to the model in your RAM (rule of thumb: 4-bit weights ≈ 0.55 GB per billion parameters; e.g. 16 GB + 12B → 32k). Reports are saved per model under `~/.localdex/doctor/` so you can compare models.
+
 ## Choosing a model
 
 Agentic work depends almost entirely on how reliably the model calls tools and tells the truth

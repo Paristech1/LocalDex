@@ -670,6 +670,39 @@ export interface McpServerConfig {
 
 export type McpServerState = 'disabled' | 'connecting' | 'ready' | 'error';
 
+/** E4: one model-doctor probe result. */
+export interface DoctorProbe {
+  id: string;
+  title: string;
+  mode: 'native' | 'text';
+  pass: boolean;
+  /** What the model did (tool name and arguments, or the start of its reply). */
+  detail: string;
+  ms: number;
+}
+
+/** E4: model doctor report for one model, saved under ~/.localdex/doctor/. */
+export interface DoctorReport {
+  model: string;
+  ranAt: number;
+  probes: DoctorProbe[];
+  score: { native: number; text: number; of: number };
+  editsLanded: number;
+  editsTried: number;
+  speed: { ttftMs: number | null; tokensPerSecond: number | null; completionTokens: number };
+  machine: { ramGb: number; paramsB: number | null; loadedContext: number | null };
+  suggest: {
+    toolMode: 'native' | 'text';
+    toolModeWhy: string;
+    reasoning: ReasoningMode;
+    reasoningWhy: string;
+    /** null when the model's size can't be told from its name. */
+    contextLength: number | null;
+    contextWhy: string;
+  };
+  verdict: 'good' | 'usable' | 'poor';
+}
+
 /** E1: a ready-made MCP server the user can add from Settings → MCP Servers. The command comes from the server, never the browser. */
 export interface McpGalleryEntry {
   id: string;
@@ -974,6 +1007,9 @@ export type ServerEvent =
   | { type: 'models'; models: ModelInfo[]; error?: string }
   | { type: 'mcp_status'; servers: McpServerStatus[] }
   | { type: 'mcp_gallery'; entries: McpGalleryEntry[] }
+  | { type: 'doctor_progress'; model: string; done: number; total: number; label: string }
+  | { type: 'doctor_result'; report: DoctorReport }
+  | { type: 'doctor_reports'; reports: DoctorReport[] }
   | { type: 'mcp_notice'; ok: boolean; message: string }
   | { type: 'skills'; skills: SkillInfo[] }
   | { type: 'council_status'; members: MemberStatus[] }
@@ -1013,6 +1049,8 @@ export type ClientEvent =
   | { type: 'mcp_set_tools'; name: string; allowTools: string[] }
   | { type: 'mcp_remove'; name: string }
   | { type: 'mcp_test'; name: string }
+  | { type: 'doctor_run'; model?: string }
+  | { type: 'doctor_stop' }
   | { type: 'list_models' }
   /** Unload and reload a model in LM Studio with this context window (LM Studio REST API v1). */
   | { type: 'reload_model'; model: string; contextLength: number }

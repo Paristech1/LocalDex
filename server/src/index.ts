@@ -28,6 +28,7 @@ import { unavailableTools } from './tools/index.js';
 import { sandboxStatus } from './sandbox.js';
 import { exportFileName, exportMarkdown, searchSessions } from './sessionTools.js';
 import { closeAllMcp, mcpStatuses, reloadMcp, restartMcp } from './mcp/client.js';
+import { doctorReports, doctorRunning, runDoctor, stopDoctor } from './doctor.js';
 import { addFromGallery, mcpGallery, removeServer, setAllowTools } from './mcp/gallery.js';
 import { LIMITS, listSkills, removeSkill, setSkillEnabled } from './skills/store.js';
 import { BIND_HOST, checkRequest, checkUpgrade } from './security.js';
@@ -222,6 +223,7 @@ wss.on('connection', (ws) => {
   send(ws, { type: 'hello', settings: getSettings(), sessions, session: current, models: modelsCache, unavailableTools: unavailableTools(), sandbox: sandboxStatus() });
   send(ws, { type: 'mcp_status', servers: mcpStatuses() });
   send(ws, { type: 'mcp_gallery', entries: mcpGallery() });
+  send(ws, { type: 'doctor_reports', reports: doctorReports() });
   send(ws, { type: 'skills', skills: listSkills() });
   const cached = cachedStatuses();
   if (cached.length) send(ws, { type: 'council_status', members: cached });
@@ -328,6 +330,16 @@ async function handle(ws: WebSocket, ev: ClientEvent): Promise<void> {
       void reloadMcp();
       return;
     }
+    case 'doctor_run': {
+      if (doctorRunning()) return;
+      void runDoctor(ev.model)
+        .then(() => bus.emit({ type: 'doctor_reports', reports: doctorReports() }))
+        .catch((e) => bus.emit({ type: 'error', message: `Model doctor: ${(e as Error).message}` }));
+      return;
+    }
+    case 'doctor_stop':
+      stopDoctor();
+      return;
     case 'mcp_test': {
       if (!getSettings().mcpServers?.[ev.name]) return;
       void restartMcp(ev.name);

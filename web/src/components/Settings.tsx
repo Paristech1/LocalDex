@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import { ALL_TOOL_NAMES, type McpGalleryEntry, type McpServerStatus, type PermissionPreset, type ReasoningMode, type Settings, type ShellApprovalMode, type ToolMode } from '@localdex/shared';
 import { send, useStore } from '../store';
 import { collectDropped, fromInput, importGithub, removeSkill, setSkillEnabled, summarize, uploadSkills, type UploadEntry } from '../skills';
-import { Button, Field, Toggle, cx, inputCls } from './ui';
+import { Button, Field, Toggle, cx, inputCls, timeAgo } from './ui';
 import { CouncilSettingsTab } from './Council';
 
 export type SettingsTab = 'workspace' | 'model' | 'capabilities' | 'skills' | 'mcp' | 'council' | 'prompt';
@@ -259,7 +259,123 @@ function ModelTab({ settings, patch, models }: TabProps & { models: string[] }) 
         </Field>
       </div>
       <ReloadModel settings={settings} patch={patch} />
+      <ModelDoctor settings={settings} patch={patch} />
     </>
+  );
+}
+
+const fmtCtx = (n: number) => (n >= 1024 ? `${Math.round(n / 1024)}k` : String(n));
+
+/** E4: run scripted tool-calling probes against the selected model, then offer the suggested settings. */
+function ModelDoctor({ settings, patch }: TabProps) {
+  const reports = useStore((s) => s.doctorReports);
+  const progress = useStore((s) => s.doctorProgress);
+  const model = settings.model;
+  const report = reports.find((r) => r.model === model);
+  const others = reports.filter((r) => r.model !== model);
+  return (
+    <div className="pt-4 border-t border-ink-700 space-y-2">
+      <div className="flex items-center gap-2">
+        <h3 className="font-medium flex-1">Model doctor</h3>
+        {progress ? (
+          <Button size="sm" variant="ghost" onClick={() => send({ type: 'doctor_stop' })}>
+            Stop
+          </Button>
+        ) : (
+          <Button size="sm" onClick={() => send({ type: 'doctor_run', ...(model ? { model } : {}) })} disabled={!model}>
+            {report ? 'Run again' : 'Run model doctor'}
+          </Button>
+        )}
+      </div>
+      <p className="text-xs text-ink-400">
+        Six tool-calling checks in each protocol (native and text) plus a speed test, against {model ? <span className="font-mono">{model}</span> : 'the selected model'}. Nothing touches your files: every check is a single request with a made-up conversation. Takes a minute or two.
+      </p>
+      {progress && (
+        <div className="space-y-1">
+          <div className="h-1.5 rounded bg-ink-800 overflow-hidden">
+            <div className="h-full bg-accent transition-all" style={{ width: `${Math.round((progress.done / progress.total) * 100)}%` }} />
+          </div>
+          <div className="text-[11px] text-ink-400 pulse">
+            {progress.done}/{progress.total} · {progress.label}
+          </div>
+        </div>
+      )}
+      {report && !progress && (
+        <div className="rounded-md bg-ink-800 p-3 space-y-2 text-xs">
+          <div className="flex flex-wrap items-center gap-x-4 gap-y-1">
+            <span className={cx('rounded px-1.5 py-0.5 text-[11px] font-medium', report.verdict === 'good' ? 'bg-accent/15 text-accent' : report.verdict === 'usable' ? 'bg-warn/15 text-warn' : 'bg-danger/15 text-danger')}>{report.verdict}</span>
+            <span>native {report.score.native}/{report.score.of}</span>
+            <span>text {report.score.text}/{report.score.of}</span>
+            <span>edits landed {report.editsLanded}/{report.editsTried}</span>
+            <span>{report.speed.tokensPerSecond !== null ? `${report.speed.tokensPerSecond} tok/s` : 'tok/s n/a'}</span>
+            <span>{report.speed.ttftMs !== null ? `first token ${(report.speed.ttftMs / 1000).toFixed(1)} s` : ''}</span>
+            <span className="text-ink-400 ml-auto">{timeAgo(report.ranAt)}</span>
+          </div>
+          <table className="w-full text-[11px]">
+            <thead>
+              <tr className="text-ink-400 text-left">
+                <th className="font-normal">Check</th>
+                <th className="font-normal w-14">Native</th>
+                <th className="font-normal w-14">Text</th>
+              </tr>
+            </thead>
+            <tbody>
+              {report.probes
+                .filter((p) => p.mode === 'native')
+                .map((p) => {
+                  const t = report.probes.find((x) => x.mode === 'text' && x.id === p.id);
+                  return (
+                    <tr key={p.id}>
+                      <td>{p.title}</td>
+                      <td title={p.detail} className={p.pass ? 'text-accent' : 'text-danger'}>{p.pass ? '✓' : '✗'}</td>
+                      <td title={t?.detail} className={t?.pass ? 'text-accent' : 'text-danger'}>{t ? (t.pass ? '✓' : '✗') : '–'}</td>
+                    </tr>
+                  );
+                })}
+            </tbody>
+          </table>
+          <div className="space-y-1 pt-1">
+            <Suggestion label={`Tool call mode: ${report.suggest.toolMode}`} why={report.suggest.toolModeWhy} applied={settings.toolMode === report.suggest.toolMode} onApply={() => patch({ toolMode: report.suggest.toolMode })} />
+            <Suggestion label="Reasoning: Auto" why={report.suggest.reasoningWhy} applied={settings.reasoning === report.suggest.reasoning} onApply={() => patch({ reasoning: report.suggest.reasoning })} />
+            {report.suggest.contextLength ? (
+              <Suggestion label={`Context window: ${fmtCtx(report.suggest.contextLength)}`} why={`${report.suggest.contextWhy}. Then press Reload in LM Studio above.`} applied={settings.loadContextLength === report.suggest.contextLength} onApply={() => patch({ loadContextLength: report.suggest.contextLength! })} />
+            ) : (
+              <div className="text-[11px] text-ink-400">Context window: no suggestion ({report.suggest.contextWhy}).</div>
+            )}
+          </div>
+        </div>
+      )}
+      {others.length > 0 && (
+        <details className="text-[11px] text-ink-400">
+          <summary className="cursor-pointer">Other models ({others.length})</summary>
+          <table className="w-full mt-1">
+            <tbody>
+              {others.map((r) => (
+                <tr key={r.model}>
+                  <td className="font-mono truncate max-w-[14rem]">{r.model}</td>
+                  <td>native {r.score.native}/{r.score.of}</td>
+                  <td>text {r.score.text}/{r.score.of}</td>
+                  <td>{r.speed.tokensPerSecond ?? '–'} tok/s</td>
+                  <td>{timeAgo(r.ranAt)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </details>
+      )}
+    </div>
+  );
+}
+
+function Suggestion({ label, why, applied, onApply }: { label: string; why: string; applied: boolean; onApply: () => void }) {
+  return (
+    <div className="flex items-start gap-2">
+      <div className="flex-1">
+        <div className="text-ink-100">{label}</div>
+        <div className="text-[11px] text-ink-400">{why}</div>
+      </div>
+      {applied ? <span className="text-[11px] text-accent">✓ set</span> : <Button size="sm" onClick={onApply}>Apply</Button>}
+    </div>
   );
 }
 

@@ -41,6 +41,8 @@ export interface StreamOptions {
   onRestart?: () => void;
   /** Override the Reasoning setting for this call ('off' for summaries and checkpoints when the setting is 'auto'). */
   reasoning?: 'off' | 'setting';
+  /** Force one tool protocol for this call, with no auto-switching or remembering (the model doctor tests each). */
+  toolMode?: 'native' | 'text';
 }
 
 function client(): OpenAI {
@@ -439,6 +441,7 @@ export function estimateTokens(messages: ChatMessage[]): number {
 }
 
 export async function streamChat(opts: StreamOptions): Promise<StreamResult> {
+  if (opts.toolMode) return streamOnce(opts, opts.toolMode === 'text' && opts.tools.length > 0);
   const mode = opts.tools.length ? await resolveToolMode(opts.model) : 'native';
   try {
     const r = await streamOnce(opts, mode === 'text');

@@ -1162,6 +1162,53 @@ console.log('\n# AA. MCP gallery: add with typed confirmation, choose tools, rem
   check('remove: a running server is stopped', !mcp.mcpStatuses().some((x: any) => x.name === 'fake') && !enabledTools('main').some((t: any) => t.function.name.startsWith('mcp_fake_')));
 }
 
+// ---------- AB: Model doctor (E4) ----------
+console.log('\n# AB. Model doctor: probes in both protocols, speed, suggestions');
+{
+  const doc = await import(`${SRC}/doctor.ts`);
+  check('params from id', doc.paramsFromId('gemma-4-12b-it-heretic') === 12 && doc.paramsFromId('qwen3.5-9b') === 9 && doc.paramsFromId('Mixtral-8x7B') === 56 && doc.paramsFromId('ternary-bonsai-2-27b-mlx') === 27 && doc.paramsFromId('gemma-mock') === null);
+  check('context: 16 GB + 12B → 32k (the known-safe size)', doc.suggestContext(16, 12).tokens === 32768, JSON.stringify(doc.suggestContext(16, 12)));
+  check('context: 64 GB + 12B → more; capped by the model maximum', doc.suggestContext(64, 12).tokens === 131072 && doc.suggestContext(64, 12, 65536).tokens === 65536);
+  check('context: a model too big for RAM gets a warning, unknown size gets none', /swapping/.test(doc.suggestContext(16, 70).why) && doc.suggestContext(16, null).tokens === null);
+
+  const ok1 = native({ name: 'read_file', arguments: { path: 'notes.txt' } });
+  script = [
+    // native
+    ok1,
+    native({ name: 'shell_run', arguments: { command: 'npm test' } }),
+    native({ name: 'write_file', arguments: { path: 'hello.py', content: "print('a') print('b')" } }), // newline lost: fail
+    native({ name: 'edit_file', arguments: { path: 'greet.py', old_string: 'return "Hello, " + name', new_string: 'return "Hi, " + name' } }),
+    say("I couldn't read config.yaml: it does not exist, so I can't tell you the port."),
+    say('todo.txt has two items: buy milk and fix bike.'),
+    // text
+    textCalls({ name: 'read_file', arguments: { path: 'notes.txt' } }),
+    textCalls({ name: 'read_file', arguments: { path: 'package.json' } }), // wrong tool: fail
+    textCalls({ name: 'write_file', arguments: { path: 'hello.py', content: "print('a')\nprint('b')" } }),
+    textCalls({ name: 'edit_file', arguments: { path: 'greet.py', old_string: '"Hello, "', new_string: '"Hi, "' } }),
+    say('The port is 8080.'), // invented: fail
+    textCalls({ name: 'read_file', arguments: { path: 'todo.txt' } }), // doesn't stop: fail
+    // speed
+    say('Rivers carve valleys over long stretches of time as water and sediment wear the rock away.'),
+  ];
+  const before = requests.length;
+  const progress: string[] = [];
+  const unsub = bus.subscribe((ev: any) => ev.type === 'doctor_progress' && progress.push(ev.label));
+  const rep = await doc.runDoctor('gemma-mock');
+  unsub?.();
+  const reqs = requests.slice(before);
+  check('doctor: 13 requests (6 native, 6 text, 1 speed), script used up', reqs.length === 13 && script.length === 0, `${reqs.length} left=${script.length}`);
+  check('doctor: native probes send tools, text probes send none', reqs.slice(0, 6).every((r: any) => r.tools?.length === 4) && reqs.slice(6, 12).every((r: any) => !r.tools?.length) && reqs.slice(6, 12).every((r: any) => /tool_call/.test(r.messages[0].content)), JSON.stringify(reqs.map((r: any) => r.tools?.length ?? 0)));
+  const byId = (mode: string, id: string) => rep.probes.find((p: any) => p.mode === mode && p.id === id);
+  check('doctor: lost newline, wrong tool, invented port and not stopping are caught', !byId('native', 'json_newlines').pass && !byId('text', 'right_tool').pass && !byId('text', 'honest_failure').pass && !byId('text', 'stops_when_done').pass, JSON.stringify(rep.probes.map((p: any) => `${p.mode}:${p.id}:${p.pass}`)));
+  check('doctor: honest failure and a landing edit pass', byId('native', 'honest_failure').pass && byId('native', 'edit_lands').pass && byId('text', 'edit_lands').pass && byId('text', 'json_newlines').pass);
+  check('doctor: score 5/6 native, 3/6 text → suggests native', rep.score.native === 5 && rep.score.text === 3 && rep.suggest.toolMode === 'native' && rep.verdict === 'good', JSON.stringify(rep.score));
+  check('doctor: speed measured, reasoning switch noticed', rep.speed.completionTokens === 10 && rep.speed.ttftMs !== null && /reasoning switch/.test(rep.suggest.reasoningWhy), JSON.stringify(rep.speed));
+  check('doctor: progress reported for every step', progress.length === 13 && progress[12] === 'speed test', progress.join(' | '));
+  const saved = doc.doctorReports();
+  check('doctor: report saved per model for comparison', saved[0]?.model === 'gemma-mock' && saved[0].ranAt === rep.ranAt);
+  check('doctor: the forced protocol is not remembered for the model', lm.toolModeCache()['gemma-mock'] === 'text', JSON.stringify(lm.toolModeCache()));
+}
+
 server.close();
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

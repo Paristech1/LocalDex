@@ -3,6 +3,7 @@ import type {
   AgentId,
   AgentStatus,
   ClientEvent,
+  DoctorReport,
   CouncilStats,
   JobInfo,
   McpGalleryEntry,
@@ -62,6 +63,9 @@ export interface State {
   /** E1: ready-made MCP servers the user can add, and the last add/remove/tools result. */
   mcpGallery: McpGalleryEntry[];
   mcpNotice: { ok: boolean; message: string; ts: number } | null;
+  /** E4: saved model-doctor reports (newest first) and the run in progress. */
+  doctorReports: DoctorReport[];
+  doctorProgress: { model: string; done: number; total: number; label: string } | null;
   skills: SkillInfo[];
   /** Built-in tools this install can't run, with the reason (from hello). */
   unavailableTools: Partial<Record<ToolName, string>>;
@@ -93,6 +97,8 @@ let state: State = {
   mcp: [],
   mcpGallery: [],
   mcpNotice: null,
+  doctorReports: [],
+  doctorProgress: null,
   skills: [],
   unavailableTools: {},
   sandbox: null,
@@ -228,6 +234,15 @@ function handle(ev: ServerEvent): void {
     case 'mcp_gallery':
       set({ mcpGallery: ev.entries });
       return;
+    case 'doctor_progress':
+      set({ doctorProgress: { model: ev.model, done: ev.done, total: ev.total, label: ev.label } });
+      return;
+    case 'doctor_result':
+      set((st) => ({ doctorProgress: null, doctorReports: [ev.report, ...st.doctorReports.filter((r) => r.model !== ev.report.model)] }));
+      return;
+    case 'doctor_reports':
+      set({ doctorReports: ev.reports });
+      return;
     case 'mcp_notice':
       set({ mcpNotice: { ok: ev.ok, message: ev.message, ts: Date.now() } });
       return;
@@ -319,6 +334,7 @@ function handle(ev: ServerEvent): void {
       return;
     case 'error':
       set((s) => ({
+        ...(ev.message.startsWith('Model doctor') ? { doctorProgress: null } : {}),
         error: ev.message,
         logs: [...s.logs.slice(-199), { id: ++logId, level: 'error', message: ev.message, ts: Date.now() }],
       }));
