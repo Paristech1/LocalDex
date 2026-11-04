@@ -10,7 +10,8 @@ export interface ToolCall {
 
 export type ChatMessage =
   | { role: 'system'; content: string }
-  | { role: 'user'; content: string; ts?: number }
+  /** images: attachment ids (A7), stored under ~/.localdex/attachments. */
+  | { role: 'user'; content: string; ts?: number; images?: string[] }
   | {
       role: 'assistant';
       content: string | null;
@@ -90,7 +91,8 @@ export type ToolName =
   | 'job_list'
   | 'job_kill'
   | 'web_fetch'
-  | 'web_search';
+  | 'web_search'
+  | 'read_image';
 
 export const ALL_TOOL_NAMES: ToolName[] = [
   'read_file',
@@ -119,6 +121,7 @@ export const ALL_TOOL_NAMES: ToolName[] = [
   'job_kill',
   'web_fetch',
   'web_search',
+  'read_image',
 ];
 
 export interface ToolSchema {
@@ -966,6 +969,7 @@ export const DEFAULT_CAPABILITIES: Record<ToolName, boolean> = {
   // Web access is opt-in.
   web_fetch: false,
   web_search: false,
+  read_image: true,
 };
 
 /**
@@ -1036,6 +1040,8 @@ export interface ModelInfo {
   maxContextLength?: number;
   /** The model can switch reasoning off (LM Studio reports a reasoning "off" option). */
   reasoningSwitch?: boolean;
+  /** A7: the model accepts images (LM Studio type "vlm" or a vision capability). */
+  vision?: boolean;
 }
 
 // ---------- WebSocket protocol ----------
@@ -1091,7 +1097,7 @@ export type ClientEvent =
    * access: Council mode only, overrides Settings → Council edit access for this message's run.
    * notRisky: Council mode only, the user says the risk classifier is wrong for this message (rated normal; access mode still applies).
    */
-  | { type: 'send_message'; sessionId: string; content: string; access?: CouncilRunAccess; notRisky?: boolean }
+  | { type: 'send_message'; sessionId: string; content: string; access?: CouncilRunAccess; notRisky?: boolean; images?: string[] }
   /** Solo mode: hand the latest request, with a summary of what the local agent did, to the council. The mode stays Solo. */
   | { type: 'council_escalate'; sessionId: string; pattern: EscalatePattern; member?: MemberId; note?: string; access?: CouncilRunAccess; notRisky?: boolean }
   | { type: 'new_session' }

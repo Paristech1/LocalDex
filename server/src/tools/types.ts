@@ -48,6 +48,8 @@ export interface GoalControl {
 export interface ToolResult {
   ok: boolean;
   content: string;
+  /** A7: images (attachment ids) to show the model right after this call (read_image). */
+  images?: string[];
 }
 
 export interface ToolDef {

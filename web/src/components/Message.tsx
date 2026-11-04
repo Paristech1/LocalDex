@@ -32,13 +32,13 @@ export function Reasoning({ text, streaming }: { text: string; streaming?: boole
   );
 }
 
-export function UserBubble({ text, onEdit, onFork }: { text: string; onEdit?: (text: string) => void; onFork?: () => void }) {
+export function UserBubble({ text, images, onEdit, onFork }: { text: string; images?: string[]; onEdit?: (text: string) => void; onFork?: () => void }) {
   const [open, setOpen] = useState(false);
   const isSystemish = /^\[(Goal|Loop|system|context|Resumed|Handed to council|Plan |job )/.test(text);
   if (isSystemish) {
     const [head, ...rest] = text.split('\n');
     return (
-      <div className="flex justify-center my-2">
+      <div className="flex flex-col items-center my-2">
         <div className="max-w-[90%] text-xs text-ink-300 bg-ink-800/60 border border-ink-700 rounded-md px-3 py-1.5">
           <button type="button" onClick={() => setOpen((o) => !o)} className="text-left">
             <span className="text-warn mr-1">◆</span> {head}
@@ -46,10 +46,33 @@ export function UserBubble({ text, onEdit, onFork }: { text: string; onEdit?: (t
           </button>
           {open && rest.length > 0 && <pre className="mt-1 whitespace-pre-wrap font-sans text-ink-300">{rest.join('\n')}</pre>}
         </div>
+        {images?.length ? <Thumbs images={images} /> : null}
       </div>
     );
   }
-  return <EditableUserBubble text={text} onEdit={onEdit} onFork={onFork} />;
+  return (
+    <>
+      <EditableUserBubble text={text} onEdit={onEdit} onFork={onFork} />
+      {images?.length ? (
+        <div className="flex justify-end -mt-1 mb-2">
+          <Thumbs images={images} />
+        </div>
+      ) : null}
+    </>
+  );
+}
+
+/** A7: attached images, click to open full size. */
+function Thumbs({ images }: { images: string[] }) {
+  return (
+    <div className="flex flex-wrap gap-1.5 mt-1">
+      {images.map((id) => (
+        <a key={id} href={`/api/attachments/${id}`} target="_blank" rel="noreferrer">
+          <img src={`/api/attachments/${id}`} alt="attached image" className="h-20 max-w-[10rem] rounded-md object-cover border border-ink-600" />
+        </a>
+      ))}
+    </div>
+  );
 }
 
 /** U4: hover actions on your own messages. Edit re-runs from that point in a fork; the original stays as it was. */
@@ -198,7 +221,7 @@ export function MessageList({ messages, label, pending, running, turns, onFork, 
         if (m.role === 'system' || m.role === 'tool') return cards.get(i)?.map((t) => <TurnCard key={t.id} turn={t} />) ?? null;
         if (m.role === 'user') return (
           <div key={i}>
-            <UserBubble text={m.content} onEdit={onEdit ? (t) => onEdit(i, t) : undefined} onFork={onFork ? () => onFork(i) : undefined} />
+            <UserBubble text={m.content} images={m.images} onEdit={onEdit ? (t) => onEdit(i, t) : undefined} onFork={onFork ? () => onFork(i) : undefined} />
             {cards.get(i)?.map((t) => <TurnCard key={t.id} turn={t} />)}
           </div>
         );

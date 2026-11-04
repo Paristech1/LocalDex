@@ -3,6 +3,7 @@ import path from 'node:path';
 import OpenAI from 'openai';
 import type { ChatMessage, ModelInfo, ToolCall, ToolSchema } from '@localdex/shared';
 import { DATA_DIR, getSettings } from './config.js';
+import { imageKeepSet, userWireContent } from './attachments.js';
 import { bus } from './agent/bus.js';
 import { parseLenientJson } from './jsonRepair.js';
 
@@ -51,13 +52,14 @@ function client(): OpenAI {
 }
 
 /** Convert our stored message shape to the OpenAI wire format (strip UI-only fields). */
-function toWire(messages: ChatMessage[]): OpenAI.ChatCompletionMessageParam[] {
-  return messages.map((m) => {
+function toWire(messages: ChatMessage[], vision = false): OpenAI.ChatCompletionMessageParam[] {
+  const keep = imageKeepSet(messages);
+  return messages.map((m, i) => {
     switch (m.role) {
       case 'system':
         return { role: 'system', content: m.content };
       case 'user':
-        return { role: 'user', content: m.content };
+        return { role: 'user', content: userWireContent(m.content, m.images, keep.has(i), vision) as string };
       case 'assistant': {
         const out: OpenAI.ChatCompletionAssistantMessageParam = {
           role: 'assistant',
@@ -105,20 +107,26 @@ Rules:
  * tool calls become <tool_call> text in assistant turns, tool results become <tool_result> text in
  * user turns, consecutive same-role turns are merged (Gemma-style templates require strict alternation).
  */
-function toWireText(messages: ChatMessage[], tools: ToolSchema[]): OpenAI.ChatCompletionMessageParam[] {
-  const out: Array<{ role: 'system' | 'user' | 'assistant'; content: string }> = [];
-  const push = (role: 'system' | 'user' | 'assistant', content: string) => {
+function toWireText(messages: ChatMessage[], tools: ToolSchema[], vision = false): OpenAI.ChatCompletionMessageParam[] {
+  const out: Array<{ role: 'system' | 'user' | 'assistant'; content: string; images?: string[]; sendImages?: boolean }> = [];
+  const push = (role: 'system' | 'user' | 'assistant', content: string, images?: string[], sendImages?: boolean) => {
     const last = out[out.length - 1];
-    if (last && last.role === role) last.content += `\n\n${content}`;
-    else out.push({ role, content });
+    if (last && last.role === role) {
+      last.content += `\n\n${content}`;
+      if (images?.length) {
+        last.images = [...(last.images ?? []), ...images];
+        last.sendImages = last.sendImages || sendImages;
+      }
+    } else out.push({ role, content, ...(images?.length ? { images, sendImages } : {}) });
   };
-  for (const m of messages) {
+  const keep = imageKeepSet(messages);
+  for (const [i, m] of messages.entries()) {
     switch (m.role) {
       case 'system':
         push('system', tools.length ? `${m.content}\n\n${textToolProtocol(tools)}` : m.content);
         break;
       case 'user':
-        push('user', m.content);
+        push('user', m.content, m.images, keep.has(i));
         break;
       case 'assistant': {
         let text = m.content ?? '';
@@ -135,7 +143,12 @@ function toWireText(messages: ChatMessage[], tools: ToolSchema[]): OpenAI.ChatCo
   }
   // Gemma-style templates also require the conversation to end on a user turn.
   if (out[out.length - 1]?.role === 'assistant') push('user', 'Continue.');
-  return out;
+  return out.map((o) => (o.images?.length ? { role: o.role, content: userWireContent(o.content, o.images, !!o.sendImages, vision) as string } : { role: o.role, content: o.content })) as OpenAI.ChatCompletionMessageParam[];
+}
+
+/** A7: does this model accept images (from LM Studio's model list)? */
+export function isVisionModel(model: string): boolean {
+  return modelCache.get(model)?.vision === true;
 }
 
 function safeParse(s: string): unknown {
@@ -244,7 +257,7 @@ async function enrichFromV1(root: string, models: ModelInfo[], timeoutMs: number
           type?: string;
           max_context_length?: number;
           loaded_instances?: Array<{ id: string; config?: { context_length?: number } }>;
-          capabilities?: { reasoning?: { allowed_options?: string[] } };
+          capabilities?: { reasoning?: { allowed_options?: string[] }; vision?: boolean };
         }>;
       };
       for (const v of data.models ?? []) {
@@ -258,6 +271,7 @@ async function enrichFromV1(root: string, models: ModelInfo[], timeoutMs: number
         if (v.max_context_length) m.maxContextLength = v.max_context_length;
         const opts = v.capabilities?.reasoning?.allowed_options;
         m.reasoningSwitch = Array.isArray(opts) ? opts.includes('off') : false;
+        if (v.capabilities?.vision || v.type === 'vlm') m.vision = true;
       }
     }
   } catch {
@@ -296,6 +310,7 @@ export async function probeModels(baseUrl: string, timeoutMs = 4000): Promise<{ 
             id: m.id,
             loaded: m.state === 'loaded',
             contextLength: m.loaded_context_length ?? m.max_context_length,
+            ...(m.type === 'vlm' ? { vision: true } : {}),
           }));
         await enrichFromV1(root, models, timeoutMs);
         return { kind: 'lmstudio', models };
@@ -545,7 +560,7 @@ async function streamAttempt(opts: StreamOptions, textMode: boolean): Promise<St
     const stream = await client().chat.completions.create(
       {
         model: opts.model,
-        messages: textMode ? toWireText(opts.messages, opts.tools) : toWire(opts.messages),
+        messages: textMode ? toWireText(opts.messages, opts.tools, isVisionModel(opts.model)) : toWire(opts.messages, isVisionModel(opts.model)),
         tools: !textMode && opts.tools.length ? (opts.tools as OpenAI.ChatCompletionTool[]) : undefined,
         temperature: opts.temperature ?? settings.temperature,
         stream: true,

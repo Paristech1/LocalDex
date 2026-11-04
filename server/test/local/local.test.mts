@@ -1385,6 +1385,58 @@ console.log('\n# AG. Auto-review: low runs without asking; anything else asks wi
   unsub();
 }
 
+// ---------- AH: Images (A7) ----------
+console.log('\n# AH. Images: attachments, vision models, read_image, image budget');
+{
+  const at = await import(`${SRC}/attachments.ts`);
+  const PNG = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==', 'base64');
+  const id = at.saveImage(PNG);
+  check('attachments: content-addressed id, type sniffed from bytes', /^[a-f0-9]{64}\.png$/.test(id) && at.saveImage(PNG) === id && !!at.attachmentPath(id));
+  let threw = '';
+  try { at.saveImage(Buffer.from('<svg onload=alert(1)>')); } catch (e) { threw = (e as Error).message; }
+  check('attachments: non-images refused (svg/html never stored)', /Not a PNG/.test(threw));
+  check('attachments: ids are validated (no path tricks)', at.attachmentPath('../../config.json') === null && at.attachmentPath(`${'a'.repeat(64)}.exe`) === null);
+
+  models.v0.data.push({ id: 'vision-mock', type: 'vlm', state: 'loaded', max_context_length: 32768, loaded_context_length: 32768 } as any);
+  models.v1.models.push({ key: 'vision-mock', type: 'llm', max_context_length: 32768, loaded_instances: [{ id: 'vision-mock', config: { context_length: 32768 } }], capabilities: { vision: true } } as any);
+  await lm.listModels();
+  check('vision detected from LM Studio (vlm type / capability)', lm.isVisionModel('vision-mock') && !lm.isVisionModel('gemma-mock'));
+
+  const vs = createSession('vision-mock');
+  script = [say('A single pixel.')];
+  await runnerFor(vs).handleUserMessage('what is this?', undefined, false, [id, 'not-an-id']);
+  const req = requests.at(-1);
+  const userMsg = req.messages.find((m: any) => Array.isArray(m.content));
+  check('vision model: the image is sent as an image_url part', !!userMsg && userMsg.content.some((p: any) => p.type === 'image_url' && p.image_url.url.startsWith('data:image/png;base64,')), JSON.stringify(req.messages.map((m: any) => typeof m.content)).slice(0, 200));
+  check('message keeps only valid attachment ids', JSON.stringify(vs.messages.find((m: any) => m.images)?.images) === JSON.stringify([id]));
+
+  const ts = createSession('gemma-mock');
+  script = [say('I cannot see images.')];
+  await runnerFor(ts).handleUserMessage('what is this?', undefined, false, [id]);
+  const treq = requests.at(-1);
+  check('non-vision model: a text placeholder instead of the image', treq.messages.every((m: any) => typeof m.content === 'string') && treq.messages.some((m: any) => /\[image: .*can't view images\]/.test(m.content)));
+
+  // Image budget: only the last 3 image messages carry images.
+  const many: any[] = [{ role: 'system', content: 's' }];
+  for (let i = 0; i < 5; i++) many.push({ role: 'user', content: `pic ${i}`, images: [id] }, { role: 'assistant', content: 'ok' });
+  const keep = at.imageKeepSet(many);
+  check('image budget: older images become placeholders', keep.size === 3 && keep.has(9) && keep.has(5) && !keep.has(1), JSON.stringify([...keep]));
+
+  // read_image: hidden for text-only models, works for vision models.
+  check('read_image hidden unless the model can see', !enabledTools('main').some((t: any) => t.function.name === 'read_image') && enabledTools('main', { vision: true }).some((t: any) => t.function.name === 'read_image'));
+  fs.writeFileSync(path.join(DEMO, 'shot.png'), PNG);
+  const rs = createSession('vision-mock');
+  script = [textCalls({ name: 'read_image', arguments: { path: 'shot.png' } }), say('It is one pixel.')];
+  await runnerFor(rs).handleUserMessage('look at shot.png');
+  const after = requests.at(-1);
+  const imgTurn = after.messages.find((m: any) => Array.isArray(m.content) && m.content.some((p: any) => p.type === 'image_url'));
+  check('read_image: the image follows the tool result as a user turn', !!imgTurn && rs.messages.some((m: any) => m.role === 'tool' && /Loaded .*shot\.png/.test(m.content)), JSON.stringify(rs.messages.slice(-3).map((m: any) => m.role + ':' + String(m.content).slice(0, 40))));
+  fs.writeFileSync(path.join(DEMO, 'notes.md'), '# hi');
+  const { read_image } = await import(`${SRC}/tools/image.ts`);
+  const bad = await read_image.run({ path: 'notes.md' }, {} as any);
+  check('read_image: text files refused', !bad.ok && /not a PNG/.test(bad.content));
+}
+
 server.close();
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

@@ -29,6 +29,7 @@ import { sandboxStatus } from './sandbox.js';
 import { forgeStatus, openPullRequest, refreshPullRequest } from './council/forge.js';
 import { feedbackStats, rateMessage } from './feedback.js';
 import { searchFiles } from './fileMentions.js';
+import { attachmentPath, isAttachmentId, saveImage } from './attachments.js';
 import { forkAt, isEditableUserMessage } from './fork.js';
 import { exportFileName, exportMarkdown, searchSessions } from './sessionTools.js';
 import { closeAllMcp, mcpStatuses, reloadMcp, restartMcp } from './mcp/client.js';
@@ -103,6 +104,22 @@ app.post('/api/setup/playground', (c) => {
 app.get('/api/skills', (c) => c.json({ skills: listSkills() }));
 
 // U1: search every session's title and messages; export one session as Markdown or JSON.
+// A7: image attachments (pasted or dropped in the composer). Content is sniffed; only PNG/JPEG/WebP/GIF up to 10 MB.
+app.post('/api/attachments', async (c) => {
+  try {
+    const body = (await c.req.json()) as { dataBase64?: string };
+    const buf = Buffer.from(String(body.dataBase64 ?? ''), 'base64');
+    return c.json({ id: saveImage(buf) });
+  } catch (e) {
+    return c.json({ error: (e as Error).message }, 400);
+  }
+});
+app.get('/api/attachments/:id', (c) => {
+  const p = attachmentPath(c.req.param('id'));
+  if (!p) return c.json({ error: 'not found' }, 404);
+  const ext = p.split('.').pop()!;
+  return c.body(fs.readFileSync(p), 200, { 'Content-Type': ext === 'jpg' ? 'image/jpeg' : `image/${ext}`, 'Cache-Control': 'private, max-age=31536000, immutable' });
+});
 // A6: path completion for @mentions in the composer (first approved folder, protected files skipped).
 app.get('/api/files/search', (c) => c.json({ files: searchFiles(c.req.query('q') ?? '') }));
 app.get('/api/sessions/search', (c) => c.json({ results: searchSessions(c.req.query('q') ?? '') }));
@@ -258,7 +275,8 @@ async function handle(ws: WebSocket, ev: ClientEvent): Promise<void> {
     case 'send_message': {
       const s = getSession(ev.sessionId);
       if (!s) return send(ws, { type: 'error', message: 'Session not found' });
-      void runnerFor(s).handleUserMessage(ev.content, parseRunAccess(ev.access), ev.notRisky === true);
+      const images = Array.isArray(ev.images) ? ev.images.filter((x) => typeof x === 'string' && isAttachmentId(x)) : undefined;
+      void runnerFor(s).handleUserMessage(ev.content, parseRunAccess(ev.access), ev.notRisky === true, images);
       return;
     }
     case 'council_escalate': {

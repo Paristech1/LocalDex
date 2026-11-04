@@ -28,6 +28,18 @@ function useFileSearch(query: string | undefined): string[] {
   return hits;
 }
 
+/** A7: upload one image; resolves to its attachment id. */
+async function uploadImage(file: File): Promise<string> {
+  if (file.size > 10 * 1024 * 1024) throw new Error('over 10 MB');
+  const buf = new Uint8Array(await file.arrayBuffer());
+  let bin = '';
+  for (let i = 0; i < buf.length; i += 0x8000) bin += String.fromCharCode(...buf.subarray(i, i + 0x8000));
+  const r = await fetch('/api/attachments', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ dataBase64: btoa(bin) }) });
+  const j = (await r.json()) as { id?: string; error?: string };
+  if (!r.ok || !j.id) throw new Error(j.error ?? `HTTP ${r.status}`);
+  return j.id;
+}
+
 function downloadUrl(url: string): void {
   const a = document.createElement('a');
   a.href = url;
@@ -243,6 +255,25 @@ function Composer({
 
   const session = useStore((s) => s.session);
   const [slashError, setSlashError] = useState<string | null>(null);
+  // A7: pasted / dropped images, uploaded to LocalDex and sent with the next message.
+  const [images, setImages] = useState<string[]>([]);
+  const [uploading, setUploading] = useState(0);
+  const addImages = async (files: File[]) => {
+    const imgs = files.filter((f) => f.type.startsWith('image/'));
+    if (!imgs.length) return false;
+    setUploading((n) => n + imgs.length);
+    for (const f of imgs) {
+      try {
+        const id = await uploadImage(f);
+        setImages((xs) => (xs.includes(id) ? xs : [...xs, id].slice(0, 8)));
+      } catch (e) {
+        setSlashError(`Image not added: ${(e as Error).message}`);
+      } finally {
+        setUploading((n) => n - 1);
+      }
+    }
+    return true;
+  };
   const [pick, setPick] = useState(0);
   const slashMatches = matchCommands(text, !!council);
   // A6: "@par" before the caret → file suggestions from the approved folder.
@@ -265,7 +296,7 @@ function Composer({
   };
 
   const submit = () => {
-    const t = text.trim();
+    const t = text.trim() || (images.length ? 'What do you see in this image?' : '');
     if (!t) return;
     // U5: direct commands (/compact, /export, /undo, /goal …) run here; nothing is sent to the model.
     if (session && t.startsWith('/')) {
@@ -277,8 +308,9 @@ function Composer({
       }
     }
     setSlashError(null);
-    send({ type: 'send_message', sessionId, content: t, ...(council ? { access, ...(notRisky ? { notRisky } : {}) } : {}) });
+    send({ type: 'send_message', sessionId, content: t, ...(images.length ? { images } : {}), ...(council ? { access, ...(notRisky ? { notRisky } : {}) } : {}) });
     setText('');
+    setImages([]);
     setNotRisky(false);
   };
 
@@ -305,7 +337,30 @@ function Composer({
   }, [text]);
 
   return (
-    <div className={cx('relative rounded-xl border bg-ink-900', council ? 'border-[#7cc0f2]/40 focus-within:border-[#7cc0f2]/70' : 'border-ink-600 focus-within:border-accent/60')}>
+    <div
+      className={cx('relative rounded-xl border bg-ink-900', council ? 'border-[#7cc0f2]/40 focus-within:border-[#7cc0f2]/70' : 'border-ink-600 focus-within:border-accent/60')}
+      onDragOver={(e) => e.dataTransfer.types.includes('Files') && e.preventDefault()}
+      onDrop={(e) => {
+        const files = [...e.dataTransfer.files];
+        if (files.some((f) => f.type.startsWith('image/'))) {
+          e.preventDefault();
+          void addImages(files);
+        }
+      }}
+    >
+      {(images.length > 0 || uploading > 0) && (
+        <div className="flex flex-wrap gap-2 px-3 pt-3">
+          {images.map((id) => (
+            <div key={id} className="relative">
+              <img src={`/api/attachments/${id}`} alt="attached" className="h-14 w-14 rounded-md object-cover border border-ink-600" />
+              <button type="button" aria-label="Remove image" className="absolute -top-1.5 -right-1.5 rounded-full bg-ink-800 border border-ink-600 w-5 h-5 text-[10px] text-ink-300 hover:text-danger" onClick={() => setImages((xs) => xs.filter((x) => x !== id))}>
+                ✕
+              </button>
+            </div>
+          ))}
+          {uploading > 0 && <div className="h-14 w-14 rounded-md border border-dashed border-ink-600 grid place-items-center text-[10px] text-ink-400 pulse">adding…</div>}
+        </div>
+      )}
       {matches.length > 0 && (
         <ul role="listbox" aria-label="Commands" className="absolute bottom-full left-0 right-0 mb-1 max-h-72 overflow-y-auto rounded-lg border border-ink-600 bg-ink-900 py-1 shadow-xl z-20">
           {matches.map((c, i) => (
@@ -341,6 +396,13 @@ function Composer({
         value={text}
         onChange={(e) => (setText(e.target.value), setCaret(e.target.selectionStart ?? e.target.value.length))}
         onSelect={(e) => setCaret((e.target as HTMLTextAreaElement).selectionStart ?? 0)}
+        onPaste={(e) => {
+          const files = [...e.clipboardData.files];
+          if (files.some((f) => f.type.startsWith('image/'))) {
+            e.preventDefault();
+            void addImages(files);
+          }
+        }}
         onKeyDown={(e) => {
           if (listLength) {
             if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {

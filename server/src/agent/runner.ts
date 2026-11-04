@@ -5,7 +5,9 @@ import { saveSession } from '../store.js';
 import { bus } from './bus.js';
 import { compactMain, maybeCompactMain, verifiedFileFacts } from './compact.js';
 import { autoTitle, isDefaultTitle } from '../sessionTools.js';
+import { isVisionModel } from '../lmstudio.js';
 import { mentionHint, mentionedFiles } from '../fileMentions.js';
+import { attachmentPath } from '../attachments.js';
 import { assessGoal, goalCouncilAssessTask, parseAssessment } from './goal.js';
 import { beginTurn, endTurn } from '../checkpoints.js';
 import { forgetInstructions, pullInstructions } from './instructions.js';
@@ -66,7 +68,8 @@ export class SessionRunner {
   }
 
   private toolSet() {
-    return { planMode: this.planning, goal: this.goalToolsOn, jobs: hasJobs(this.session.id) };
+    const model = this.session.model ?? getSettings().model;
+    return { planMode: this.planning, goal: this.goalToolsOn, jobs: hasJobs(this.session.id), vision: !!model && isVisionModel(model) };
   }
 
   get running(): boolean {
@@ -82,7 +85,7 @@ export class SessionRunner {
   }
 
   /** User sent a message. Starts a run, or queues a correction if one is already in flight. */
-  async handleUserMessage(content: string, access?: CouncilRunAccess, notRisky = false): Promise<void> {
+  async handleUserMessage(content: string, access?: CouncilRunAccess, notRisky = false, images?: string[]): Promise<void> {
     this.jobWakeups = 0;
     if (this.running) {
       this.corrections.push({ content, ...(access ? { access } : {}), ...(notRisky ? { notRisky } : {}) });
@@ -113,7 +116,10 @@ export class SessionRunner {
       await this.revisePlan(content);
       return;
     }
-    this.session.messages.push({ role: 'user', content, ts: Date.now() });
+    // A7: attached images. Council members can't receive images over their CLIs, so they get the file paths instead.
+    const imgs = (images ?? []).filter((id) => !!attachmentPath(id)).slice(0, 8);
+    if (imgs.length && this.councilMode) content = `${content}\n\n[Attached images (open them with your file tools): ${imgs.map((id) => attachmentPath(id)).join(', ')}]`;
+    this.session.messages.push({ role: 'user', content, ts: Date.now(), ...(imgs.length && !this.councilMode ? { images: imgs } : {}) });
     // A6: @file mentions become a short read hint (Solo; council members read files themselves).
     if (!this.councilMode) {
       const hint = mentionHint(mentionedFiles(content));

@@ -11,6 +11,7 @@ import { ask_member, council } from './councilTools.js';
 import { block_goal, complete_goal, get_goal, update_goal } from './goalTools.js';
 import { job_kill, job_list, job_output } from './jobTools.js';
 import { web_fetch, web_search } from './web.js';
+import { read_image } from './image.js';
 import { enabledSkills } from '../skills/store.js';
 import { PermissionError } from './permissions.js';
 import { isMcpTool, mcpToolSchemas, runMcpTool } from '../mcp/client.js';
@@ -45,6 +46,7 @@ export const registry: ToolRegistry = {
   job_kill,
   web_fetch,
   web_search,
+  read_image,
 };
 /** Offered once the session has started a background job (shell_run with background: true). */
 export const JOB_TOOLS = new Set<ToolName>(['job_output', 'job_list', 'job_kill']);
@@ -59,6 +61,8 @@ export interface ToolSetOptions {
   goal?: boolean;
   /** The session has background jobs: the job tools are shown. */
   jobs?: boolean;
+  /** A7: the model accepts images, so read_image is shown. */
+  vision?: boolean;
 }
 
 /**
@@ -81,6 +85,8 @@ export function enabledTools(kind: 'main' | 'worker', opts: ToolSetOptions = {})
     // Without node-pty (optional on Linux) the terminal tools can't work, so the model isn't shown them.
     .filter((name) => !TERMINAL_TOOLS.has(name) || ptyAvailable().ok)
     .filter((name) => !opts.planMode || isPlanTool(name))
+    // A7: only a vision model can look at an image.
+    .filter((name) => name !== 'read_image' || !!opts.vision)
     // Read only preset (S3): the write tools are off.
     .filter((name) => !(readOnlyPreset() && (name === 'write_file' || name === 'edit_file')))
     .map((name) => registry[name].schema);

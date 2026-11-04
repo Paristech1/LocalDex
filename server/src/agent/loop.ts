@@ -324,8 +324,10 @@ export async function runLoop(p: LoopParams): Promise<LoopResult> {
     stat.toolMs = Date.now() - toolsStarted;
     p.onStep?.(stat);
     let allFailed = true;
-    for (const { call, ok, content } of outcomes) {
+    const shownImages: string[] = [];
+    for (const { call, ok, content, images } of outcomes) {
       if (ok) allFailed = false;
+      if (images?.length) shownImages.push(...images);
       p.messages.push({
         role: 'tool',
         tool_call_id: call.id,
@@ -335,6 +337,8 @@ export async function runLoop(p: LoopParams): Promise<LoopResult> {
         ts: Date.now(),
       });
     }
+    // A7: tool messages are text-only on the wire, so images from read_image follow as a user message.
+    if (shownImages.length) p.messages.push({ role: 'user', content: '[context] Image(s) loaded by read_image:', images: shownImages, ts: Date.now() });
     p.onPersist?.();
     if (p.signal.aborted) return { text: lastText, steps: step + 1, reason: 'aborted' };
 
@@ -376,6 +380,7 @@ interface Outcome {
   call: ToolCall;
   ok: boolean;
   content: string;
+  images?: string[];
 }
 
 /**
@@ -418,7 +423,7 @@ async function executeCalls(calls: ToolCall[], ctx: ToolContext): Promise<Outcom
       ok: r.ok,
       result: r.content,
     });
-    results[i] = { call, ok: r.ok, content: r.content };
+    results[i] = { call, ok: r.ok, content: r.content, ...(r.images?.length ? { images: r.images } : {}) };
   };
 
   for (let i = 0; i < calls.length; i++) {
