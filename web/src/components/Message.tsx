@@ -34,7 +34,9 @@ export function Reasoning({ text, streaming }: { text: string; streaming?: boole
 
 export function UserBubble({ text, images, onEdit, onFork }: { text: string; images?: string[]; onEdit?: (text: string) => void; onFork?: () => void }) {
   const [open, setOpen] = useState(false);
-  const isSystemish = /^\[(Goal|Loop|system|context|Resumed|Handed to council|Plan |job )/.test(text);
+  // The clock line (C3) is for the model; it would only clutter the chat.
+  if (text.startsWith('[context] Date and time: ')) return null;
+  const isSystemish =/^\[(Goal|Loop|system|context|Resumed|Handed to council|Plan |job )/.test(text);
   if (isSystemish) {
     const [head, ...rest] = text.split('\n');
     return (
@@ -80,16 +82,32 @@ function EditableUserBubble({ text, onEdit, onFork }: { text: string; onEdit?: (
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(text);
   if (editing && onEdit) {
+    const canSave = !!draft.trim() && draft.trim() !== text.trim();
+    const cancel = () => (setEditing(false), setDraft(text));
+    const save = () => canSave && (setEditing(false), onEdit(draft.trim()));
     return (
       <div className="flex justify-end my-2">
         <div className="w-[85%] space-y-1">
-          <textarea className="w-full min-h-[80px] rounded-xl border border-accent/60 bg-ink-800 px-3 py-2 text-sm text-ink-100 focus:outline-none" value={draft} onChange={(e) => setDraft(e.target.value)} autoFocus />
+          <textarea className="w-full min-h-[80px] rounded-xl border border-accent/60 bg-ink-800 px-3 py-2 text-sm text-ink-100 focus:outline-none" value={draft}
+            onChange={(e) => setDraft(e.target.value)}
+            // Same keys as the composer: Enter runs, Shift+Enter adds a line; Escape cancels.
+            onKeyDown={(e) => {
+              if (e.key === 'Escape') {
+                e.preventDefault();
+                cancel();
+              } else if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
+                e.preventDefault();
+                save();
+              }
+            }}
+            autoFocus
+          />
           <div className="flex justify-end gap-2 text-xs">
             <span className="text-ink-400 mr-auto self-center">Runs in a new session forked from here; this one stays as it is.</span>
-            <button type="button" className="px-2 py-1 text-ink-400 hover:text-ink-100" onClick={() => (setEditing(false), setDraft(text))}>
+            <button type="button" className="px-2 py-1 text-ink-400 hover:text-ink-100" onClick={cancel}>
               Cancel
             </button>
-            <button type="button" className="rounded-md bg-accent/20 px-2 py-1 text-accent hover:bg-accent/30 disabled:opacity-40" disabled={!draft.trim() || draft.trim() === text.trim()} onClick={() => (setEditing(false), onEdit(draft.trim()))}>
+            <button type="button" className="rounded-md bg-accent/20 px-2 py-1 text-accent hover:bg-accent/30 disabled:opacity-40" disabled={!canSave} onClick={save}>
               Save & run
             </button>
           </div>

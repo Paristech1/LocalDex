@@ -693,7 +693,18 @@ export interface SessionSummary {
   id: string;
   title: string;
   updatedAt: number;
+  /** Messages a person would count: your requests and the answers (not tool calls, results or LocalDex's own notes). */
   messageCount: number;
+}
+
+/** The sidebar's message count for a session (see SessionSummary.messageCount). */
+export function visibleMessageCount(messages: ChatMessage[]): number {
+  let n = 0;
+  for (const m of messages) {
+    if (m.role === 'user' && typeof m.content === 'string' && m.content.trim() && !m.content.startsWith('[')) n++;
+    else if (m.role === 'assistant' && typeof m.content === 'string' && m.content.trim()) n++;
+  }
+  return n;
 }
 
 // ---------- MCP (Model Context Protocol) servers ----------

@@ -168,6 +168,22 @@ export async function jobOutput(
   return { job: info(j), output, droppedNotice, waited: Date.now() - start };
 }
 
+/** A session was deleted: stop its running jobs, forget them all and drop its finish listener (nothing may write to it again). */
+export function dropSessionJobs(sessionId: string): number {
+  listeners.delete(sessionId);
+  let n = 0;
+  for (const j of [...jobs.values()]) {
+    if (j.sessionId !== sessionId) continue;
+    if (j.status === 'running') {
+      j.notified = true;
+      killJob(sessionId, j.id);
+      n++;
+    }
+    jobs.delete(j.id);
+  }
+  return n;
+}
+
 /** Server shutdown: stop every running job. */
 export function killAllJobs(): void {
   for (const j of jobs.values()) if (j.status === 'running') killJob(j.sessionId, j.id);
