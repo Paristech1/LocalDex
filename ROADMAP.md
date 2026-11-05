@@ -403,6 +403,23 @@ When a sandboxed command fails with a write denial, show "Command was blocked by
 5. **`pkill -f <pattern>`** in a shell whose own command line contains the pattern kills that shell. Kill by PID.
 6. **Linux without build tools**: `npm ci` works; terminals are reported unavailable.
 
+### Smoothing pass (2026-11-05, `fix/smooth-pass`)
+
+Found by driving the real UI in Chrome against a stand-in LM Studio, plus a code read of the second-pass features.
+
+| Fix | Where |
+|---|---|
+| Deleting a session with a running background job brought the session back (the finish notice woke the deleted runner, which saved it to disk). Delete now stops and forgets the session's jobs. | `jobs.ts` `dropSessionJobs`, `agent/runner.ts` `dropRunner` |
+| The C3 clock line was appended *after* the user's request, so the model read the clock last (a small model answers what comes last). It now goes before the new message. | `agent/runner.ts` `ensureClock` |
+| Native tool mode sent back-to-back user turns (clock, request, @mention hint, hook context); Gemma-style templates need alternation. They are now merged into one turn, as text mode already did. | `lmstudio.ts` `mergeUserRuns` |
+| Turn checkpoints re-hashed the whole repo at every turn start and end (empty temp index). The temp index now starts as a copy of the user's index, so unchanged files are skipped. | `checkpoints.ts` `writeTree` |
+| `/plan <task>` sessions were titled "/plan …". | `agent/runner.ts` |
+| A goal paused at its iteration cap showed "finished"; council-led goals never recorded how they ended; clearing an ended goal overwrote it with "user". | `RightPanel.tsx`, `agent/runner.ts` |
+| "+ New" piled up empty sessions; it now reuses an untouched one. Deleting the open session opens the next one instead of making a new one. | `index.ts`, `Sidebar.tsx` |
+| Sidebar "N msgs" counted tool calls, results and internal notes; it now counts requests and answers. | `shared` `visibleMessageCount` |
+| Editing a message: Enter runs, Shift+Enter adds a line, Escape cancels (same as the composer). | `Message.tsx` |
+| Long-label toggles rendered centered in mono with a squashed switch; the clock line showed as a chat pill. | `ui.tsx` `Toggle`, `Message.tsx` |
+
 ### Ideas for a next round (not started)
 
 - The parked **plugin system** (design in git history at `15ed621`).

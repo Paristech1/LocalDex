@@ -53,6 +53,32 @@ function client(): OpenAI {
 
 /** Convert our stored message shape to the OpenAI wire format (strip UI-only fields). */
 function toWire(messages: ChatMessage[], vision = false): OpenAI.ChatCompletionMessageParam[] {
+  return mergeUserRuns(toWireEach(messages, vision));
+}
+
+type WirePart = { type: 'text'; text: string } | { type: 'image_url'; image_url: { url: string } };
+
+/**
+ * Back-to-back user messages (the request plus LocalDex's own notes: the clock line, @mention hints, hook context,
+ * "[system] Run stopped") become one user turn. Gemma-style chat templates reject two user turns in a row, and
+ * the text protocol already merges them the same way. Deterministic, so the prompt prefix stays cache-stable.
+ */
+export function mergeUserRuns(out: OpenAI.ChatCompletionMessageParam[]): OpenAI.ChatCompletionMessageParam[] {
+  const merged: OpenAI.ChatCompletionMessageParam[] = [];
+  const parts = (c: unknown): WirePart[] => (typeof c === 'string' ? [{ type: 'text', text: c }] : (c as WirePart[]));
+  for (const m of out) {
+    const last = merged[merged.length - 1];
+    if (m.role === 'user' && last?.role === 'user') {
+      if (typeof last.content === 'string' && typeof m.content === 'string') last.content = `${last.content}\n\n${m.content}`;
+      else last.content = [...parts(last.content), { type: 'text', text: '\n\n' }, ...parts(m.content)] as never;
+      continue;
+    }
+    merged.push(m.role === 'user' ? { ...m } : m);
+  }
+  return merged;
+}
+
+function toWireEach(messages: ChatMessage[], vision: boolean): OpenAI.ChatCompletionMessageParam[] {
   const keep = imageKeepSet(messages);
   return messages.map((m, i) => {
     switch (m.role) {

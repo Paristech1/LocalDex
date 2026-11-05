@@ -583,6 +583,12 @@ console.log('\n# Q. Stable prompt prefix');
   const sysHash = h((sess.messages[0] as any).content);
   const clocks = () => sess.messages.filter((m: any) => m.role === 'user' && m.content.startsWith(CLOCK_PREFIX));
   check('clock appended once as a context line', clocks().length === 1 && /\d{4}/.test(clocks()[0].content), clocks()[0]?.content);
+  {
+    const sent = requests[requests.length - 1].messages;
+    const lastMsg = sent[sent.length - 1];
+    check('the request, not the clock line, is the last thing the model reads', lastMsg.role === 'user' && lastMsg.content.startsWith(CLOCK_PREFIX) && lastMsg.content.endsWith('\n\nfirst'), JSON.stringify(lastMsg.content).slice(0, 120));
+    check('back-to-back user messages reach the model as one user turn (Gemma templates need alternation)', !sent.some((m: any, i: number) => i > 0 && m.role === 'user' && sent[i - 1].role === 'user'));
+  }
   script = [textCalls({ name: 'read_file', arguments: { path: 'hello.txt' } }), say('two')];
   await rn.handleUserMessage('second');
   check('system prompt unchanged across steps and turns (hash)', h((sess.messages[0] as any).content) === sysHash && !logs.some((l) => /system prompt changed/.test(l)));
@@ -859,6 +865,67 @@ console.log('\n# V. Background jobs: notice on finish, job_output, job_kill');
   check('the killed job is gone well before its 30 s', killed?.status === 'killed' && Date.now() - t0 < 10_000, JSON.stringify(killed));
   await new Promise((r) => setTimeout(r, 300));
   check('a killed job does not wake the agent', !sess.messages.some((m: any) => m.role === 'user' && /^\[job job\d+ killed/.test(m.content)) && !rn.running);
+}
+
+// ---------- V2: deleting a session stops its jobs and never brings it back ----------
+console.log('\n# V2. Deleted session: its background jobs stop, and a finishing job cannot write it back to disk');
+{
+  const { listJobs } = await import(`${SRC}/jobs.ts`);
+  const { dropRunner } = await import(`${SRC}/agent/runner.ts`);
+  const { deleteSession, getSession, listSessions } = await import(`${SRC}/store.ts`);
+  const sess = createSession('gemma-mock');
+  const rn = runnerFor(sess);
+  script = [textCalls({ name: 'shell_run', arguments: { command: 'sleep 1; echo zombie', background: true } }), say('Started.'), say('woken (should never happen)')];
+  await rn.handleUserMessage('start it in the background');
+  check('a job is running', listJobs(sess.id).some((j) => j.status === 'running'));
+  // What the delete_session handler does.
+  dropRunner(sess.id);
+  deleteSession(sess.id);
+  await new Promise((r) => setTimeout(r, 1800));
+  check('its jobs are stopped and forgotten', listJobs(sess.id).length === 0);
+  check('the deleted session stays deleted (no wake-up turn saved it again)', !getSession(sess.id) && !listSessions().some((x) => x.id === sess.id) && script.length === 1);
+  script = [];
+}
+
+// ---------- V3: small polish ----------
+console.log('\n# V3. Titles, goal endings, message counts, wire merging');
+{
+  const { visibleMessageCount } = await import(`${path.resolve(SRC, '../../shared/src/index.ts')}`);
+  const { mergeUserRuns } = await import(`${SRC}/lmstudio.ts`);
+  const sess = createSession('gemma-mock');
+  const rn = runnerFor(sess);
+  script = [textCalls({ name: 'update_plan', arguments: { steps: [{ title: 'Look', status: 'pending' }] } }), say('Plan: look.')];
+  await rn.handleUserMessage('/plan tidy the readme');
+  check('a /plan session is titled by its task, not the command', sess.title === 'tidy the readme', sess.title);
+  rn.cancelPlan();
+
+  rn.setGoal({ mode: 'goal', brief: 'b', doneCriteria: '', maxIterations: 1 });
+  sess.goal!.active = false;
+  sess.goal!.endedBy = 'cap';
+  rn.clearGoal();
+  check('clearing an ended goal keeps how it ended', sess.goal?.endedBy === 'cap');
+  rn.setGoal({ mode: 'goal', brief: 'b', doneCriteria: '', maxIterations: 1 });
+  rn.clearGoal();
+  check('clearing an active goal records the user', sess.goal?.endedBy === 'user' && !sess.goal?.active);
+
+  const count = visibleMessageCount([
+    { role: 'system', content: 'sys' },
+    { role: 'user', content: '[context] Date and time: x' },
+    { role: 'user', content: 'do it' },
+    { role: 'assistant', content: null, tool_calls: [{ id: 'a', type: 'function', function: { name: 'read_file', arguments: '{}' } }] },
+    { role: 'tool', tool_call_id: 'a', content: 'x' },
+    { role: 'assistant', content: 'Done.' },
+  ] as any);
+  check('sidebar counts requests and answers, not tool traffic or notes', count === 2, String(count));
+
+  const merged = mergeUserRuns([
+    { role: 'system', content: 's' },
+    { role: 'user', content: 'a' },
+    { role: 'user', content: [{ type: 'text', text: 'b' }, { type: 'image_url', image_url: { url: 'data:x' } }] },
+    { role: 'assistant', content: 'ok' },
+    { role: 'user', content: 'c' },
+  ] as any);
+  check('user runs merge (text + image parts kept in order); other turns untouched', merged.length === 4 && Array.isArray(merged[1].content) && (merged[1].content as any[]).map((p) => p.type).join(',') === 'text,text,text,image_url' && merged[3].content === 'c');
 }
 
 // ---------- W: web_fetch / web_search (A1) ----------

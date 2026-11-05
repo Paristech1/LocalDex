@@ -89,14 +89,19 @@ export const inputCls =
   'w-full bg-ink-900 border border-ink-600 rounded-md px-2.5 py-1.5 text-sm text-ink-100 placeholder:text-ink-400 focus:outline-none focus:border-accent/60';
 
 export function Toggle({ checked, onChange, label }: { checked: boolean; onChange: (v: boolean) => void; label: string }) {
+  // Tool and skill names read best in mono; sentences (most settings) don't, and must wrap left-aligned.
+  const isName = !/\s/.test(label.trim().replace(/ \(unavailable\)$/, ''));
   return (
     <button
       type="button"
+      role="switch"
+      aria-checked={checked}
+      aria-label={label || undefined}
       onClick={() => onChange(!checked)}
-      className="flex items-center justify-between w-full px-2.5 py-1.5 rounded-md hover:bg-ink-700 text-sm"
+      className="flex items-center justify-between gap-3 w-full px-2.5 py-1.5 rounded-md hover:bg-ink-700 text-sm text-left"
     >
-      <span className="font-mono text-xs text-ink-200">{label}</span>
-      <span className={cx('w-8 h-4 rounded-full relative transition-colors', checked ? 'bg-accent' : 'bg-ink-600')}>
+      <span className={cx('flex-1 min-w-0 text-ink-200', isName ? 'font-mono text-xs' : 'text-xs leading-snug')}>{label}</span>
+      <span className={cx('w-8 h-4 shrink-0 rounded-full relative transition-colors', checked ? 'bg-accent' : 'bg-ink-600')}>
         <span
           className={cx(
             'absolute top-0.5 w-3 h-3 rounded-full bg-ink-950 transition-all',

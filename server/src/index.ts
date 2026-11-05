@@ -301,7 +301,14 @@ async function handle(ws: WebSocket, ev: ClientEvent): Promise<void> {
       return;
     }
     case 'new_session': {
-      const s = createSession(getSettings().model);
+      // "+ New" on top of an untouched session reuses it, instead of piling up empty "New session" entries.
+      const blank = listSessions().map((x) => (x.messageCount === 0 ? getSession(x.id) : null)).find((x) => x && isBlankSession(x));
+      const s = blank ?? createSession(getSettings().model);
+      if (blank) {
+        blank.updatedAt = Date.now();
+        blank.model = getSettings().model ?? blank.model;
+        saveSession(blank);
+      }
       send(ws, { type: 'session', session: s });
       bus.emit({ type: 'sessions', sessions: listSessions() });
       return;
@@ -700,4 +707,9 @@ process.on('SIGTERM', shutdown);
 /** Only the three known access modes are accepted from the socket; anything else means "use Settings". */
 function parseRunAccess(v: unknown): CouncilRunAccess | undefined {
   return v === 'read' || v === 'confirm' || v === 'auto' ? v : undefined;
+}
+
+/** A session nobody has used yet: no messages, no goal or plan, default title, not a fork, not running. */
+function isBlankSession(s: import('@localdex/shared').Session): boolean {
+  return s.messages.length === 0 && !s.goal && !s.planMode && !s.forkedFrom && s.title === 'New session' && s.titleSource !== 'user' && !runnerFor(s).running;
 }

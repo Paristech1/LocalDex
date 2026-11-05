@@ -23,6 +23,7 @@ import type {
   ScheduledGoal,
   VoiceStatus,
 } from '@localdex/shared';
+import { visibleMessageCount } from '@localdex/shared';
 
 export interface LiveTool {
   callId: string;
@@ -212,10 +213,10 @@ function handle(ev: ServerEvent): void {
         const sessions = s.sessions.some((x) => x.id === ev.session.id)
           ? s.sessions.map((x) =>
               x.id === ev.session.id
-                ? { ...x, title: ev.session.title, updatedAt: ev.session.updatedAt, messageCount: ev.session.messages.length }
+                ? { ...x, title: ev.session.title, updatedAt: ev.session.updatedAt, messageCount: visibleMessageCount(ev.session.messages) }
                 : x,
             )
-          : [{ id: ev.session.id, title: ev.session.title, updatedAt: ev.session.updatedAt, messageCount: ev.session.messages.length }, ...s.sessions];
+          : [{ id: ev.session.id, title: ev.session.title, updatedAt: ev.session.updatedAt, messageCount: visibleMessageCount(ev.session.messages) }, ...s.sessions];
         const switching = !!s.session && s.session.id !== ev.session.id;
         if (switching && wantedSession !== '*' && wantedSession !== ev.session.id) {
           // Another session was updated in the background (a run we are not viewing): refresh the list only.

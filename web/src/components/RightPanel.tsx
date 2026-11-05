@@ -218,6 +218,25 @@ function WorkerCard({ worker: w, sessionId }: { worker: WorkerState; sessionId: 
 
 // ---------- Goal ----------
 
+/** How the last goal ended, in words (a goal that hit its iteration cap is paused, not finished). */
+function goalEndedText(endedBy: string | undefined, iteration: number, max: number): string {
+  const n = `${iteration} iteration${iteration === 1 ? '' : 's'}`;
+  switch (endedBy) {
+    case 'blocked':
+      return `stopped: blocked 3 rounds in a row after ${n}.`;
+    case 'model':
+      return `marked complete by the model after ${n}.`;
+    case 'checkpoint':
+      return `finished after ${n}.`;
+    case 'cap':
+      return `paused at the iteration cap (${max}). Start it again with a higher cap to continue.`;
+    case 'user':
+      return `cleared by you after ${n}.`;
+    default:
+      return `ended after ${n}.`;
+  }
+}
+
 function GoalPanel() {
   const session = useStore((s) => s.session);
   const goal = session?.goal;
@@ -306,7 +325,7 @@ function GoalPanel() {
       {goal && !goal.active && (
         <div className={cx('text-xs rounded-md border px-3 py-2', goal.endedBy === 'blocked' ? 'border-warn/40 bg-warn/5 text-warn' : 'border-ink-700 text-ink-400')}>
           Previous {goal.mode}: <span className="text-ink-200">{goal.brief}</span> —{' '}
-          {goal.endedBy === 'blocked' ? `stopped: blocked 3 rounds in a row after ${goal.iteration} iteration(s).` : goal.endedBy === 'model' ? `marked complete by the model after ${goal.iteration} iteration(s).` : `finished after ${goal.iteration} iteration(s).`}
+          {goalEndedText(goal.endedBy, goal.iteration, goal.maxIterations)}
           {goal.blocker && goal.endedBy === 'blocked' ? <div className="text-ink-200 mt-1">{goal.blocker}</div> : goal.lastAssessment ? ` ${goal.lastAssessment}` : ''}
         </div>
       )}
@@ -349,7 +368,10 @@ function GoalPanel() {
         </div>
       </Field>
       {lead === 'local' && (
-        <Toggle checked={fresh} onChange={setFresh} label="Fresh context each round (recommended for 32k models): every round starts from the brief, the last report (≤ 2k tokens), the files on disk and the plan, not the growing transcript" />
+        <div>
+          <Toggle checked={fresh} onChange={setFresh} label="Fresh context each round (recommended for 32k models)" />
+          <p className="px-2.5 text-[11px] text-ink-400 leading-snug">Each round starts from the brief, the last report (≤ 2k tokens), the files on disk and the plan, instead of the growing transcript.</p>
+        </div>
       )}
       <Button type="submit" variant="primary" disabled={!brief.trim()}>
         {mode === 'goal' ? 'Start goal' : 'Start loop'}

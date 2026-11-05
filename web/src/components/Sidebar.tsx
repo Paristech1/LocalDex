@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import type { SessionSummary } from '@localdex/shared';
-import { loadSession, newSession, send, useStore } from '../store';
+import { getState, loadSession, newSession, send, useStore } from '../store';
 import { Button, cx, timeAgo } from './ui';
 
 interface Hit {
@@ -142,7 +142,7 @@ function SessionRow({ s, current }: { s: SessionSummary; current: boolean }) {
           </div>
         )}
         <div className="text-[11px] text-ink-400">
-          {s.messageCount} msgs · {timeAgo(s.updatedAt)}
+          {s.messageCount} msg{s.messageCount === 1 ? '' : 's'} · {timeAgo(s.updatedAt)}
         </div>
       </div>
       <div className="flex opacity-0 group-hover:opacity-100 focus-within:opacity-100">
@@ -161,7 +161,12 @@ function SessionRow({ s, current }: { s: SessionSummary; current: boolean }) {
             e.stopPropagation();
             if (confirm(`Delete "${s.title}"?`)) {
               send({ type: 'delete_session', id: s.id });
-              if (current) newSession();
+              // Deleting the open session opens the next most recent one (or a new one when it was the last).
+              if (current) {
+                const next = getState().sessions.find((x) => x.id !== s.id);
+                if (next) loadSession(next.id);
+                else newSession();
+              }
             }
           }}
         >

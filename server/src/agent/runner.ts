@@ -16,7 +16,7 @@ import { parsePlanCommand, planApprovedPrompt, planModePrompt, planRevisePrompt 
 import { runLoop } from './loop.js';
 import { CLOCK_EVERY_MS, CLOCK_PREFIX, FRESH_REPORT_CHARS, GOAL_TOOLS_HINT, clockLine, goalContinuePrompt, goalFreshRoundPrompt, mainSystemPrompt } from './prompts.js';
 import { resetReads } from '../tools/readTracker.js';
-import { hasJobs, onJobFinished } from '../jobs.js';
+import { dropSessionJobs, hasJobs, onJobFinished } from '../jobs.js';
 import { recordStep } from './stats.js';
 import { WorkerManager } from './workers.js';
 import { redactIfEnabled, runCouncil, runSummary, runVia, type CouncilContext } from '../council/orchestrator.js';
@@ -93,12 +93,13 @@ export class SessionRunner {
       bus.log('info', 'Correction queued; it will be delivered before the next model call.');
       return;
     }
-    if (this.session.titleSource !== 'user' && (this.session.messages.length === 0 || this.session.title === 'New session')) {
-      this.session.title = content.trim().split('\n')[0].slice(0, 60) || 'New session';
-    }
     // Solo-only `/plan <task>`: read-only plan mode until the user approves. In Council mode `/plan …` is a council
     // slash command (planner role, member session continue) — do not intercept it here.
     const planTask = !this.councilMode ? parsePlanCommand(content) : null;
+    if (this.session.titleSource !== 'user' && (this.session.messages.length === 0 || this.session.title === 'New session')) {
+      // A `/plan <task>` session is titled by its task, not by the command.
+      this.session.title = (planTask || content).trim().split('\n')[0].slice(0, 60) || 'New session';
+    }
     if (planTask !== null) {
       if (!planTask) {
         bus.emit({ type: 'error', sessionId: this.session.id, message: 'Usage: /plan <what to plan>' });
@@ -469,6 +470,7 @@ export class SessionRunner {
       goal.iteration += 1;
       if (goal.iteration >= goal.maxIterations) {
         goal.active = false;
+        goal.endedBy = 'cap';
         bus.log('info', `Goal stopped: reached ${goal.maxIterations} iterations.`);
         s.messages.push({ role: 'user', content: `[Goal paused] Reached the iteration cap (${goal.maxIterations}). Raise it or clear the goal to continue.`, ts: Date.now() });
         this.persist();
@@ -483,6 +485,7 @@ export class SessionRunner {
       this.sync();
       if (a.done) {
         goal.active = false;
+        goal.endedBy = 'checkpoint';
         bus.log('info', `Goal complete (council reviewer): ${a.note}`);
         return;
       }
@@ -542,7 +545,8 @@ export class SessionRunner {
   }
 
   clearGoal(): void {
-    if (this.session.goal) {
+    // Clearing an already-ended goal keeps how it ended (cap, blocked, done).
+    if (this.session.goal?.active) {
       this.session.goal.active = false;
       this.session.goal.endedBy = 'user';
     }
@@ -850,7 +854,12 @@ export class SessionRunner {
       }
     }
     if (last && last.role === 'user' && Date.now() - (last.ts ?? 0) < CLOCK_EVERY_MS) return;
-    msgs.push({ role: 'user', content: clockLine(), ts: Date.now() });
+    // Goes in front of the messages this turn adds (the user's request, hook context, @mention hints), so the
+    // request stays the last thing the model reads. Small models answer whatever comes last; a trailing clock line
+    // used to get answered instead of the request. Still append-only for the KV cache: everything before it is unchanged.
+    let at = msgs.length;
+    while (at > 0 && msgs[at - 1].role === 'user' && at - 1 > 0) at--;
+    msgs.splice(at, 0, { role: 'user', content: clockLine(), ts: Date.now() });
   }
 }
 
@@ -1004,7 +1013,9 @@ export function runnerFor(session: Session): SessionRunner {
   return r;
 }
 
+/** The session is going away (deleted): stop its run and its background jobs, so nothing writes it back to disk. */
 export function dropRunner(id: string): void {
   runners.get(id)?.stop();
   runners.delete(id);
+  dropSessionJobs(id);
 }
