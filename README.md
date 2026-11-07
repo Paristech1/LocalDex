@@ -80,8 +80,10 @@ Browser (React UI)  <-- WebSocket -->  LocalDex server (Node)  -->  LM Studio :1
   the threshold, no summary call is made.
 - **Stable prompt prefix** – the system prompt is frozen per session and only rebuilt when the tool
   set, skills or MCP servers really change (logged as a cache reset), so LM Studio can reuse its
-  KV cache across steps. The date and time arrive as an appended `[context]` line at most every
-  10 minutes instead of living in the system prompt.
+  KV cache across steps. The date and time arrive as a `[context]` line at most every
+  10 minutes instead of living in the system prompt. It goes just before your new message, so your
+  request is always the last thing the model reads, and back-to-back user notes reach the model as
+  one user turn (Gemma-style templates reject two in a row). The clock line is hidden in the chat.
 - **Survives LM Studio hiccups** – a request that fails before any token arrives (model still
   loading, a 5xx, a dropped connection) is retried up to 3 times after 1 s, 3 s and 8 s, each retry
   logged. A stream that already produced tokens is never retried, so you never see a reply replayed.

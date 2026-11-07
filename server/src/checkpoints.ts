@@ -72,6 +72,16 @@ function writeTree(root: string): string | null {
   const idx = path.join(os.tmpdir(), `localdex-idx-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`);
   try {
     const env = { GIT_INDEX_FILE: idx };
+    // Start from a copy of the user's index: its stat cache lets `git add -A` skip re-hashing unchanged files, which
+    // matters on big repos (this runs synchronously at every turn start and end). The user's index is only read.
+    const realIndex = git(root, ['rev-parse', '--path-format=absolute', '--git-path', 'index']);
+    if (realIndex.ok) {
+      try {
+        fs.copyFileSync(realIndex.out.trim(), idx);
+      } catch {
+        /* no index yet (fresh repo): start empty */
+      }
+    }
     const add = git(root, ['add', '-A', '--', '.'], env);
     if (!add.ok) return null;
     const tree = git(root, ['write-tree'], env);

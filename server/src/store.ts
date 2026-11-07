@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import type { Session, SessionSummary } from '@localdex/shared';
+import { visibleMessageCount } from '@localdex/shared';
 import { SESSIONS_DIR } from './config.js';
 import { recoverInterruptedRuns } from './council/recover.js';
 
@@ -56,7 +57,7 @@ export function listSessions(): SessionSummary[] {
     if (!f.endsWith('.json')) continue;
     const id = f.slice(0, -5);
     const s = getSession(id);
-    if (s) out.push({ id: s.id, title: s.title, updatedAt: s.updatedAt, messageCount: s.messages.length });
+    if (s) out.push({ id: s.id, title: s.title, updatedAt: s.updatedAt, messageCount: visibleMessageCount(s.messages) });
   }
   return out.sort((a, b) => b.updatedAt - a.updatedAt);
 }
